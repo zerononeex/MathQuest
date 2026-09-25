@@ -17,9 +17,11 @@
   }
   #stage {
     position: fixed; inset: 0;
-    width: 100vw; height: 100dvh;
+    width: 100dvw; height: 100dvh;
     display: flex; align-items: center; justify-content: center;
     background: #0a0a14;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing: border-box;
   }
   #game {
     image-rendering: pixelated;
@@ -80,6 +82,10 @@ const CONFIG = {
   SWORD_RANGE: 28,           // px - sword only works this close
   ENEMY_TAP_HITBOX_MULT: 1.5, // forgiving tap hitbox multiplier for enemies
   ENEMY_TAP_HITBOX_MIN: 48,   // minimum forgiving tap hitbox in px
+  // Max distance a tap-to-attack (sword) will auto-walk the hero toward an
+  // enemy before giving up with "Too far for your sword!" - same order of
+  // magnitude as the enemy tap hitbox, not map-wide (bug report #4).
+  SWORD_ENGAGE_MAX_DIST: 160,
 
   // --- Math popup tiers ---
   // grade band, AP reward per correct answer
@@ -245,10 +251,15 @@ function resizeCanvas() {
   const stage = document.getElementById('stage');
   const availW = stage.clientWidth;
   const availH = stage.clientHeight;
-  // whole-pixel integer scale so pixel art stays crisp; fall back to a
-  // fractional scale only if the screen is smaller than the game itself.
+  // Fill as much of the screen as possible in both orientations while
+  // staying crisp. A strict integer-only scale (bug report #2) leaves huge
+  // letterboxing on iPad, e.g. 1024x768 -> scale 1.6 floors to 1, using
+  // under half the screen. Instead, step the scale to the nearest 1/10th
+  // px ("whole-pixel-step" rounding rather than whole-integer rounding) so
+  // image-rendering:pixelated still looks crisp but the canvas actually
+  // fills the available viewport in both dvw and dvh.
   let scale = Math.min(availW / CONFIG.GAME_W, availH / CONFIG.GAME_H);
-  if (scale >= 1) scale = Math.floor(scale);
+  if (scale >= 1) scale = Math.floor(scale * 10) / 10;
   if (scale <= 0) scale = availW / CONFIG.GAME_W < availH / CONFIG.GAME_H
     ? availW / CONFIG.GAME_W : availH / CONFIG.GAME_H;
   canvas.style.width = (CONFIG.GAME_W * scale) + 'px';
@@ -2416,7 +2427,7 @@ function update(dtMs) {
   if (Input.keys['m'] || Input.keys['M']) { Input.keys['m'] = Input.keys['M'] = false; audioSettings.muted = !audioSettings.muted; }
   if (Input.tapped && tapSpeakerIcon(Input.tapX, Input.tapY)) { Input.tapped = false; }
   if (Input.swipe) {
-    const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+    const slotSize = 48, gap = 6, startX = 10, y = CONFIG.GAME_H - slotSize - 10;
     for (let i = 0; i < 3; i++) {
       const x = startX + i * (slotSize + gap);
       if (pointInRect(Input.swipe.x, Input.swipe.y, { x, y, w: slotSize, h: slotSize }) && player.slots[i] === 'bow') {
@@ -2468,8 +2479,29 @@ function resetGame() {
   location.reload();
 }
 
+// AP/math "Q" button (top-right, big tappable icon for no-keyboard iPad use).
+// Mirrors the Q key: opens the AP-earning math popup. 48x48 min tap target.
+function qButtonRect() {
+  return { x: CONFIG.GAME_W - 56, y: 8, w: 48, h: 48 };
+}
+function tapQButton(sx, sy) {
+  return pointInRect(sx, sy, qButtonRect());
+}
+function drawQButton() {
+  const r = qButtonRect();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 24px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('?', r.x + r.w / 2, r.y + r.h / 2 + 9);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 9px monospace';
+  ctx.fillText('AP', r.x + r.w / 2, r.y + r.h - 4);
+}
+
+// Bottom-left icon row: sits just right of the 3 weapon slots (also
+// bottom-left, see drawWeaponSlots), vertically centered on the slot row.
+// slots occupy x:[10, 10+3*48+2*6=166], y:[GAME_H-58, GAME_H-10].
 function speakerIconRect() {
-  return { x: CONFIG.GAME_W - 34, y: CONFIG.GAME_H - 34, w: 28, h: 28 };
+  return { x: 176, y: CONFIG.GAME_H - 48, w: 28, h: 28 };
 }
 function tapSpeakerIcon(sx, sy) {
   return pointInRect(sx, sy, speakerIconRect());
@@ -2550,6 +2582,13 @@ function updatePlaying(dt) {
     Input.keys['q'] = Input.keys['Q'] = false;
     openMathPopup('ap');
   }
+  // on-screen Q button (top-right) does exactly what the Q key does - for
+  // iPad/touch users with no keyboard (bug report #1)
+  if (Input.tapped && tapQButton(Input.tapX, Input.tapY)) {
+    Input.tapped = false;
+    openMathPopup('ap');
+    return;
+  }
 
   if (player.attackCooldown > 0) player.attackCooldown -= dt;
   if (player.invincibleT > 0) player.invincibleT -= dt;
@@ -2614,10 +2653,11 @@ function updatePlaying(dt) {
         hero.pendingAttackTarget = null;
       } else {
         const d0 = Math.hypot(tappedEnemy.x - hero.x, tappedEnemy.y - hero.y);
-        if (d0 > 60) {
+        if (d0 > CONFIG.SWORD_ENGAGE_MAX_DIST) {
           showHint('Too far for your sword!', 1.5);
           hero.pendingAttackTarget = null;
         } else {
+          // walk into range then auto-swing (handled below, every frame)
           hero.pendingAttackTarget = tappedEnemy;
         }
       }
@@ -2654,8 +2694,13 @@ function updatePlaying(dt) {
         if (Math.abs(ang) < Math.PI / 4) hero.facing = 'right';
         else if (Math.abs(ang) > Math.PI * 3 / 4) hero.facing = 'left';
         else hero.facing = ang > 0 ? 'down' : 'up';
-        if (player.attackCooldown <= 0) trySwingSword();
-        hero.pendingAttackTarget = null;
+        // in range: swing once ready. If still on cooldown, keep the
+        // pending target so we retry next frame instead of silently
+        // dropping the auto-attack (bug report #4: "not reliable").
+        if (player.attackCooldown <= 0) {
+          trySwingSword();
+          hero.pendingAttackTarget = null;
+        }
       }
     }
   }
@@ -3105,6 +3150,7 @@ function drawPlaying() {
   drawSpeakerIcon();
   drawWardrobeButton();
   drawSaveButton();
+  drawQButton();
 
   // boss HP bar (top of screen, Phase 5)
   if (world.mode === 'castle' && castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) {
@@ -3514,7 +3560,7 @@ function drawXPBar() {
 const wardrobe = { active: false };
 function openWardrobe() { wardrobe.active = true; }
 function closeWardrobe() { wardrobe.active = false; }
-function wardrobeButtonRect() { return { x: CONFIG.GAME_W - 68, y: CONFIG.GAME_H - 34, w: 28, h: 28 }; }
+function wardrobeButtonRect() { return { x: 210, y: CONFIG.GAME_H - 48, w: 28, h: 28 }; }
 function tapWardrobeButton(sx, sy) { return pointInRect(sx, sy, wardrobeButtonRect()); }
 function drawWardrobeButton() {
   const r = wardrobeButtonRect();
@@ -3583,7 +3629,7 @@ function cycleArrowType() {
 // =========================================================================
 // Manual Save button + pause menu (Phase 9)
 // =========================================================================
-function saveButtonRect() { return { x: CONFIG.GAME_W - 102, y: CONFIG.GAME_H - 34, w: 28, h: 28 }; }
+function saveButtonRect() { return { x: 244, y: CONFIG.GAME_H - 48, w: 28, h: 28 }; }
 function tapSaveButton(sx, sy) { return pointInRect(sx, sy, saveButtonRect()); }
 function drawSaveButton() {
   const r = saveButtonRect();
@@ -3630,7 +3676,7 @@ function drawPauseMenu() {
 }
 
 function tapWeaponSlot(sx, sy) {
-  const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+  const slotSize = 48, gap = 6, startX = 10, y = CONFIG.GAME_H - slotSize - 10;
   for (let i = 0; i < 3; i++) {
     const x = startX + i * (slotSize + gap);
     if (pointInRect(sx, sy, { x, y, w: slotSize, h: slotSize })) {
@@ -3671,7 +3717,9 @@ function drawSlotIcon(kind, cx, cy) {
   ctx.restore();
 }
 function drawWeaponSlots() {
-  const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+  // bottom-left (bug report #3: bottom-right crowded/overlapped the mute
+  // speaker icon against the screen edge)
+  const slotSize = 48, gap = 6, startX = 10, y = CONFIG.GAME_H - slotSize - 10;
   const apCosts = { sword: CONFIG.SWORD_AP_COST, sharpSword: CONFIG.SWORD_AP_COST, heroSword: CONFIG.SWORD_AP_COST,
     boomerang: CONFIG.BOOMERANG_AP_COST, galeBoomerang: CONFIG.BOOMERANG_AP_COST, bow: 1 };
   for (let i = 0; i < 3; i++) {
