@@ -81,6 +81,19 @@ const CONFIG = {
   // chance (0-1) a defeated enemy drops a healing heart, per tier
   HEART_DROP_CHANCE: { LITTLE_HERO: 0.35, ADVENTURER: 0.25, MASTER: 0.18, LEGEND: 0.12 },
 
+  // --- Gear / XP (Phase 3) ---
+  STARTING_ATTACK: 1,        // hero's base attack stat
+  XP_PER_LEVEL: 20,          // XP needed per level (flat; simple & predictable for kids)
+  XP_SLIME: 5, XP_BAT: 8, XP_MINIBOSS: 50,
+  WEAPON_REACH_TILES: { sword: 1, sharpSword: 1.1, heroSword: 1.5 }, // sword reach in tiles
+
+  // --- Shop item prices (gold) ---
+  SHOP: {
+    sharpSword: 30, boomerang: 50, heroSword: 150, bow: 120,
+    fireArrow: 40, iceArrow: 40, galeBoomerang: 100, heartContainer: 100,
+    bigBombBag: 80, superMushroom: 40, fireFlower: 60, dkBarrel: 30, inkBlaster: 90,
+  },
+
   // --- Fixed timestep ---
   STEP_MS: 1000 / 60,     // physics update runs at 60hz regardless of screen fps
 
@@ -546,9 +559,15 @@ const houseNPCs = [
 ];
 houseNPCs.forEach(n => n.home = 'house');
 
+const shopkeeper = makeNPC(4 * CONFIG.TILE, 3 * CONFIG.TILE, '#c8a030',
+  ["Welcome! Take a look around."], { home: 'shop' });
+shopkeeper.isShopkeeper = true;
+const shopNPCs = [shopkeeper];
+
 function allNPCs() {
   const list = villagerNPCs.concat(cameoNPCs);
   if (world.mode === 'interior' && world.interior === houseInterior) return houseNPCs;
+  if (world.mode === 'interior' && world.interior === shopInterior) return shopNPCs;
   return world.mode === 'overworld' ? list : [];
 }
 
@@ -557,6 +576,7 @@ function allNPCs() {
 // =========================================================================
 const dialogue = { active: false, npc: null, lineIndex: 0 };
 function openDialogue(npc) {
+  if (npc.isShopkeeper) { openShop(); return; }
   dialogue.active = true; dialogue.npc = npc; dialogue.lineIndex = 0;
 }
 function advanceDialogue() {
@@ -587,7 +607,47 @@ const player = {
   swordSwingT: 0, // >0 while swing animation plays
   downed: false, // true when hearts hit 0 (revive flow)
   zeroApAttackTimer: 0, // counts up after attacking at 0 AP, auto-opens math popup at 1s
+  // --- Phase 3: gear / XP ---
+  attack: CONFIG.STARTING_ATTACK,
+  level: 1, xp: 0, xpToNext: CONFIG.XP_PER_LEVEL,
+  heartContainersBought: 0,
+  gold: 0, // mirrors hud.gold (kept in sync); canonical source is hud.gold
+  owned: { // gear the hero has purchased/earned
+    sharpSword: false, heroSword: false, boomerang: false, galeBoomerang: false,
+    bow: false, fireArrow: false, iceArrow: false, bigBombBag: false,
+    superMushroom: 0, fireFlower: 0, dkBarrel: 0, inkBlaster: 0,
+  },
+  slots: ['sword', null, null], // weapon slot assignment
+  activeSlot: 0,
+  arrowType: 'normal',
+  levelUpChoicePending: false,
+  bombBag: false,
 };
+
+// weapon damage table (min-1 floor applied at hit time)
+const WEAPON_DAMAGE = { sword: 0, sharpSword: 0, heroSword: 1, boomerang: 0, galeBoomerang: 1, bow: 1 };
+function equippedSwordKind() {
+  if (player.owned.heroSword) return 'heroSword';
+  if (player.owned.sharpSword) return 'sharpSword';
+  return 'sword';
+}
+function swordReachPx() {
+  return CONFIG.WEAPON_REACH_TILES[equippedSwordKind()] * CONFIG.TILE + 12;
+}
+function computeDamage(weaponKind, enemyDefense) {
+  const base = WEAPON_DAMAGE[weaponKind] || 0;
+  return Math.max(1, base + player.attack - (enemyDefense || 0));
+}
+function gainXP(amount) {
+  player.xp += amount;
+  while (player.xp >= player.xpToNext) {
+    player.xp -= player.xpToNext;
+    player.level++;
+    player.xpToNext = CONFIG.XP_PER_LEVEL + (player.level - 1) * 4;
+    player.levelUpChoicePending = true;
+    SFX.correct();
+  }
+}
 
 const floatingTexts = []; // {x,y,text,life,color}
 const confettiParticles = []; // {x,y,vx,vy,life,color}
@@ -642,12 +702,12 @@ function spawnHeartPickup(x, y) {
 
 // --- Enemies ---
 function makeSlime(x, y) {
-  return { type: 'slime', x, y, w: 14, h: 12, hp: 2, maxHp: 2, alive: true,
-    hopTimer: Math.random() * 1, hopDx: 0, hopDy: 0, hitFlash: 0, range: 120 };
+  return { type: 'slime', x, y, w: 14, h: 12, hp: 3, maxHp: 3, defense: 0, alive: true,
+    hopTimer: Math.random() * 1, hopDx: 0, hopDy: 0, hitFlash: 0, range: 120, xp: CONFIG.XP_SLIME };
 }
 function makeBat(x, y) {
-  return { type: 'bat', x, y, w: 12, h: 10, hp: 1, maxHp: 1, alive: true,
-    t: Math.random() * 10, baseX: x, baseY: y, hitFlash: 0, range: 150 };
+  return { type: 'bat', x, y, w: 12, h: 10, hp: 2, maxHp: 2, defense: 0, alive: true,
+    t: Math.random() * 10, baseX: x, baseY: y, hitFlash: 0, range: 150, xp: CONFIG.XP_BAT };
 }
 function spawnEnemies() {
   const rand = mulberry32(777);
@@ -664,8 +724,10 @@ const enemies = spawnEnemies();
 function tierAPReward() { return CONFIG.AP_PER_CORRECT[CONFIG.DIFFICULTY]; }
 function tierHeartChance() { return CONFIG.HEART_DROP_CHANCE[CONFIG.DIFFICULTY]; }
 
-function damageEnemy(e, dmg) {
+function damageEnemy(e, weaponKind) {
+  const dmg = computeDamage(weaponKind, e.defense);
   e.hp -= dmg; e.hitFlash = 0.1;
+  spawnFloatingText(e.x, e.y - 10, '-' + dmg, '#ffffff');
   if (e.hp <= 0 && e.alive) {
     e.alive = false;
     SFX.defeat();
@@ -673,6 +735,7 @@ function damageEnemy(e, dmg) {
     const goldAmt = 1 + Math.floor(Math.random() * 3);
     for (let i = 0; i < goldAmt; i++) spawnCoin(e.x + (Math.random() - 0.5) * 10, e.y);
     if (Math.random() < tierHeartChance()) spawnHeartPickup(e.x, e.y);
+    if (e.xp) gainXP(e.xp);
   } else {
     SFX.hit();
   }
@@ -680,13 +743,7 @@ function damageEnemy(e, dmg) {
 
 function trySwingSword() {
   if (player.attackCooldown > 0 || dialogue.active || player.downed) return;
-  // find nearest enemy or pot in sword range
-  let target = null, bestDist = CONFIG.SWORD_RANGE;
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    const d = Math.hypot(e.x - hero.x, e.y - hero.y);
-    if (d < bestDist) { bestDist = d; target = e; }
-  }
+  const range = swordReachPx();
   if (!spendAP(CONFIG.SWORD_AP_COST)) {
     showHint('Not enough AP! Press Q to earn more!', 2);
     player.zeroApAttackTimer = 0.0001; // start the auto-popup countdown
@@ -701,20 +758,129 @@ function trySwingSword() {
   moveWithCollision(hero, dirVec[0] * lunge, dirVec[1] * lunge, currentMap());
 
   // hit anything within range + facing arc (~120deg)
+  const kind = equippedSwordKind();
   const facingAngle = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 }[hero.facing];
   for (const e of enemies) {
     if (!e.alive) continue;
     const d = Math.hypot(e.x - hero.x, e.y - hero.y);
-    if (d > CONFIG.SWORD_RANGE) continue;
+    if (d > range) continue;
     const ang = Math.atan2(e.y - hero.y, e.x - hero.x);
     let diff = Math.abs(ang - facingAngle);
     if (diff > Math.PI) diff = Math.PI * 2 - diff;
-    if (diff < Math.PI * 0.65) damageEnemy(e, 1);
+    if (diff < Math.PI * 0.65) damageEnemy(e, kind);
   }
   for (const p of pots) {
     if (!p.alive) continue;
     const d = Math.hypot(p.x - hero.x, p.y - hero.y);
-    if (d <= CONFIG.SWORD_RANGE) smashPot(p);
+    if (d <= range) smashPot(p);
+  }
+}
+
+// --- Boomerang (Phase 3) ---
+const boomerangs = []; // {x,y,vx,vy,t,returning,hitSet}
+function throwBoomerang() {
+  if (player.attackCooldown > 0 || dialogue.active || player.downed) return;
+  if (!spendAP(CONFIG.BOOMERANG_AP_COST)) {
+    showHint('Not enough AP! Press Q to earn more!', 2);
+    player.zeroApAttackTimer = 0.0001;
+    return;
+  }
+  player.attackCooldown = CONFIG.SWORD_COOLDOWN;
+  const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  const speed = player.owned.galeBoomerang ? 240 : 180;
+  const dist = player.owned.galeBoomerang ? 170 : 120;
+  boomerangs.push({
+    x: hero.x, y: hero.y, vx: dirVec[0] * speed, vy: dirVec[1] * speed,
+    dist, traveled: 0, returning: false, hitOnce: player.owned.galeBoomerang, hasHit: false,
+  });
+}
+function updateBoomerangs(dt, map) {
+  for (let i = boomerangs.length - 1; i >= 0; i--) {
+    const b = boomerangs[i];
+    if (!b.returning) {
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      b.traveled += Math.hypot(b.vx, b.vy) * dt;
+      if (tileSolidAt(map, b.x, b.y) || b.traveled >= b.dist) b.returning = true;
+    } else {
+      const dx = hero.x - b.x, dy = hero.y - b.y;
+      const d = Math.hypot(dx, dy) || 1;
+      b.x += (dx / d) * 260 * dt; b.y += (dy / d) * 260 * dt;
+      if (d < 10) { boomerangs.splice(i, 1); continue; }
+    }
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      if (Math.hypot(e.x - b.x, e.y - b.y) < 10) {
+        if (!b.hasHit || (player.owned.galeBoomerang && !b.returning === false)) {
+          damageEnemy(e, player.owned.galeBoomerang ? 'galeBoomerang' : 'boomerang');
+          b.hasHit = true;
+        }
+      }
+    }
+  }
+}
+
+function faceToward(x, y) {
+  const dx = x - hero.x, dy = y - hero.y;
+  if (Math.abs(dx) > Math.abs(dy)) hero.facing = dx < 0 ? 'left' : 'right';
+  else hero.facing = dy < 0 ? 'up' : 'down';
+}
+function fireActiveWeapon() {
+  const w = player.slots[player.activeSlot];
+  if (w === 'boomerang' || w === 'galeBoomerang') throwBoomerang();
+  else if (w === 'bow') fireArrow();
+  else trySwingSword();
+}
+const bombs = []; // {x,y,t}
+function throwBomb() {
+  if (!player.bombBag || dialogue.active || player.downed) return;
+  const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  bombs.push({ x: hero.x + dirVec[0] * 14, y: hero.y + dirVec[1] * 14, t: 2 });
+}
+function updateBombs(dt) {
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    const b = bombs[i];
+    b.t -= dt;
+    if (b.t <= 0) {
+      spawnConfetti(b.x, b.y, 10);
+      screenShake(4, 0.2);
+      for (const e of enemies) if (e.alive && Math.hypot(e.x - b.x, e.y - b.y) < 28) damageEnemy(e, 'bow');
+      bombs.splice(i, 1);
+    }
+  }
+}
+
+// --- Bow & arrows (Phase 3) ---
+const arrows = []; // {x,y,vx,vy,type}
+function fireArrow() {
+  if (player.attackCooldown > 0 || dialogue.active || player.downed || !player.owned.bow) return;
+  if (!spendAP(1)) {
+    showHint('Not enough AP! Press Q to earn more!', 2);
+    player.zeroApAttackTimer = 0.0001;
+    return;
+  }
+  player.attackCooldown = 0.2;
+  const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  arrows.push({ x: hero.x, y: hero.y, vx: dirVec[0] * 260, vy: dirVec[1] * 260, type: player.arrowType });
+}
+function updateArrows(dt, map) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    a.x += a.vx * dt; a.y += a.vy * dt;
+    if (tileSolidAt(map, a.x, a.y)) { arrows.splice(i, 1); continue; } // clink off walls
+    const npcHit = allNPCs().find(n => Math.hypot(n.x - a.x, n.y - a.y) < 8);
+    if (npcHit) { arrows.splice(i, 1); continue; } // clink off NPCs, never pass through
+    let hit = false;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      if (Math.hypot(e.x - a.x, e.y - a.y) < 9) {
+        damageEnemy(e, 'bow');
+        if (a.type === 'fire' && e.alive) e.burnT = 2;
+        if (a.type === 'ice' && e.alive) e.slowT = 2;
+        hit = true; break;
+      }
+    }
+    if (hit) arrows.splice(i, 1);
+    else if (a.x < 0 || a.y < 0 || a.x > map.w * CONFIG.TILE || a.y > map.h * CONFIG.TILE) arrows.splice(i, 1);
   }
 }
 
@@ -882,6 +1048,146 @@ function updateFloatingAndConfetti(dt) {
   }
 }
 
+// =========================================================================
+// Level-up choice popup (blocking; the one allowed exception)
+// =========================================================================
+function updateLevelUpInput() {
+  const btns = getLevelUpButtons();
+  if (Input.tapped) {
+    for (let i = 0; i < btns.length; i++) {
+      if (pointInRect(Input.tapX, Input.tapY, btns[i])) { applyLevelUpChoice(i); break; }
+    }
+    Input.tapped = false;
+  }
+  if (Input.keys['1']) { Input.keys['1'] = false; applyLevelUpChoice(0); }
+  if (Input.keys['2']) { Input.keys['2'] = false; applyLevelUpChoice(1); }
+}
+function applyLevelUpChoice(i) {
+  if (i === 0) { player.maxHearts++; player.hearts = player.maxHearts; }
+  else { player.attack++; }
+  player.levelUpChoicePending = false;
+  spawnConfetti(hero.x, hero.y, 20);
+}
+function getLevelUpButtons() {
+  const btnW = 220, btnH = 70, gap = 20;
+  const totalW = btnW * 2 + gap;
+  const startX = CONFIG.GAME_W / 2 - totalW / 2, y = 200;
+  return [0, 1].map(i => ({ x: startX + i * (btnW + gap), y, w: btnW, h: btnH }));
+}
+function drawLevelUpPopup() {
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('LEVEL UP! You are now Level ' + player.level, CONFIG.GAME_W / 2, 130);
+  ctx.fillStyle = '#fff'; ctx.font = '14px monospace';
+  ctx.fillText('Choose a reward:', CONFIG.GAME_W / 2, 170);
+  const btns = getLevelUpButtons();
+  const labels = ['+1 Max Heart', '+1 Attack'];
+  for (let i = 0; i < btns.length; i++) {
+    const b = btns[i];
+    ctx.fillStyle = '#3a5a8a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    roundRect(b.x, b.y, b.w, b.h, 10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 16px monospace';
+    ctx.fillText(labels[i], b.x + b.w / 2, b.y + b.h / 2 + 6);
+  }
+}
+
+// =========================================================================
+// Shop (Phase 3) - data-driven items
+// =========================================================================
+const SHOP_ITEMS = [
+  { id: 'sharpSword', name: 'Sharp Sword', price: CONFIG.SHOP.sharpSword, desc: 'A brighter, wider blade.' },
+  { id: 'boomerang', name: 'Boomerang', price: CONFIG.SHOP.boomerang, desc: 'Throw it at foes far away!' },
+  { id: 'heroSword', name: 'Hero Sword', price: CONFIG.SHOP.heroSword, desc: 'A longer golden blade.' },
+  { id: 'bow', name: 'Bow & Arrows', price: CONFIG.SHOP.bow, desc: 'Fire arrows at any distance.' },
+  { id: 'fireArrow', name: 'Fire Arrows', price: CONFIG.SHOP.fireArrow, desc: 'Burning arrow tips.', prereq: 'bow' },
+  { id: 'iceArrow', name: 'Ice Arrows', price: CONFIG.SHOP.iceArrow, desc: 'Slows enemies down.', prereq: 'bow' },
+  { id: 'galeBoomerang', name: 'Gale Boomerang', price: CONFIG.SHOP.galeBoomerang, desc: 'Flies farther, hits twice.', prereq: 'boomerang' },
+  { id: 'heartContainer', name: 'Heart Container', price: CONFIG.SHOP.heartContainer, desc: '+1 max heart, full heal.', maxBuys: 2 },
+  { id: 'superMushroom', name: 'Super Mushroom', price: CONFIG.SHOP.superMushroom, desc: 'Full heal + grow for 10s.', consumable: true },
+  { id: 'fireFlower', name: 'Fire Flower', price: CONFIG.SHOP.fireFlower, desc: '20s fiery sword.', consumable: true },
+  { id: 'dkBarrel', name: 'DK Barrel', price: CONFIG.SHOP.dkBarrel, desc: 'Rolls straight, breaks on hit.', consumable: true },
+  { id: 'inkBlaster', name: 'Ink Blaster', price: CONFIG.SHOP.inkBlaster, desc: '15s ink blobs slow foes.', consumable: true },
+];
+
+const shop = { active: false, scroll: 0 };
+function openShop() { shop.active = true; }
+function closeShop() { shop.active = false; }
+
+function canBuy(item) {
+  if (item.prereq && !player.owned[item.prereq]) return false;
+  if (item.consumable) return true;
+  if (item.id === 'heartContainer') return player.heartContainersBought < 2;
+  return !player.owned[item.id];
+}
+function buyItem(item) {
+  if (hud.gold < item.price) { showHint("That's okay! Come back with more gold.", 1.5); return; }
+  if (!canBuy(item)) return;
+  hud.gold -= item.price;
+  if (item.consumable) {
+    player.owned[item.id] = (player.owned[item.id] || 0) + 1;
+  } else if (item.id === 'heartContainer') {
+    player.heartContainersBought++;
+    player.maxHearts++; player.hearts = player.maxHearts;
+  } else {
+    player.owned[item.id] = true;
+    // auto-assign new weapons to an empty slot
+    if (item.id === 'boomerang' || item.id === 'bow') {
+      const emptySlot = player.slots.findIndex((s, i) => i > 0 && !s);
+      if (emptySlot >= 0) player.slots[emptySlot] = item.id;
+    }
+  }
+  SFX.coin(0);
+  spawnFloatingText(hero.x, hero.y - 20, 'Bought!', '#8effc1');
+}
+
+function updateShopInput() {
+  if (Input.keys['Escape'] || Input.keys['e'] || Input.keys['E']) {
+    Input.keys['Escape'] = Input.keys['e'] = Input.keys['E'] = false;
+    closeShop();
+  }
+  if (Input.tapped) {
+    const wp = { x: Input.tapX, y: Input.tapY };
+    if (pointInRect(wp.x, wp.y, { x: CONFIG.GAME_W - 40, y: 10, w: 30, h: 30 })) { closeShop(); Input.tapped = false; return; }
+    const rows = getShopRows();
+    for (let i = 0; i < rows.length; i++) {
+      if (pointInRect(wp.x, wp.y, rows[i].rect)) { buyItem(rows[i].item); break; }
+    }
+    Input.tapped = false;
+  }
+}
+function getShopRows() {
+  const rowH = 30, startY = 60;
+  return SHOP_ITEMS.map((item, i) => ({ item, rect: { x: 40, y: startY + i * rowH, w: CONFIG.GAME_W - 80, h: rowH - 4 } }));
+}
+function drawShop() {
+  ctx.fillStyle = 'rgba(10,10,20,0.92)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('SHOP - Gold: ' + hud.gold, CONFIG.GAME_W / 2, 34);
+  ctx.fillStyle = '#fff'; ctx.font = '11px monospace';
+  ctx.fillText('Tap an item to buy - E/ESC to close', CONFIG.GAME_W / 2, 50);
+
+  const rows = getShopRows();
+  ctx.textAlign = 'left';
+  for (const row of rows) {
+    const { item, rect } = row;
+    const owned = !canBuy(item) && !item.consumable;
+    ctx.fillStyle = owned ? '#2a3a2a' : '#25314a';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.strokeStyle = '#4a5a7a'; ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px monospace';
+    ctx.fillText(item.name, rect.x + 8, rect.y + 18);
+    ctx.fillStyle = '#aaa'; ctx.font = '10px monospace';
+    ctx.fillText(item.desc, rect.x + 140, rect.y + 18);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = owned ? '#8effc1' : '#ffd84a';
+    ctx.fillText(owned ? 'SOLD' : (item.price + 'g'), rect.x + rect.w - 8, rect.y + 18);
+    ctx.textAlign = 'left';
+  }
+  // close X
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 16px monospace';
+  ctx.fillText('X', CONFIG.GAME_W - 25, 30);
+}
+
 function updateMathPopupInput() {
   const q = mathPopup.question;
   if (Input.keys['1']) { Input.keys['1'] = false; answerMathPopup(0); }
@@ -967,6 +1273,18 @@ function worldPointFromScreen(sx, sy) {
 function updatePlaying(dt) {
   if (hud.hintTimer > 0) { hud.hintTimer -= dt; if (hud.hintTimer < 0) hud.hintTimer = 0; }
 
+  // level-up choice popup (blocking, per bug registry exception)
+  if (player.levelUpChoicePending) {
+    updateLevelUpInput();
+    return;
+  }
+
+  // shop popup pauses the world
+  if (shop.active) {
+    updateShopInput();
+    return;
+  }
+
   // dialogue pauses the world
   if (dialogue.active) {
     if (Input.tapped) { advanceDialogue(); Input.tapped = false; }
@@ -1030,6 +1348,11 @@ function updatePlaying(dt) {
     moving = true;
   }
 
+  // --- tap on weapon slot HUD (screen space, checked before world taps) ---
+  if (Input.tapped && tapWeaponSlot(Input.tapX, Input.tapY)) {
+    Input.tapped = false;
+  }
+
   // --- tap-to-move / tap-to-attack / tap-to-interact ---
   if (Input.tapped) {
     const wp = worldPointFromScreen(Input.tapX, Input.tapY);
@@ -1039,12 +1362,20 @@ function updatePlaying(dt) {
     const tappedPot = pots.find(p => p.alive && Math.hypot(p.x - wp.x, p.y - wp.y) < 14);
     if (tappedEnemy) {
       hero.pendingTalkTarget = null;
-      const d0 = Math.hypot(tappedEnemy.x - hero.x, tappedEnemy.y - hero.y);
-      if (d0 > 60) {
-        showHint('Too far for your sword!', 1.5);
+      const slotWeapon = player.slots[player.activeSlot];
+      const isRanged = slotWeapon === 'boomerang' || slotWeapon === 'galeBoomerang' || slotWeapon === 'bow';
+      if (isRanged) {
+        faceToward(tappedEnemy.x, tappedEnemy.y);
+        fireActiveWeapon();
         hero.pendingAttackTarget = null;
       } else {
-        hero.pendingAttackTarget = tappedEnemy;
+        const d0 = Math.hypot(tappedEnemy.x - hero.x, tappedEnemy.y - hero.y);
+        if (d0 > 60) {
+          showHint('Too far for your sword!', 1.5);
+          hero.pendingAttackTarget = null;
+        } else {
+          hero.pendingAttackTarget = tappedEnemy;
+        }
       }
       hero.walkTargetX = null; hero.walkTargetY = null;
     } else if (tappedPot) {
@@ -1085,10 +1416,17 @@ function updatePlaying(dt) {
     }
   }
 
-  // --- keyboard attack: Space / J ---
+  // --- keyboard attack: Space / J fires whatever is in the active slot ---
   if (Input.keys[' '] || Input.keys['j'] || Input.keys['J']) {
     Input.keys[' '] = Input.keys['j'] = Input.keys['J'] = false;
-    trySwingSword();
+    fireActiveWeapon();
+  }
+  if (Input.keys['n'] || Input.keys['N']) { Input.keys['n'] = Input.keys['N'] = false; fireArrow(); }
+  if (Input.keys['b'] || Input.keys['B']) { Input.keys['b'] = Input.keys['B'] = false; throwBomb(); }
+  // weapon slot select: 1/2/3 (only reacts if that slot is unlocked)
+  for (let s = 0; s < 3; s++) {
+    const key = String(s + 1);
+    if (Input.keys[key] && player.slots[s]) { Input.keys[key] = false; player.activeSlot = s; }
   }
   if (Input.keys['e'] || Input.keys['E']) {
     // E on a pot in range smashes it too
@@ -1186,6 +1524,9 @@ function updatePlaying(dt) {
   }
 
   if (world.mode === 'overworld') updateEnemies(dt, map);
+  updateBoomerangs(dt, map);
+  updateArrows(dt, map);
+  updateBombs(dt);
   updateCoinsAndPickups(dt);
   updateFloatingAndConfetti(dt);
 
@@ -1369,6 +1710,15 @@ function drawPlaying() {
     for (const c of coins) drawCoin(c.x, c.y);
     for (const h of heartPickups) drawHeartPickup(h.x, h.y, h.t);
   }
+  for (const b of boomerangs) { ctx.fillStyle = '#c9915a'; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
+  for (const a of arrows) {
+    ctx.fillStyle = a.type === 'fire' ? '#ff7030' : a.type === 'ice' ? '#70d0ff' : '#d8d8d8';
+    ctx.fillRect(a.x - 4, a.y - 1, 8, 2);
+  }
+  for (const b of bombs) {
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff5030'; ctx.fillRect(b.x - 1, b.y - 8, 2, 4);
+  }
 
   // confetti + floating text (world space)
   for (const c of confettiParticles) {
@@ -1395,8 +1745,18 @@ function drawPlaying() {
   // HUD (screen space)
   drawHUD();
 
+  // weapon slots + XP bar (always visible during play)
+  drawWeaponSlots();
+  drawXPBar();
+
   // dialogue box
   if (dialogue.active) drawDialogueBox();
+
+  // shop
+  if (shop.active) drawShop();
+
+  // level-up choice (blocking, allowed exception)
+  if (player.levelUpChoicePending) drawLevelUpPopup();
 
   // math popup (blocking box; correct-answer celebration itself never blocks)
   if (mathPopup.active) drawMathPopup();
@@ -1566,6 +1926,52 @@ function drawHUD() {
 
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
   ctx.fillText('Gold: ' + hud.gold, 10, 52);
+}
+
+function drawXPBar() {
+  const x = 10, y = 62, w = 200, h = 6;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x - 4, y - 4, w + 8, h + 20);
+  ctx.fillStyle = '#1a2a1a'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#8effc1'; ctx.fillRect(x, y, w * (player.xp / player.xpToNext), h);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
+  ctx.fillText('Lv ' + player.level, x, y + 18);
+}
+
+function tapWeaponSlot(sx, sy) {
+  const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+  for (let i = 0; i < 3; i++) {
+    const x = startX + i * (slotSize + gap);
+    if (pointInRect(sx, sy, { x, y, w: slotSize, h: slotSize })) {
+      if (player.slots[i]) player.activeSlot = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+function drawWeaponSlots() {
+  const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+  const icons = { sword: '⚔', sharpSword: '⚔', heroSword: '⚔', boomerang: '⟳', galeBoomerang: '⟳', bow: '➷' };
+  const apCosts = { sword: CONFIG.SWORD_AP_COST, sharpSword: CONFIG.SWORD_AP_COST, heroSword: CONFIG.SWORD_AP_COST,
+    boomerang: CONFIG.BOOMERANG_AP_COST, galeBoomerang: CONFIG.BOOMERANG_AP_COST, bow: 1 };
+  for (let i = 0; i < 3; i++) {
+    const x = startX + i * (slotSize + gap);
+    const w = player.slots[i];
+    ctx.fillStyle = i === player.activeSlot ? '#3a5a8a' : '#1a2436';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = i === player.activeSlot ? 3 : 1;
+    ctx.fillRect(x, y, slotSize, slotSize); ctx.strokeRect(x, y, slotSize, slotSize);
+    if (w) {
+      ctx.fillStyle = '#ffe066'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center';
+      ctx.fillText(icons[w] || '?', x + slotSize / 2, y + slotSize / 2 + 8);
+      ctx.fillStyle = '#8effc1'; ctx.font = '9px monospace';
+      ctx.fillText(apCosts[w] + ' AP', x + slotSize / 2, y + slotSize - 4);
+    } else {
+      ctx.fillStyle = '#555'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('🔒', x + slotSize / 2, y + slotSize / 2 + 6);
+    }
+    ctx.fillStyle = '#ccc'; ctx.font = '9px monospace';
+    ctx.fillText(String(i + 1), x + 6, y + 10);
+  }
 }
 
 function drawDialogueBox() {
