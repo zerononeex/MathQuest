@@ -300,8 +300,11 @@ const DIFFICULTY_LABELS = {
 // =========================================================================
 // Tile types
 // =========================================================================
-const T = { GRASS: 0, DIRT: 1, WATER: 2, TREE: 3, FLOOR: 4, WALL: 5, DOOR: 6, RUG: 7 };
-const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL]);
+const T = {
+  GRASS: 0, DIRT: 1, WATER: 2, TREE: 3, FLOOR: 4, WALL: 5, DOOR: 6, RUG: 7,
+  CHEST: 8, SWITCH: 9, TORCH: 10, LOCKDOOR: 11, BOSSDOOR: 12, STAIRS: 13, SIGNPOST: 14,
+};
+const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL, T.LOCKDOOR, T.BOSSDOOR, T.SIGNPOST]);
 
 function makeGrid(w, h, fill) {
   const g = new Array(h);
@@ -411,6 +414,36 @@ function drawTile(octx, t, px, py, rand) {
       octx.fillStyle = '#d94f4f';
       octx.fillRect(px + 2, py + 2, TS - 4, TS - 4);
       break;
+    case T.CHEST:
+      octx.fillStyle = '#c9a876'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#a87830'; octx.fillRect(px + 2, py + 5, TS - 4, TS - 8);
+      octx.fillStyle = '#ffd84a'; octx.fillRect(px + 6, py + 8, 4, 3);
+      break;
+    case T.SWITCH:
+      octx.fillStyle = '#c9a876'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#6a6a8a'; octx.beginPath(); octx.arc(px + TS / 2, py + TS / 2, 5, 0, Math.PI * 2); octx.fill();
+      break;
+    case T.TORCH:
+      octx.fillStyle = '#3a3a3a'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#7a5a3a'; octx.fillRect(px + 6, py + 8, 4, 8);
+      break;
+    case T.LOCKDOOR:
+      octx.fillStyle = '#5a4a2a'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#ffd84a'; octx.fillRect(px + 6, py + 6, 4, 4);
+      break;
+    case T.BOSSDOOR:
+      octx.fillStyle = '#3a1a1a'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#8a2a2a'; octx.fillRect(px + 2, py + 2, TS - 4, TS - 4);
+      break;
+    case T.STAIRS:
+      octx.fillStyle = '#8a8a9a'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#5a5a6a'; octx.fillRect(px + 2, py + 2, TS - 4, 4);
+      break;
+    case T.SIGNPOST:
+      octx.fillStyle = '#3f7a33'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#8a6a3a'; octx.fillRect(px + 7, py + 6, 2, 10);
+      octx.fillStyle = '#c9a876'; octx.fillRect(px + 2, py + 3, 12, 6);
+      break;
     default:
       octx.fillStyle = '#000';
       octx.fillRect(px, py, TS, TS);
@@ -474,7 +507,393 @@ function carveBuilding(b) {
   b.spawn = { x: (b.doorTileX + 0.5) * CONFIG.TILE, y: (b.doorTileY + 1.5) * CONFIG.TILE };
 }
 buildings.forEach(carveBuilding);
-overworldCanvas = prerenderMap(overworld); // re-render with buildings carved in
+
+// =========================================================================
+// DUNGEONS (Phase 4)
+// Four dungeons, each a short linear chain of rooms:
+//   0 entrance (pots hide a small key) -[locked door, needs small key]->
+//   1 puzzle room (dungeon-specific mechanic opens the way) ->
+//   2 miniboss room (boss-sealed exit until miniboss dies; drop = Boss
+//     Key + Giant Heart Piece) ->
+//   3 treasure room (chest needs the Boss Key; gives an Elemental
+//     Medallion + permanent ability)
+// Bug registry #1/#4: every locked/sealed/boss-key door shows a hint
+// and never freezes movement. See handleDungeonDoors().
+// =========================================================================
+function makeRoom(w, h, theme) {
+  const grid = makeGrid(w, h, T.FLOOR);
+  for (let x = 0; x < w; x++) { grid[0][x] = T.WALL; grid[h - 1][x] = T.WALL; }
+  for (let y = 0; y < h; y++) { grid[y][0] = T.WALL; grid[y][w - 1] = T.WALL; }
+  return { w, h, grid, canvas: null, theme };
+}
+function carveDoorGap(room, edge, tileType) {
+  const midY = Math.floor(room.h / 2);
+  if (edge === 'east') { room.grid[midY][room.w - 1] = tileType; room.grid[midY - 1][room.w - 1] = T.FLOOR; }
+  if (edge === 'west') { room.grid[midY][0] = tileType; room.grid[midY - 1][0] = T.FLOOR; }
+}
+
+const DUNGEON_DEFS = [
+  { id: 'forest', name: 'Forest Dungeon', color: '#2c5a22', enemyType: 'wolf', puzzle: 'pushblock', overworldOff: [-20, -10] },
+  { id: 'fire', name: 'Fire Dungeon', color: '#7a2a1a', enemyType: 'fireImp', puzzle: 'torches', overworldOff: [20, -10] },
+  { id: 'water', name: 'Water Dungeon', color: '#1a3a6a', enemyType: 'octorok', puzzle: 'switches', overworldOff: [-20, 12] },
+  { id: 'shadow', name: 'Shadow Dungeon', color: '#2a1a3a', enemyType: 'wraith', puzzle: 'riddle', overworldOff: [20, 12] },
+];
+
+function makeDungeonEnemy(kind, x, y) {
+  const table = {
+    wolf: { w: 14, h: 12, hp: 3, xp: 7, range: 130, speed: 55 },
+    fireImp: { w: 13, h: 12, hp: 3, xp: 7, range: 120, speed: 45 },
+    octorok: { w: 14, h: 13, hp: 3, xp: 7, range: 100, speed: 0 },
+    wraith: { w: 13, h: 13, hp: 3, xp: 7, range: 140, speed: 50 },
+  };
+  const t = table[kind];
+  return { type: kind, x, y, w: t.w, h: t.h, hp: t.hp, maxHp: t.hp, defense: 0, alive: true,
+    hitFlash: 0, range: t.range, speed: t.speed, xp: t.xp, hopTimer: Math.random(), hopDx: 0, hopDy: 0, t: Math.random() * 10 };
+}
+
+function buildDungeon(def) {
+  const RW = 16, RH = 10;
+  const entrance = makeRoom(RW, RH, def.color);
+  const puzzleRoom = makeRoom(RW, RH, def.color);
+  const bossRoom = makeRoom(RW, RH, def.color);
+  const treasureRoom = makeRoom(RW, RH, def.color);
+
+  carveDoorGap(entrance, 'west', T.FLOOR);
+  carveDoorGap(entrance, 'east', T.LOCKDOOR);
+  carveDoorGap(puzzleRoom, 'west', T.FLOOR);
+  carveDoorGap(puzzleRoom, 'east', T.WALL); // opens (becomes FLOOR) when puzzle solved
+  carveDoorGap(bossRoom, 'west', T.FLOOR);
+  carveDoorGap(bossRoom, 'east', T.BOSSDOOR);
+  carveDoorGap(treasureRoom, 'west', T.FLOOR);
+
+  // small key hidden in a pot in the entrance room
+  const keyPot = { x: 3 * CONFIG.TILE, y: 3 * CONFIG.TILE, alive: true, w: 14, h: 14, holdsSmallKey: true };
+  const entrancePots = [
+    keyPot,
+    { x: 3 * CONFIG.TILE, y: (RH - 3) * CONFIG.TILE, alive: true, w: 14, h: 14 },
+    { x: (RW - 4) * CONFIG.TILE, y: 3 * CONFIG.TILE, alive: true, w: 14, h: 14 },
+  ];
+  const entranceEnemies = [
+    makeDungeonEnemy(def.enemyType, (RW / 2) * CONFIG.TILE, (RH / 2) * CONFIG.TILE),
+  ];
+
+  // puzzle room contents
+  let puzzle;
+  if (def.puzzle === 'pushblock') {
+    puzzle = { type: 'pushblock', solved: false,
+      block: { x: 8 * CONFIG.TILE, y: 5 * CONFIG.TILE },
+      switchX: 12, switchY: 5 };
+    puzzleRoom.grid[5][12] = T.SWITCH;
+  } else if (def.puzzle === 'torches') {
+    puzzle = { type: 'torches', solved: false, lit: [], order: [0, 1, 2],
+      torches: [{ x: 5, y: 3 }, { x: 8, y: 7 }, { x: 12, y: 3 }] };
+    for (const t of puzzle.torches) puzzleRoom.grid[t.y][t.x] = T.TORCH;
+  } else if (def.puzzle === 'switches') {
+    puzzle = { type: 'switches', solved: false, stepped: [], order: [0, 1, 2],
+      switches: [{ x: 4, y: 5 }, { x: 8, y: 3 }, { x: 12, y: 7 }] };
+    for (const s of puzzle.switches) puzzleRoom.grid[s.y][s.x] = T.SWITCH;
+  } else { // riddle: defeat the two "tribute" enemies among a small group
+    puzzle = { type: 'riddle', solved: false };
+  }
+  const puzzleEnemies = def.puzzle === 'riddle'
+    ? [
+        Object.assign(makeDungeonEnemy(def.enemyType, 5 * CONFIG.TILE, 5 * CONFIG.TILE), { tribute: true }),
+        Object.assign(makeDungeonEnemy(def.enemyType, 11 * CONFIG.TILE, 5 * CONFIG.TILE), { tribute: true }),
+        makeDungeonEnemy(def.enemyType, 8 * CONFIG.TILE, 3 * CONFIG.TILE),
+      ]
+    : [makeDungeonEnemy(def.enemyType, 6 * CONFIG.TILE, 7 * CONFIG.TILE)];
+
+  // miniboss: powered-up enemy with more HP and an extra dash attack
+  const miniboss = Object.assign(makeDungeonEnemy(def.enemyType, (RW / 2) * CONFIG.TILE, (RH / 2) * CONFIG.TILE), {
+    hp: 12, maxHp: 12, xp: CONFIG.XP_MINIBOSS, isMiniboss: true, dashTimer: 2, w: 22, h: 20,
+  });
+
+  // treasure chest tile
+  treasureRoom.grid[Math.floor(RH / 2)][Math.floor(RW / 2)] = T.CHEST;
+
+  const dungeon = {
+    def, roomIndex: 0,
+    rooms: [entrance, puzzleRoom, bossRoom, treasureRoom],
+    pots: [entrancePots, [], [], []],
+    coins: [], // per-dungeon dropped coins reuse global coins array instead
+    enemies: [entranceEnemies, puzzleEnemies, [miniboss], []],
+    puzzle,
+    hasSmallKey: false,
+    hasBossKey: false,
+    bossDefeated: false,
+    heartPieceGiven: false,
+    chestOpened: false,
+    entranceZone: null,
+    overworldSpawn: null,
+    doorHintShown: { locked: false, boss: false, chest: false },
+  };
+  entrance.canvas = prerenderMap(entrance);
+  puzzleRoom.canvas = prerenderMap(puzzleRoom);
+  bossRoom.canvas = prerenderMap(bossRoom);
+  treasureRoom.canvas = prerenderMap(treasureRoom);
+  return dungeon;
+}
+
+const dungeons = DUNGEON_DEFS.map(buildDungeon);
+
+// place 4 signposted entrances around the village, away from buildings
+function placeDungeonEntrances() {
+  const cx = Math.floor(overworld.w / 2), cy = Math.floor(overworld.h / 2);
+  dungeons.forEach(d => {
+    const [ox, oy] = d.def.overworldOff;
+    let tx = Math.max(4, Math.min(overworld.w - 5, cx + ox));
+    let ty = Math.max(4, Math.min(overworld.h - 5, cy + oy));
+    overworld.grid[ty][tx] = T.STAIRS;
+    overworld.grid[ty - 1][tx] = T.SIGNPOST;
+    d.entranceZone = {
+      minX: (tx - 1) * CONFIG.TILE, maxX: (tx + 2) * CONFIG.TILE,
+      minY: ty * CONFIG.TILE, maxY: (ty + 1) * CONFIG.TILE,
+    };
+    d.overworldSpawn = { x: (tx + 0.5) * CONFIG.TILE, y: (ty + 1.5) * CONFIG.TILE };
+  });
+}
+placeDungeonEntrances();
+overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon entrances carved in
+
+function enterDungeon(d) {
+  if (world.mode !== 'overworld') return;
+  fadeTo(() => {
+    world.mode = 'dungeon';
+    world.dungeon = d;
+    d.roomIndex = 0;
+    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(d.rooms[0].h / 2) * CONFIG.TILE;
+  });
+}
+function exitDungeonToOverworld() {
+  fadeTo(() => {
+    world.mode = 'overworld';
+    hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
+    world.dungeon = null;
+  });
+}
+function dungeonGoRoom(d, newIndex, fromEdge) {
+  fadeTo(() => {
+    d.roomIndex = newIndex;
+    const room = d.rooms[newIndex];
+    hero.x = fromEdge === 'west' ? 2 * CONFIG.TILE : (room.w - 3) * CONFIG.TILE;
+    hero.y = Math.floor(room.h / 2) * CONFIG.TILE;
+  });
+}
+
+// solves puzzle-specific interactions; called from updatePlaying each frame
+function updateDungeonPuzzle(d, dt) {
+  const room = d.rooms[d.roomIndex];
+  const p = d.puzzle;
+  if (!p || p.solved) return;
+  if (d.roomIndex !== 1) return; // puzzle only lives in the puzzle room
+
+  if (p.type === 'pushblock') {
+    // push the block if hero walks into it while moving
+    const bx = p.block.x, by = p.block.y;
+    const d2 = Math.hypot(hero.x - bx, hero.y - by);
+    if (d2 < 16 && hero.moving) {
+      const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+      const nbx = bx + dirVec[0] * CONFIG.HERO_SPEED * dt, nby = by + dirVec[1] * CONFIG.HERO_SPEED * dt;
+      if (!tileSolidAt(room, nbx, nby)) { p.block.x = nbx; p.block.y = nby; }
+    }
+    const sx = (p.switchX + 0.5) * CONFIG.TILE, sy = (p.switchY + 0.5) * CONFIG.TILE;
+    if (Math.hypot(p.block.x - sx, p.block.y - sy) < 10) solvePuzzle(d, room);
+  } else if (p.type === 'torches') {
+    for (let i = 0; i < p.torches.length; i++) {
+      const t = p.torches[i];
+      const wx = (t.x + 0.5) * CONFIG.TILE, wy = (t.y + 0.5) * CONFIG.TILE;
+      if (Math.hypot(hero.x - wx, hero.y - wy) < 16 && (Input.keys['e'] || Input.keys['E'])) {
+        Input.keys['e'] = Input.keys['E'] = false;
+        if (!p.lit.includes(i)) {
+          const expectedNext = p.order[p.lit.length];
+          if (i === expectedNext) { p.lit.push(i); if (p.lit.length === p.order.length) solvePuzzle(d, room); }
+          else { p.lit = []; showHint('The torches went dark... try again!', 1.5); }
+        }
+      }
+    }
+  } else if (p.type === 'switches') {
+    for (let i = 0; i < p.switches.length; i++) {
+      const s = p.switches[i];
+      const wx = (s.x + 0.5) * CONFIG.TILE, wy = (s.y + 0.5) * CONFIG.TILE;
+      if (Math.hypot(hero.x - wx, hero.y - wy) < 9 && !p.justStepped) {
+        if (!p.stepped.includes(i)) {
+          const expectedNext = p.order[p.stepped.length];
+          if (i === expectedNext) { p.stepped.push(i); p.justStepped = true; if (p.stepped.length === p.order.length) solvePuzzle(d, room); }
+          else { p.stepped = []; p.justStepped = true; showHint('The switches reset... try again!', 1.5); }
+        }
+      }
+    }
+    if (p.justStepped && !d.puzzle.switches.some((s, i) => Math.hypot(hero.x - (s.x + 0.5) * CONFIG.TILE, hero.y - (s.y + 0.5) * CONFIG.TILE) < 9)) {
+      p.justStepped = false;
+    }
+  } else if (p.type === 'riddle') {
+    const tributesAlive = d.enemies[1].filter(e => e.tribute && e.alive).length;
+    if (tributesAlive === 0) solvePuzzle(d, room);
+  }
+}
+function solvePuzzle(d, room) {
+  d.puzzle.solved = true;
+  const midY = Math.floor(room.h / 2);
+  room.grid[midY][room.w - 1] = T.FLOOR;
+  room.canvas = prerenderMap(room);
+  showHint('The way opens!', 1.5);
+  SFX.door();
+}
+
+// door interactions: locked / boss-sealed / boss-treasure (bug registry #1 #4)
+function handleDungeonDoors(d, room, dt) {
+  const midY = Math.floor(room.h / 2);
+  // small-key locked door (entrance room, east)
+  if (d.roomIndex === 0 && room.grid[midY][room.w - 1] === T.LOCKDOOR) {
+    const doorX = (room.w - 1) * CONFIG.TILE, doorY = (midY + 0.5) * CONFIG.TILE;
+    if (Math.hypot(hero.x - doorX, hero.y - doorY) < 18) {
+      if (d.hasSmallKey) {
+        room.grid[midY][room.w - 1] = T.FLOOR;
+        room.canvas = prerenderMap(room);
+        SFX.door();
+        showHint('Used a Small Key!', 1.5);
+      } else if (!d.doorHintShown.locked) {
+        showHint('Locked! Find a small key.', 1.8);
+        d.doorHintShown.locked = true;
+      }
+    } else {
+      d.doorHintShown.locked = false;
+    }
+  }
+  // boss-sealed exit (boss room, east) - never freezes, just blocks + hints
+  if (d.roomIndex === 2 && room.grid[midY][room.w - 1] === T.BOSSDOOR) {
+    const doorX = (room.w - 1) * CONFIG.TILE, doorY = (midY + 0.5) * CONFIG.TILE;
+    if (Math.hypot(hero.x - doorX, hero.y - doorY) < 18) {
+      if (d.bossDefeated) {
+        room.grid[midY][room.w - 1] = T.FLOOR;
+        room.canvas = prerenderMap(room);
+        SFX.door();
+      } else if (!d.doorHintShown.boss) {
+        showHint('Defeat the boss first!', 1.8);
+        d.doorHintShown.boss = true;
+      }
+    } else {
+      d.doorHintShown.boss = false;
+    }
+  }
+  // boss-treasure chest
+  if (d.roomIndex === 3 && !d.chestOpened) {
+    const cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
+    if (room.grid[cy][cx] === T.CHEST) {
+      const chestX = (cx + 0.5) * CONFIG.TILE, chestY = (cy + 0.5) * CONFIG.TILE;
+      const nearChest = Math.hypot(hero.x - chestX, hero.y - chestY) < 18 &&
+        (Input.keys['e'] || Input.keys['E'] || hero.pendingAttackTarget === null && chestTapped(chestX, chestY));
+      if (nearChest) {
+        Input.keys['e'] = Input.keys['E'] = false;
+        if (d.hasBossKey) openDungeonChest(d);
+        else if (!d.doorHintShown.chest) { showHint('Needs the Boss Key!', 1.8); d.doorHintShown.chest = true; }
+      }
+    }
+  }
+}
+function chestTapped(cx, cy) {
+  if (!Input.tapped) return false;
+  const wp = worldPointFromScreen(Input.tapX, Input.tapY);
+  if (Math.hypot(wp.x - cx, wp.y - cy) < 18) { Input.tapped = false; return true; }
+  return false;
+}
+
+const ABILITY_BY_DUNGEON = {
+  forest: { id: 'powerBracelet', name: 'Power Bracelet' },
+  fire: { id: 'fireSword', name: 'Fire Sword' },
+  water: { id: 'pegasusBoots', name: 'Pegasus Boots' },
+  shadow: { id: 'bombBag', name: 'Bomb Bag' },
+};
+function openDungeonChest(d) {
+  d.chestOpened = true;
+  const room = d.rooms[3];
+  const cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
+  room.grid[cy][cx] = T.FLOOR;
+  room.canvas = prerenderMap(room);
+  player.medallions[d.def.id] = true;
+  const ability = ABILITY_BY_DUNGEON[d.def.id];
+  if (ability.id === 'bombBag') player.bombBag = true;
+  if (ability.id === 'fireSword') player.owned.fireSwordAbility = true;
+  if (ability.id === 'pegasusBoots') player.owned.pegasusBoots = true;
+  if (ability.id === 'powerBracelet') player.owned.powerBracelet = true;
+  if (d.def.id === 'shadow') player.shadowTunicUnlocked = true; // Phase 6 skin auto-grant
+  spawnConfetti(hero.x, hero.y, 24);
+  SFX.correct();
+  showHint(d.def.name + ' cleared! Got the ' + ability.name + '!', 3);
+}
+
+function defeatMiniboss(d, e) {
+  d.bossDefeated = true;
+  d.hasBossKey = true;
+  spawnFloatingText(e.x, e.y - 20, 'BOSS KEY!', '#ffd84a');
+  spawnHeartPiece(e.x, e.y + 14, d);
+}
+function spawnHeartPiece(x, y, d) {
+  heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null });
+}
+const heartPieces = []; // giant heart piece pickups: {x,y,t}
+function updateDungeonRoom(dt, room) {
+  const d = world.dungeon;
+  handleDungeonDoors(d, room, dt);
+  updateDungeonPuzzle(d, dt);
+
+  // miniboss extra attack: periodic dash toward hero (bug #5: this hook
+  // must keep working even while the math/revive popup is open elsewhere)
+  for (const e of d.enemies[d.roomIndex]) {
+    if (!e.alive || !e.isMiniboss) continue;
+    e.dashTimer -= dt;
+    if (e.dashTimer <= 0) {
+      e.dashTimer = 3;
+      const dx = hero.x - e.x, dy = hero.y - e.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      e.hopDx = (dx / dist) * 140; e.hopDy = (dy / dist) * 140;
+      screenShake(2, 0.15);
+    }
+    e.hopDx *= 0.92; e.hopDy *= 0.92;
+    moveWithCollision(e, e.hopDx * dt, e.hopDy * dt, room);
+    if (!e.alive) continue;
+    if (Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) damageHero(1, e.x, e.y);
+    if (e.hp <= 0 && !d.bossDefeated) defeatMiniboss(d, e);
+  }
+
+  // room-edge transitions (only when the door there is open floor)
+  const midY = Math.floor(room.h / 2);
+  if (hero.x < CONFIG.TILE * 1.2 && room.grid[midY][0] === T.FLOOR) {
+    if (d.roomIndex === 0) exitDungeonToOverworld();
+    else dungeonGoRoom(d, d.roomIndex - 1, 'east');
+  } else if (hero.x > (room.w - 1.2) * CONFIG.TILE && room.grid[midY][room.w - 1] === T.FLOOR) {
+    dungeonGoRoom(d, d.roomIndex + 1, 'west');
+  }
+
+  // small key pickup from pots (handled generically in smashPot; check here after smash)
+  if (d.roomIndex === 0 && !d.hasSmallKey) {
+    const keyPot = d.pots[0].find(p => p.holdsSmallKey);
+    if (keyPot && !keyPot.alive && !keyPot.keyGiven) {
+      keyPot.keyGiven = true;
+      d.hasSmallKey = true;
+      spawnFloatingText(keyPot.x, keyPot.y - 10, 'Small Key!', '#ffd84a');
+      SFX.coin(2);
+    }
+  }
+
+  // heart piece pickups
+  for (let i = heartPieces.length - 1; i >= 0; i--) {
+    const hp = heartPieces[i];
+    hp.t += dt;
+    if (Math.hypot(hero.x - hp.x, hero.y - hp.y) < 14) {
+      collectHeartPiece(hp);
+      heartPieces.splice(i, 1);
+    }
+  }
+}
+
+function collectHeartPiece(hp) {
+  player.maxHearts++;
+  player.hearts = player.maxHearts;
+  spawnFloatingText(hp.x, hp.y - 16, 'HEART PIECE!', '#ff8fa8');
+  SFX.revive();
+}
 
 // =========================================================================
 // Hero
@@ -490,13 +909,17 @@ const dustPuffs = []; // {x,y,life}
 const rippleMarkers = []; // {x,y,life}
 
 function currentMap() {
-  return world.mode === 'interior' ? world.interior : overworld;
+  if (world.mode === 'interior') return world.interior;
+  if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex];
+  return overworld;
 }
 function currentCanvas() {
-  return world.mode === 'interior' ? world.interior.canvas : overworldCanvas;
+  if (world.mode === 'interior') return world.interior.canvas;
+  if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex].canvas;
+  return overworldCanvas;
 }
 
-const world = { mode: 'overworld', interior: null, camX: 0, camY: 0 };
+const world = { mode: 'overworld', interior: null, dungeon: null, returnSpot: null, camX: 0, camY: 0 };
 
 function tileSolidAt(map, px, py) {
   const tx = Math.floor(px / CONFIG.TILE), ty = Math.floor(py / CONFIG.TILE);
@@ -622,6 +1045,9 @@ const player = {
   arrowType: 'normal',
   levelUpChoicePending: false,
   bombBag: false,
+  medallions: { forest: false, fire: false, water: false, shadow: false },
+  shadowTunicUnlocked: false,
+  skin: 'classic',
 };
 
 // weapon damage table (min-1 floor applied at hit time)
@@ -686,7 +1112,7 @@ function spawnPots() {
   }
   return list;
 }
-const pots = spawnPots();
+const overworldPots = spawnPots();
 
 // --- Coins ---
 const coins = []; // {x,y,vy,vx,t,collected}
@@ -719,7 +1145,16 @@ function spawnEnemies() {
   for (const [ox, oy] of batSpots) list.push(makeBat((cx + ox) * CONFIG.TILE, (cy + oy) * CONFIG.TILE));
   return list;
 }
-const enemies = spawnEnemies();
+const overworldEnemies = spawnEnemies();
+
+function currentPots() {
+  if (world.mode === 'dungeon') return world.dungeon.pots[world.dungeon.roomIndex];
+  return world.mode === 'overworld' ? overworldPots : [];
+}
+function currentEnemies() {
+  if (world.mode === 'dungeon') return world.dungeon.enemies[world.dungeon.roomIndex];
+  return world.mode === 'overworld' ? overworldEnemies : [];
+}
 
 function tierAPReward() { return CONFIG.AP_PER_CORRECT[CONFIG.DIFFICULTY]; }
 function tierHeartChance() { return CONFIG.HEART_DROP_CHANCE[CONFIG.DIFFICULTY]; }
@@ -760,7 +1195,7 @@ function trySwingSword() {
   // hit anything within range + facing arc (~120deg)
   const kind = equippedSwordKind();
   const facingAngle = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 }[hero.facing];
-  for (const e of enemies) {
+  for (const e of currentEnemies()) {
     if (!e.alive) continue;
     const d = Math.hypot(e.x - hero.x, e.y - hero.y);
     if (d > range) continue;
@@ -769,7 +1204,7 @@ function trySwingSword() {
     if (diff > Math.PI) diff = Math.PI * 2 - diff;
     if (diff < Math.PI * 0.65) damageEnemy(e, kind);
   }
-  for (const p of pots) {
+  for (const p of currentPots()) {
     if (!p.alive) continue;
     const d = Math.hypot(p.x - hero.x, p.y - hero.y);
     if (d <= range) smashPot(p);
@@ -807,7 +1242,7 @@ function updateBoomerangs(dt, map) {
       b.x += (dx / d) * 260 * dt; b.y += (dy / d) * 260 * dt;
       if (d < 10) { boomerangs.splice(i, 1); continue; }
     }
-    for (const e of enemies) {
+    for (const e of currentEnemies()) {
       if (!e.alive) continue;
       if (Math.hypot(e.x - b.x, e.y - b.y) < 10) {
         if (!b.hasHit || (player.owned.galeBoomerang && !b.returning === false)) {
@@ -843,7 +1278,7 @@ function updateBombs(dt) {
     if (b.t <= 0) {
       spawnConfetti(b.x, b.y, 10);
       screenShake(4, 0.2);
-      for (const e of enemies) if (e.alive && Math.hypot(e.x - b.x, e.y - b.y) < 28) damageEnemy(e, 'bow');
+      for (const e of currentEnemies()) if (e.alive && Math.hypot(e.x - b.x, e.y - b.y) < 28) damageEnemy(e, 'bow');
       bombs.splice(i, 1);
     }
   }
@@ -870,7 +1305,7 @@ function updateArrows(dt, map) {
     const npcHit = allNPCs().find(n => Math.hypot(n.x - a.x, n.y - a.y) < 8);
     if (npcHit) { arrows.splice(i, 1); continue; } // clink off NPCs, never pass through
     let hit = false;
-    for (const e of enemies) {
+    for (const e of currentEnemies()) {
       if (!e.alive) continue;
       if (Math.hypot(e.x - a.x, e.y - a.y) < 9) {
         damageEnemy(e, 'bow');
@@ -967,12 +1402,12 @@ let shakeT = 0, shakeMag = 0;
 function screenShake(mag, dur) { shakeMag = mag; shakeT = dur; }
 
 function updateEnemies(dt, map) {
-  for (const e of enemies) {
-    if (!e.alive) continue;
+  for (const e of currentEnemies()) {
+    if (!e.alive || e.isMiniboss) continue; // minibosses handled by updateDungeonRoom
     if (e.hitFlash > 0) e.hitFlash -= dt;
     const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
 
-    if (e.type === 'slime') {
+    if (e.type === 'slime' || e.type === 'wolf' || e.type === 'fireImp' || e.type === 'wraith') {
       e.hopTimer -= dt;
       if (dist < e.range) {
         if (e.hopTimer <= 0) {
@@ -1357,9 +1792,9 @@ function updatePlaying(dt) {
   if (Input.tapped) {
     const wp = worldPointFromScreen(Input.tapX, Input.tapY);
     const tappedNpc = allNPCs().find(n => Math.hypot(n.x - wp.x, n.y - wp.y) < 14);
-    const tappedEnemy = enemies.find(e => e.alive &&
+    const tappedEnemy = currentEnemies().find(e => e.alive &&
       Math.hypot(e.x - wp.x, e.y - wp.y) < Math.max(CONFIG.ENEMY_TAP_HITBOX_MIN, e.w * CONFIG.ENEMY_TAP_HITBOX_MULT));
-    const tappedPot = pots.find(p => p.alive && Math.hypot(p.x - wp.x, p.y - wp.y) < 14);
+    const tappedPot = currentPots().find(p => p.alive && Math.hypot(p.x - wp.x, p.y - wp.y) < 14);
     if (tappedEnemy) {
       hero.pendingTalkTarget = null;
       const slotWeapon = player.slots[player.activeSlot];
@@ -1430,7 +1865,7 @@ function updatePlaying(dt) {
   }
   if (Input.keys['e'] || Input.keys['E']) {
     // E on a pot in range smashes it too
-    const nearPot = pots.find(p => p.alive && Math.hypot(p.x - hero.x, p.y - hero.y) < CONFIG.SWORD_RANGE);
+    const nearPot = currentPots().find(p => p.alive && Math.hypot(p.x - hero.x, p.y - hero.y) < CONFIG.SWORD_RANGE);
     if (nearPot) { smashPot(nearPot); Input.keys['e'] = Input.keys['E'] = false; }
   }
 
@@ -1496,12 +1931,19 @@ function updatePlaying(dt) {
     }
   }
 
-  // --- building entry (overworld only) ---
+  // --- building / dungeon entry & transitions ---
   if (world.mode === 'overworld') {
     for (const b of buildings) {
       const a = b.activation;
       if (hero.x >= a.minX && hero.x <= a.maxX && hero.y >= a.minY && hero.y <= a.maxY) {
         enterBuilding(b);
+        break;
+      }
+    }
+    for (const d of dungeons) {
+      const z = d.entranceZone;
+      if (hero.x >= z.minX && hero.x <= z.maxX && hero.y >= z.minY && hero.y <= z.maxY) {
+        enterDungeon(d);
         break;
       }
     }
@@ -1511,6 +1953,8 @@ function updatePlaying(dt) {
     if (Math.abs(hero.x - exPx) < CONFIG.TILE && Math.abs(hero.y - exPy) < CONFIG.TILE) {
       exitBuilding();
     }
+  } else if (world.mode === 'dungeon') {
+    updateDungeonRoom(dt, map);
   }
 
   // dust puffs decay
@@ -1523,7 +1967,7 @@ function updatePlaying(dt) {
     if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
   }
 
-  if (world.mode === 'overworld') updateEnemies(dt, map);
+  if (world.mode === 'overworld' || world.mode === 'dungeon') updateEnemies(dt, map);
   updateBoomerangs(dt, map);
   updateArrows(dt, map);
   updateBombs(dt);
@@ -1672,8 +2116,8 @@ function drawPlaying() {
   ctx.drawImage(canvasImg, 0, 0);
 
   if (world.mode === 'overworld') {
-    for (const p of pots) if (p.alive) drawPot(p.x, p.y);
-    for (const e of enemies) if (e.alive) drawEnemy(e);
+    for (const p of currentPots()) if (p.alive) drawPot(p.x, p.y);
+    for (const e of currentEnemies()) if (e.alive) drawEnemy(e);
   }
 
   // dust puffs
@@ -1719,6 +2163,8 @@ function drawPlaying() {
     ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ff5030'; ctx.fillRect(b.x - 1, b.y - 8, 2, 4);
   }
+  if (world.mode === 'dungeon') drawDungeonExtras(world.dungeon);
+  for (const hp of heartPieces) drawHeartPickup(hp.x, hp.y, hp.t);
 
   // confetti + floating text (world space)
   for (const c of confettiParticles) {
@@ -1787,25 +2233,72 @@ function drawPot(x, y) {
   ctx.fillRect(x - 6, y - 8, 12, 3);
 }
 
+const ENEMY_COLORS = { wolf: '#8a6a4a', fireImp: '#e05a2a', octorok: '#3a7a9a', wraith: '#5a3a7a' };
 function drawEnemy(e) {
   ctx.save();
   if (e.hitFlash > 0) ctx.filter = 'brightness(2)';
+  const scale = e.isMiniboss ? 1.8 : 1;
   if (e.type === 'slime') {
     ctx.fillStyle = '#3fc766';
-    ctx.beginPath(); ctx.ellipse(e.x, e.y, 7, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(e.x, e.y, 7 * scale, 6 * scale, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#20211a';
     ctx.fillRect(e.x - 3, e.y - 2, 2, 2); ctx.fillRect(e.x + 1, e.y - 2, 2, 2);
-  } else {
+  } else if (e.type === 'bat') {
     ctx.fillStyle = '#6a4a9a';
     ctx.beginPath(); ctx.ellipse(e.x, e.y, 6, 4, 0, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.moveTo(e.x - 6, e.y); ctx.lineTo(e.x - 11, e.y - 4); ctx.lineTo(e.x - 6, e.y - 2); ctx.fill();
     ctx.beginPath(); ctx.moveTo(e.x + 6, e.y); ctx.lineTo(e.x + 11, e.y - 4); ctx.lineTo(e.x + 6, e.y - 2); ctx.fill();
+  } else {
+    // dungeon enemies: wolf/fireImp/octorok/wraith - distinct silhouette per type
+    const c = ENEMY_COLORS[e.type] || '#aaaaaa';
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.ellipse(e.x, e.y, 7 * scale, 6 * scale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#1a1a1a';
+    if (e.type === 'wolf') { ctx.fillRect(e.x - 8 * scale, e.y - 6 * scale, 3, 3); ctx.fillRect(e.x + 5 * scale, e.y - 6 * scale, 3, 3); }
+    else if (e.type === 'fireImp') { ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.arc(e.x, e.y - 8 * scale, 3, 0, Math.PI * 2); ctx.fill(); }
+    else if (e.type === 'octorok') { ctx.fillStyle = '#1a4a5a'; ctx.fillRect(e.x - 4, e.y + 4, 8, 3); }
+    else if (e.type === 'wraith') { ctx.globalAlpha = 0.75; }
+    if (e.tribute) { ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillText('*', e.x, e.y - 12); }
   }
   ctx.restore();
   // small HP bar for damaged enemies
   if (e.hp < e.maxHp) {
     ctx.fillStyle = '#000'; ctx.fillRect(e.x - 8, e.y - 14, 16, 3);
     ctx.fillStyle = '#e03030'; ctx.fillRect(e.x - 8, e.y - 14, 16 * (e.hp / e.maxHp), 3);
+  }
+}
+
+function drawDungeonExtras(d) {
+  const p = d.puzzle;
+  if (d.roomIndex === 1 && p) {
+    if (p.type === 'pushblock') {
+      ctx.fillStyle = '#8a6a3a';
+      ctx.fillRect(p.block.x - 7, p.block.y - 7, 14, 14);
+      ctx.strokeStyle = '#5a3a1a'; ctx.strokeRect(p.block.x - 7, p.block.y - 7, 14, 14);
+    } else if (p.type === 'torches') {
+      p.torches.forEach((t, i) => {
+        if (p.lit.includes(i)) {
+          const wx = (t.x + 0.5) * CONFIG.TILE, wy = (t.y + 0.5) * CONFIG.TILE - 4;
+          ctx.fillStyle = '#ffae42';
+          ctx.beginPath(); ctx.ellipse(wx, wy, 4, 7, 0, 0, Math.PI * 2); ctx.fill();
+        }
+      });
+    } else if (p.type === 'switches') {
+      p.switches.forEach((s, i) => {
+        if (p.stepped.includes(i)) {
+          const wx = (s.x + 0.5) * CONFIG.TILE, wy = (s.y + 0.5) * CONFIG.TILE;
+          ctx.fillStyle = '#8effc1';
+          ctx.beginPath(); ctx.arc(wx, wy, 5, 0, Math.PI * 2); ctx.fill();
+        }
+      });
+    }
+  }
+  // miniboss HP bar (world space, above the miniboss)
+  for (const e of d.enemies[d.roomIndex]) {
+    if (e.isMiniboss && e.alive) {
+      ctx.fillStyle = '#000'; ctx.fillRect(e.x - 20, e.y - e.h / 2 - 14, 40, 5);
+      ctx.fillStyle = '#e03030'; ctx.fillRect(e.x - 20, e.y - e.h / 2 - 14, 40 * (e.hp / e.maxHp), 5);
+    }
   }
 }
 
