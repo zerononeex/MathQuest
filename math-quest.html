@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Math Quest</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0a0a14; overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100dvh;
+    display: flex; align-items: center; justify-content: center;
+    background: #0a0a14;
+  }
+  #game {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    background: #000;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" width="640" height="360"></canvas>
+</div>
+<script>
+'use strict';
+
+// =========================================================================
+// === PARENT SETTINGS ===
+// This is where every "tuning knob" for the game lives. Change a number
+// here to make the game easier/harder/faster for your kid. Plain-English
+// comments explain what each one does.
+// =========================================================================
+const CONFIG = {
+  // --- Screen / rendering ---
+  GAME_W: 640,           // internal game width in pixels (native canvas resolution)
+  GAME_H: 360,           // internal game height in pixels
+  TILE: 16,               // size of one world tile in pixels
+
+  // --- Difficulty / math tiers ---
+  // Which tier is selected by default on the title screen.
+  DIFFICULTY: 'ADVENTURER', // one of: LITTLE_HERO, ADVENTURER, MASTER, LEGEND
+
+  // --- Hero movement ---
+  HERO_SPEED: 100,        // pixels per second the hero walks
+
+  // --- Fixed timestep ---
+  STEP_MS: 1000 / 60,     // physics update runs at 60hz regardless of screen fps
+};
+
+// =========================================================================
+// Canvas setup: crisp whole-pixel scaling to fill the screen in any orientation
+// =========================================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+canvas.width = CONFIG.GAME_W;
+canvas.height = CONFIG.GAME_H;
+
+function resizeCanvas() {
+  const stage = document.getElementById('stage');
+  const availW = stage.clientWidth;
+  const availH = stage.clientHeight;
+  // whole-pixel integer scale so pixel art stays crisp; fall back to a
+  // fractional scale only if the screen is smaller than the game itself.
+  let scale = Math.min(availW / CONFIG.GAME_W, availH / CONFIG.GAME_H);
+  if (scale >= 1) scale = Math.floor(scale);
+  if (scale <= 0) scale = availW / CONFIG.GAME_W < availH / CONFIG.GAME_H
+    ? availW / CONFIG.GAME_W : availH / CONFIG.GAME_H;
+  canvas.style.width = (CONFIG.GAME_W * scale) + 'px';
+  canvas.style.height = (CONFIG.GAME_H * scale) + 'px';
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 50));
+resizeCanvas();
+
+// prevent iOS Safari rubber-band scroll / pinch zoom
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+
+// =========================================================================
+// WebAudio unlock on first user gesture (required by iPad Safari)
+// =========================================================================
+let audioCtx = null;
+function unlockAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* no audio available */ }
+}
+window.addEventListener('touchstart', unlockAudio, { once: true });
+window.addEventListener('mousedown', unlockAudio, { once: true });
+window.addEventListener('keydown', unlockAudio, { once: true });
+
+// =========================================================================
+// Input handling
+// =========================================================================
+const Input = {
+  keys: {},
+  tapX: null, tapY: null, tapped: false,
+};
+window.addEventListener('keydown', e => { Input.keys[e.key] = true; });
+window.addEventListener('keyup', e => { Input.keys[e.key] = false; });
+
+function canvasToGameCoords(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = CONFIG.GAME_W / rect.width;
+  const scaleY = CONFIG.GAME_H / rect.height;
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
+  };
+}
+
+canvas.addEventListener('touchstart', e => {
+  const t = e.changedTouches[0];
+  const p = canvasToGameCoords(t.clientX, t.clientY);
+  Input.tapX = p.x; Input.tapY = p.y; Input.tapped = true;
+}, { passive: false });
+
+canvas.addEventListener('mousedown', e => {
+  const p = canvasToGameCoords(e.clientX, e.clientY);
+  Input.tapX = p.x; Input.tapY = p.y; Input.tapped = true;
+});
+
+// =========================================================================
+// Game state machine
+// =========================================================================
+const STATE = { TITLE: 'title', PLAYING: 'playing' };
+let gameState = STATE.TITLE;
+
+const DIFFICULTIES = ['LITTLE_HERO', 'ADVENTURER', 'MASTER', 'LEGEND'];
+const DIFFICULTY_LABELS = {
+  LITTLE_HERO: 'Little Hero',
+  ADVENTURER: 'Adventurer',
+  MASTER: 'Master',
+  LEGEND: 'Legend',
+};
+
+// placeholder hero for phase 0 (movable dot)
+const hero = { x: CONFIG.GAME_W / 2, y: CONFIG.GAME_H / 2, w: 16, h: 16, facing: 'down' };
+
+function pickDifficulty(name) {
+  CONFIG.DIFFICULTY = name;
+  gameState = STATE.PLAYING;
+}
+
+function getDifficultyButtons() {
+  // 4 big buttons stacked, tap targets >=48px tall
+  const btnW = 260, btnH = 56, gap = 14;
+  const startY = 170;
+  const cx = CONFIG.GAME_W / 2;
+  return DIFFICULTIES.map((d, i) => ({
+    name: d,
+    x: cx - btnW / 2,
+    y: startY + i * (btnH + gap),
+    w: btnW, h: btnH,
+  }));
+}
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+// =========================================================================
+// Update
+// =========================================================================
+function update(dtMs) {
+  const dt = dtMs / 1000;
+
+  if (gameState === STATE.TITLE) {
+    if (Input.tapped) {
+      const btns = getDifficultyButtons();
+      for (const b of btns) {
+        if (pointInRect(Input.tapX, Input.tapY, b)) {
+          pickDifficulty(b.name);
+          break;
+        }
+      }
+      Input.tapped = false;
+    }
+    if (Input.keys['Enter'] || Input.keys[' ']) {
+      pickDifficulty(CONFIG.DIFFICULTY);
+    }
+    return;
+  }
+
+  if (gameState === STATE.PLAYING) {
+    let dx = 0, dy = 0;
+    if (Input.keys['ArrowLeft'] || Input.keys['a'] || Input.keys['A']) dx -= 1;
+    if (Input.keys['ArrowRight'] || Input.keys['d'] || Input.keys['D']) dx += 1;
+    if (Input.keys['ArrowUp'] || Input.keys['w'] || Input.keys['W']) dy -= 1;
+    if (Input.keys['ArrowDown'] || Input.keys['s'] || Input.keys['S']) dy += 1;
+
+    if (dx !== 0 || dy !== 0) {
+      const len = Math.hypot(dx, dy) || 1;
+      hero.x += (dx / len) * CONFIG.HERO_SPEED * dt;
+      hero.y += (dy / len) * CONFIG.HERO_SPEED * dt;
+      if (dx < 0) hero.facing = 'left';
+      else if (dx > 0) hero.facing = 'right';
+      else if (dy < 0) hero.facing = 'up';
+      else if (dy > 0) hero.facing = 'down';
+    }
+
+    if (Input.tapped) {
+      // phase 0: just walk toward the tap (real tap-to-move comes phase 1)
+      hero.x = Input.tapX; hero.y = Input.tapY;
+      Input.tapped = false;
+    }
+
+    hero.x = Math.max(0, Math.min(CONFIG.GAME_W, hero.x));
+    hero.y = Math.max(0, Math.min(CONFIG.GAME_H, hero.y));
+  }
+}
+
+// =========================================================================
+// Draw
+// =========================================================================
+function drawPixelText(text, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.font = `bold ${size}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, x, y);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+
+  if (gameState === STATE.TITLE) {
+    ctx.fillStyle = '#1a2f4a';
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+
+    drawPixelText('MATH QUEST', CONFIG.GAME_W / 2, 70, 40, '#ffd84a');
+    ctx.strokeStyle = '#7a5210';
+    ctx.lineWidth = 2;
+    ctx.strokeText('MATH QUEST', CONFIG.GAME_W / 2, 70);
+
+    drawPixelText('Answer math questions to earn Action Points for your sword!',
+      CONFIG.GAME_W / 2, 100, 13, '#ffffff');
+
+    const btns = getDifficultyButtons();
+    for (const b of btns) {
+      const selected = b.name === CONFIG.DIFFICULTY;
+      ctx.fillStyle = selected ? '#4caf50' : '#2b3f5c';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = selected ? 3 : 1;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      drawPixelText(DIFFICULTY_LABELS[b.name], b.x + b.w / 2, b.y + b.h / 2 + 6, 18, '#ffffff');
+    }
+
+    drawPixelText('Tap a difficulty or press Enter to start', CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 12, '#cccccc');
+    drawPixelText('Move: Arrow Keys / WASD / Tap    Attack: Space/J    Math: Q', CONFIG.GAME_W / 2, CONFIG.GAME_H - 10, 10, '#999999');
+    return;
+  }
+
+  if (gameState === STATE.PLAYING) {
+    ctx.fillStyle = '#3a6b2e';
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+
+    // placeholder hero
+    ctx.fillStyle = '#e0c080';
+    ctx.fillRect(hero.x - 8, hero.y - 8, 16, 16);
+    ctx.fillStyle = '#804010';
+    ctx.fillRect(hero.x - 8, hero.y - 8, 16, 4);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('Difficulty: ' + DIFFICULTY_LABELS[CONFIG.DIFFICULTY], 8, 16);
+    ctx.fillText('(Phase 0 placeholder world - move with WASD/arrows/tap)', 8, 32);
+  }
+}
+
+// =========================================================================
+// Fixed-timestep main loop
+// =========================================================================
+let lastTime = performance.now();
+let accumulator = 0;
+
+function loop(now) {
+  let frameTime = now - lastTime;
+  lastTime = now;
+  if (frameTime > 250) frameTime = 250; // avoid spiral of death on tab-away
+  accumulator += frameTime;
+
+  while (accumulator >= CONFIG.STEP_MS) {
+    update(CONFIG.STEP_MS);
+    accumulator -= CONFIG.STEP_MS;
+  }
+
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
