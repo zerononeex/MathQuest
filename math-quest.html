@@ -195,6 +195,43 @@ const QUESTION_BANK = {
 };
 
 // =========================================================================
+// NOTES: adding a new question category (Phase 9)
+// The math popup, AP rewards, and everything else only ever calls
+// QUESTION_BANK[CONFIG.ACTIVE_CATEGORY].generateQuestion(tier) - it does
+// not know or care what "math" means. Adding a new category is a single
+// new entry here plus flipping CONFIG.ACTIVE_CATEGORY; nothing else in
+// the game changes. Two ready-to-use prompts for a future session:
+//
+// PROMPT 1 - add an English spelling category:
+//   "In math-quest.html, add QUESTION_BANK.english with the same shape
+//   as QUESTION_BANK.math ({label, generateQuestion(tier)}). Keep a
+//   small per-tier word list (LITTLE_HERO: 3-4 letter sight words,
+//   ADVENTURER: common grade 3-4 words, MASTER: grade 5-6 words,
+//   LEGEND: harder/longer words). generateQuestion(tier) should pick a
+//   random word from that tier's list, show it with one letter blanked
+//   out (questionText like 'c_t'), and return 3 shuffled single-letter
+//   answers (answers/correctIndex) the same way shuffle3() does for
+//   math. Do not touch openMathPopup/answerMathPopup/drawMathPopup -
+//   only add the QUESTION_BANK entry and, optionally, a difficulty
+//   picker if 'english' should be selectable alongside 'math'."
+//
+// PROMPT 2 - add a geometry category:
+//   "In math-quest.html, add QUESTION_BANK.geometry with the same shape
+//   as QUESTION_BANK.math. Per tier: LITTLE_HERO asks to name a shape
+//   from a small code-drawn icon (circle/square/triangle); ADVENTURER
+//   asks for the number of sides of a shown polygon; MASTER asks for
+//   the area of a rectangle/triangle with small whole-number
+//   dimensions; LEGEND asks for the area or perimeter of a compound
+//   shape. generateQuestion(tier) returns questionText plus 3
+//   plausible numeric/word answers via shuffle3()/plausibleWrongs()
+//   exactly like the math category. No other file changes needed."
+//
+// Once added, set CONFIG.ACTIVE_CATEGORY = 'english' (or add a category
+// picker UI) and every popup, AP reward, and revive flow keeps working
+// unchanged.
+// =========================================================================
+
+// =========================================================================
 // Canvas setup: crisp whole-pixel scaling to fill the screen in any orientation
 // =========================================================================
 const canvas = document.getElementById('game');
@@ -1040,6 +1077,7 @@ function enterDungeon(d) {
     d.roomIndex = 0;
     world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
     hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(d.rooms[0].h / 2) * CONFIG.TILE;
+    saveGame(); // auto-save on entering a dungeon
   });
 }
 function exitDungeonToOverworld() {
@@ -1047,6 +1085,7 @@ function exitDungeonToOverworld() {
     world.mode = 'overworld';
     hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
     world.dungeon = null;
+    saveGame(); // auto-save on exiting a dungeon
   });
 }
 function dungeonGoRoom(d, newIndex, fromEdge) {
@@ -1055,6 +1094,7 @@ function dungeonGoRoom(d, newIndex, fromEdge) {
     const room = d.rooms[newIndex];
     hero.x = fromEdge === 'west' ? 2 * CONFIG.TILE : (room.w - 3) * CONFIG.TILE;
     hero.y = Math.floor(room.h / 2) * CONFIG.TILE;
+    saveGame(); // auto-save on entering a new dungeon room
   });
 }
 
@@ -1206,6 +1246,7 @@ function defeatMiniboss(d, e) {
   d.hasBossKey = true;
   spawnFloatingText(e.x, e.y - 20, 'BOSS KEY!', '#ffd84a');
   spawnHeartPiece(e.x, e.y + 14, d);
+  saveGame(); // auto-save on miniboss defeat
 }
 function spawnHeartPiece(x, y, d) {
   heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null });
@@ -1323,6 +1364,7 @@ function enterCastle() {
     world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
     hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[0].map.h / 2) * CONFIG.TILE;
     SFX.door();
+    saveGame(); // auto-save on entering the castle
   });
 }
 
@@ -1458,6 +1500,7 @@ function ganonDefeated(g) {
   victoryStats.questionsAnswered = player.questionsAnswered;
   victoryStats.revivesUsed = player.revivesUsed;
   victoryStats.level = player.level;
+  saveGame(); // auto-save on defeating Ganondorf
   setTimeout(() => { gameState = STATE.VICTORY; }, 1400);
 }
 
@@ -1776,6 +1819,7 @@ function damageEnemy(e, weaponKind) {
     for (let i = 0; i < goldAmt; i++) spawnCoin(e.x + (Math.random() - 0.5) * 10, e.y);
     if (Math.random() < tierHeartChance()) spawnHeartPickup(e.x, e.y);
     if (e.xp) gainXP(e.xp);
+    saveGame(); // auto-save on enemy defeat
   } else {
     SFX.hit();
   }
@@ -2276,15 +2320,14 @@ function getMathButtons() {
 }
 
 function pickDifficulty(name) {
-  CONFIG.DIFFICULTY = name;
-  gameState = STATE.PLAYING;
+  CONFIG.DIFFICULTY = name; // selects the tier; New Game/Continue actually starts play
 }
 
 function getDifficultyButtons() {
   // 4 big buttons stacked, tap targets >=48px tall
-  const btnW = 260, btnH = 56, gap = 14;
-  const startY = 170;
-  const cx = CONFIG.GAME_W / 2;
+  const btnW = 220, btnH = 48, gap = 10;
+  const startY = 130;
+  const cx = CONFIG.GAME_W / 2 - 110;
   return DIFFICULTIES.map((d, i) => ({
     name: d,
     x: cx - btnW / 2,
@@ -2292,6 +2335,17 @@ function getDifficultyButtons() {
     w: btnW, h: btnH,
   }));
 }
+function getTitleActionButtons() {
+  const btnW = 220, btnH = 52, gap = 14;
+  const cx = CONFIG.GAME_W / 2 + 150;
+  const startY = 150;
+  const btns = [{ key: 'new', label: 'New Game', x: cx - btnW / 2, y: startY, w: btnW, h: btnH }];
+  if (hasSaveGame()) {
+    btns.push({ key: 'continue', label: 'Continue', x: cx - btnW / 2, y: startY + btnH + gap, w: btnW, h: btnH });
+  }
+  return btns;
+}
+const titleUI = { confirmNewGame: false };
 
 function pointInRect(px, py, r) {
   return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
@@ -2320,17 +2374,28 @@ function update(dtMs) {
 
   if (gameState === STATE.TITLE) {
     if (Input.tapped) {
-      const btns = getDifficultyButtons();
-      for (const b of btns) {
-        if (pointInRect(Input.tapX, Input.tapY, b)) {
-          pickDifficulty(b.name);
-          break;
+      let handled = false;
+      for (const b of getDifficultyButtons()) {
+        if (pointInRect(Input.tapX, Input.tapY, b)) { pickDifficulty(b.name); handled = true; break; }
+      }
+      if (!handled) {
+        for (const b of getTitleActionButtons()) {
+          if (pointInRect(Input.tapX, Input.tapY, b)) {
+            handled = true;
+            if (b.key === 'continue') { continueSavedGame(); titleUI.confirmNewGame = false; }
+            else if (b.key === 'new') {
+              if (hasSaveGame() && !titleUI.confirmNewGame) { titleUI.confirmNewGame = true; }
+              else { titleUI.confirmNewGame = false; startNewGame(); }
+            }
+            break;
+          }
         }
       }
       Input.tapped = false;
     }
     if (Input.keys['Enter'] || Input.keys[' ']) {
-      pickDifficulty(CONFIG.DIFFICULTY);
+      Input.keys['Enter'] = Input.keys[' '] = false;
+      if (hasSaveGame()) continueSavedGame(); else startNewGame();
     }
     return;
   }
@@ -2401,6 +2466,14 @@ function updatePlaying(dt) {
   // P key or HUD button opens the wardrobe from normal play
   if (Input.keys['p'] || Input.keys['P']) { Input.keys['p'] = Input.keys['P'] = false; openWardrobe(); return; }
   if (Input.tapped && tapWardrobeButton(Input.tapX, Input.tapY)) { Input.tapped = false; openWardrobe(); return; }
+
+  // pause menu (Escape) and the manual Save HUD button
+  if (pauseMenu.active) { updatePauseMenuInput(); return; }
+  if (Input.keys['Escape']) { Input.keys['Escape'] = false; pauseMenu.active = true; return; }
+  if (Input.tapped && tapSaveButton(Input.tapX, Input.tapY)) {
+    Input.tapped = false;
+    if (saveGame()) spawnFloatingText(hero.x, hero.y - 20, 'Saved!', '#8effc1');
+  }
 
   // dialogue pauses the world
   if (dialogue.active) {
@@ -2701,6 +2774,7 @@ function enterBuilding(b) {
     world.currentBuildingRef = b;
     hero.x = b.interior.exit.x * CONFIG.TILE;
     hero.y = (b.interior.exit.y - 1.2) * CONFIG.TILE;
+    saveGame(); // auto-save on entering a building
   });
 }
 function exitBuilding() {
@@ -2708,6 +2782,7 @@ function exitBuilding() {
     world.mode = 'overworld';
     hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
     world.interior = null;
+    saveGame(); // auto-save on exiting a building
   });
 }
 
@@ -2747,7 +2822,19 @@ function draw() {
       drawPixelText(DIFFICULTY_LABELS[b.name], b.x + b.w / 2, b.y + b.h / 2 + 6, 18, '#ffffff');
     }
 
-    drawPixelText('Tap a difficulty or press Enter to start', CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 12, '#cccccc');
+    for (const b of getTitleActionButtons()) {
+      const isConfirm = b.key === 'new' && titleUI.confirmNewGame;
+      ctx.fillStyle = isConfirm ? '#a83f3f' : '#4caf50';
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      drawPixelText(isConfirm ? 'Erase save & start?' : b.label, b.x + b.w / 2, b.y + b.h / 2 + 6, isConfirm ? 13 : 18, '#ffffff');
+    }
+    if (titleUI.confirmNewGame) {
+      drawPixelText('Tap New Game again to confirm - your save will be erased', CONFIG.GAME_W / 2 + 150, 260, 10, '#ffb3b3');
+    }
+
+    drawPixelText('Tap a difficulty, then New Game or Continue', CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 12, '#cccccc');
     drawPixelText('Move: Arrow Keys / WASD / Tap    Attack: Space/J    Math: Q', CONFIG.GAME_W / 2, CONFIG.GAME_H - 10, 10, '#999999');
     return;
   }
@@ -2926,6 +3013,7 @@ function drawPlaying() {
   drawXPBar();
   drawSpeakerIcon();
   drawWardrobeButton();
+  drawSaveButton();
 
   // boss HP bar (top of screen, Phase 5)
   if (world.mode === 'castle' && castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) {
@@ -2940,6 +3028,9 @@ function drawPlaying() {
 
   // wardrobe
   if (wardrobe.active) drawWardrobe();
+
+  // pause menu
+  if (pauseMenu.active) drawPauseMenu();
 
   // level-up choice (blocking, allowed exception)
   if (player.levelUpChoicePending) drawLevelUpPopup();
@@ -3332,6 +3423,55 @@ function cycleArrowType() {
   player.arrowType = avail[(idx + 1) % avail.length];
   showHint('Arrow: ' + player.arrowType, 1.2);
 }
+// =========================================================================
+// Manual Save button + pause menu (Phase 9)
+// =========================================================================
+function saveButtonRect() { return { x: CONFIG.GAME_W - 102, y: CONFIG.GAME_H - 34, w: 28, h: 28 }; }
+function tapSaveButton(sx, sy) { return pointInRect(sx, sy, saveButtonRect()); }
+function drawSaveButton() {
+  const r = saveButtonRect();
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#8effc1'; ctx.fillRect(r.x + 6, r.y + 6, 16, 16);
+  ctx.fillStyle = '#1a2f4a'; ctx.fillRect(r.x + 9, r.y + 6, 10, 6);
+}
+
+const pauseMenu = { active: false };
+function getPauseMenuButtons() {
+  const btnW = 200, btnH = 44, gap = 12, startY = 150;
+  const x = CONFIG.GAME_W / 2 - btnW / 2;
+  return [
+    { key: 'resume', label: 'Resume', x, y: startY, w: btnW, h: btnH },
+    { key: 'save', label: 'Save Game', x, y: startY + (btnH + gap), w: btnW, h: btnH },
+    { key: 'wardrobe', label: 'Wardrobe', x, y: startY + (btnH + gap) * 2, w: btnW, h: btnH },
+  ];
+}
+function updatePauseMenuInput() {
+  if (Input.keys['Escape']) { Input.keys['Escape'] = false; pauseMenu.active = false; return; }
+  if (Input.tapped) {
+    for (const b of getPauseMenuButtons()) {
+      if (pointInRect(Input.tapX, Input.tapY, b)) {
+        if (b.key === 'resume') pauseMenu.active = false;
+        else if (b.key === 'save') { if (saveGame()) spawnFloatingText(hero.x, hero.y - 20, 'Saved!', '#8effc1'); pauseMenu.active = false; }
+        else if (b.key === 'wardrobe') { pauseMenu.active = false; openWardrobe(); }
+        break;
+      }
+    }
+    Input.tapped = false;
+  }
+}
+function drawPauseMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('PAUSED', CONFIG.GAME_W / 2, 110);
+  for (const b of getPauseMenuButtons()) {
+    ctx.fillStyle = '#3a5a8a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    roundRect(b.x, b.y, b.w, b.h, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 16px monospace';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 6);
+  }
+}
+
 function tapWeaponSlot(sx, sy) {
   const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
   for (let i = 0; i < 3; i++) {
@@ -3390,6 +3530,130 @@ function drawDialogueBox() {
 
 // =========================================================================
 // Fixed-timestep main loop
+// =========================================================================
+// SAVE / LOAD (Phase 9)
+// =========================================================================
+const SAVE_KEY = 'mathquest_save_v1';
+
+function buildSaveData() {
+  return {
+    v: 1,
+    savedAt: Date.now(),
+    difficulty: CONFIG.DIFFICULTY,
+    area: world.mode === 'dungeon' ? 'dungeon:' + world.dungeon.def.id
+      : world.mode === 'castle' ? 'castle'
+      : world.mode === 'interior' ? 'overworld' // interiors aren't persisted; drop back outside
+      : 'overworld',
+    heroX: world.mode === 'overworld' ? hero.x : (world.returnSpot ? world.returnSpot.x : hero.x),
+    heroY: world.mode === 'overworld' ? hero.y : (world.returnSpot ? world.returnSpot.y : hero.y),
+    hearts: player.hearts, maxHearts: player.maxHearts,
+    ap: player.ap, maxAp: player.maxAp,
+    gold: hud.gold,
+    attack: player.attack, level: player.level, xp: player.xp, xpToNext: player.xpToNext,
+    owned: player.owned,
+    slots: player.slots,
+    activeSlot: player.activeSlot,
+    arrowType: player.arrowType,
+    bombBag: player.bombBag,
+    heartContainersBought: player.heartContainersBought,
+    medallions: player.medallions,
+    skin: player.skin,
+    unlockedSkins: player.unlockedSkins,
+    questionsAnswered: player.questionsAnswered,
+    revivesUsed: player.revivesUsed,
+    dungeons: dungeons.map(d => ({
+      id: d.def.id, hasSmallKey: d.hasSmallKey, hasBossKey: d.hasBossKey,
+      bossDefeated: d.bossDefeated, chestOpened: d.chestOpened,
+    })),
+    castleDefeated: castle.defeated,
+  };
+}
+
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(buildSaveData()));
+    return true;
+  } catch (e) {
+    return false; // storage unavailable (private mode, quota, etc) - never crash
+  }
+}
+
+function hasSaveGame() {
+  try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
+}
+
+function loadSaveData() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || data.v !== 1) return null; // corrupt/unknown -> fresh start
+    return data;
+  } catch (e) {
+    return null; // corrupt JSON -> fresh start, never crash
+  }
+}
+
+function applySaveData(data) {
+  try {
+    CONFIG.DIFFICULTY = DIFFICULTIES.includes(data.difficulty) ? data.difficulty : CONFIG.DIFFICULTY;
+    player.hearts = clampNum(data.hearts, 1, 20, 3);
+    player.maxHearts = clampNum(data.maxHearts, player.hearts, 20, 3);
+    player.ap = clampNum(data.ap, 0, 999, CONFIG.STARTING_AP);
+    player.maxAp = clampNum(data.maxAp, player.ap, 999, CONFIG.MAX_AP);
+    hud.gold = clampNum(data.gold, 0, 999999, 0);
+    player.attack = clampNum(data.attack, 1, 999, 1);
+    player.level = clampNum(data.level, 1, 999, 1);
+    player.xp = clampNum(data.xp, 0, 999999, 0);
+    player.xpToNext = clampNum(data.xpToNext, 1, 999999, CONFIG.XP_PER_LEVEL);
+    if (data.owned && typeof data.owned === 'object') Object.assign(player.owned, data.owned);
+    if (Array.isArray(data.slots) && data.slots.length === 3) player.slots = data.slots;
+    player.activeSlot = clampNum(data.activeSlot, 0, 2, 0);
+    player.arrowType = ['normal', 'fire', 'ice'].includes(data.arrowType) ? data.arrowType : 'normal';
+    player.bombBag = !!data.bombBag;
+    player.heartContainersBought = clampNum(data.heartContainersBought, 0, 2, 0);
+    if (data.medallions && typeof data.medallions === 'object') Object.assign(player.medallions, data.medallions);
+    if (data.skin && TUNIC_SKINS[data.skin]) player.skin = data.skin;
+    if (data.unlockedSkins && typeof data.unlockedSkins === 'object') Object.assign(player.unlockedSkins, data.unlockedSkins);
+    player.questionsAnswered = clampNum(data.questionsAnswered, 0, 999999, 0);
+    player.revivesUsed = clampNum(data.revivesUsed, 0, 999999, 0);
+    if (Array.isArray(data.dungeons)) {
+      for (const dd of data.dungeons) {
+        const d = dungeons.find(x => x.def.id === dd.id);
+        if (!d) continue;
+        d.hasSmallKey = !!dd.hasSmallKey; d.hasBossKey = !!dd.hasBossKey;
+        d.bossDefeated = !!dd.bossDefeated; d.chestOpened = !!dd.chestOpened;
+        if (d.chestOpened) player.medallions[d.def.id] = true;
+      }
+    }
+    castle.defeated = !!data.castleDefeated;
+    // position: only overworld position/area is restored (bug registry-safe
+    // simplification - dropping the hero at the dungeon/castle entrance
+    // instead of mid-room avoids resurrecting half-solved puzzle state)
+    if (typeof data.heroX === 'number' && typeof data.heroY === 'number' &&
+        data.heroX >= 0 && data.heroY >= 0 && data.heroX < overworld.w * CONFIG.TILE && data.heroY < overworld.h * CONFIG.TILE) {
+      hero.x = data.heroX; hero.y = data.heroY;
+    }
+    return true;
+  } catch (e) {
+    return false; // any malformed field -> keep whatever defaults were already set, never crash
+  }
+}
+function clampNum(v, min, max, fallback) {
+  if (typeof v !== 'number' || !isFinite(v)) return fallback;
+  return Math.max(min, Math.min(max, v));
+}
+
+function continueSavedGame() {
+  const data = loadSaveData();
+  if (!data) { startNewGame(); return; }
+  applySaveData(data);
+  gameState = STATE.PLAYING;
+}
+function startNewGame() {
+  gameState = STATE.PLAYING;
+}
+
 // =========================================================================
 let lastTime = performance.now();
 let accumulator = 0;
