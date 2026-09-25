@@ -55,6 +55,15 @@ const CONFIG = {
 
   // --- Hero movement ---
   HERO_SPEED: 100,        // pixels per second the hero walks
+  DUST_STEP_INTERVAL: 0.28, // seconds between dust puffs while walking
+
+  // --- World size (Phase 1 starter map; grows in Phase 8) ---
+  MAP_W: 64,               // tiles wide (>=60 required)
+  MAP_H: 44,               // tiles tall (>=40 required)
+
+  // --- NPCs ---
+  NPC_WANDER_SPEED: 30,     // px/s for wandering villagers
+  NPC_TALK_RANGE: 22,       // px distance to allow E-to-talk
 
   // --- Fixed timestep ---
   STEP_MS: 1000 / 60,     // physics update runs at 60hz regardless of screen fps
@@ -152,8 +161,296 @@ const DIFFICULTY_LABELS = {
   LEGEND: 'Legend',
 };
 
-// placeholder hero for phase 0 (movable dot)
-const hero = { x: CONFIG.GAME_W / 2, y: CONFIG.GAME_H / 2, w: 16, h: 16, facing: 'down' };
+// =========================================================================
+// Tile types
+// =========================================================================
+const T = { GRASS: 0, DIRT: 1, WATER: 2, TREE: 3, FLOOR: 4, WALL: 5, DOOR: 6, RUG: 7 };
+const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL]);
+
+function makeGrid(w, h, fill) {
+  const g = new Array(h);
+  for (let y = 0; y < h; y++) { g[y] = new Array(w).fill(fill); }
+  return g;
+}
+
+// simple seeded PRNG so world layout is identical every load
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// =========================================================================
+// Overworld map generation
+// =========================================================================
+function buildOverworld() {
+  const w = CONFIG.MAP_W, h = CONFIG.MAP_H;
+  const grid = makeGrid(w, h, T.GRASS);
+  const rand = mulberry32(1337);
+
+  // water border ring
+  for (let x = 0; x < w; x++) { grid[0][x] = T.WATER; grid[1][x] = T.WATER; grid[h - 1][x] = T.WATER; grid[h - 2][x] = T.WATER; }
+  for (let y = 0; y < h; y++) { grid[y][0] = T.WATER; grid[y][1] = T.WATER; grid[y][w - 1] = T.WATER; grid[y][w - 2] = T.WATER; }
+
+  // dirt paths: one horizontal + one vertical crossing near center
+  const midY = Math.floor(h / 2), midX = Math.floor(w / 2);
+  for (let x = 2; x < w - 2; x++) { grid[midY][x] = T.DIRT; grid[midY + 1][x] = T.DIRT; }
+  for (let y = 2; y < h - 2; y++) { grid[y][midX] = T.DIRT; grid[y][midX + 1] = T.DIRT; }
+
+  // scattered trees (solid), avoid paths and border
+  for (let i = 0; i < 220; i++) {
+    const x = 3 + Math.floor(rand() * (w - 6));
+    const y = 3 + Math.floor(rand() * (h - 6));
+    if (grid[y][x] === T.GRASS) grid[y][x] = T.TREE;
+  }
+
+  return { w, h, grid };
+}
+
+const overworld = buildOverworld();
+
+// prerendered offscreen canvas for the overworld (Phase1 scale is small
+// enough for a single canvas; Phase 8 switches to chunked prerendering).
+function prerenderMap(mapData) {
+  const off = document.createElement('canvas');
+  off.width = mapData.w * CONFIG.TILE;
+  off.height = mapData.h * CONFIG.TILE;
+  const octx = off.getContext('2d');
+  const rand = mulberry32(99);
+  for (let y = 0; y < mapData.h; y++) {
+    for (let x = 0; x < mapData.w; x++) {
+      const t = mapData.grid[y][x];
+      const px = x * CONFIG.TILE, py = y * CONFIG.TILE;
+      drawTile(octx, t, px, py, rand);
+    }
+  }
+  return off;
+}
+
+function drawTile(octx, t, px, py, rand) {
+  const TS = CONFIG.TILE;
+  switch (t) {
+    case T.GRASS:
+      octx.fillStyle = (Math.floor(px / TS + py / TS)) % 7 === 0 ? '#4a8f3c' : '#3f7a33';
+      octx.fillRect(px, py, TS, TS);
+      break;
+    case T.DIRT:
+      octx.fillStyle = '#a9814f';
+      octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#96703f';
+      octx.fillRect(px + 2, py + 6, 3, 2);
+      break;
+    case T.WATER:
+      octx.fillStyle = '#2a5fa0';
+      octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#3f79c2';
+      octx.fillRect(px, py + (Math.floor(px / TS) % 2 === 0 ? 3 : 9), TS, 2);
+      break;
+    case T.TREE:
+      octx.fillStyle = '#3f7a33';
+      octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#5a3a1e';
+      octx.fillRect(px + 6, py + 10, 4, 6);
+      octx.fillStyle = '#2c5a22';
+      octx.beginPath();
+      octx.arc(px + 8, py + 7, 8, 0, Math.PI * 2);
+      octx.fill();
+      break;
+    case T.FLOOR:
+      octx.fillStyle = '#c9a876';
+      octx.fillRect(px, py, TS, TS);
+      break;
+    case T.WALL:
+      octx.fillStyle = '#6b4a2a';
+      octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#543a20';
+      octx.fillRect(px, py, TS, 3);
+      break;
+    case T.RUG:
+      octx.fillStyle = '#c9a876';
+      octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#d94f4f';
+      octx.fillRect(px + 2, py + 2, TS - 4, TS - 4);
+      break;
+    default:
+      octx.fillStyle = '#000';
+      octx.fillRect(px, py, TS, TS);
+  }
+}
+
+let overworldCanvas = prerenderMap(overworld);
+
+// =========================================================================
+// Buildings / interiors
+// =========================================================================
+// Each building has an overworld door zone (tiles), and an interior map.
+function buildInterior(labelText) {
+  const w = 10, h = 8;
+  const grid = makeGrid(w, h, T.FLOOR);
+  for (let x = 0; x < w; x++) { grid[0][x] = T.WALL; grid[h - 1][x] = T.WALL; }
+  for (let y = 0; y < h; y++) { grid[y][0] = T.WALL; grid[y][w - 1] = T.WALL; }
+  // door/exit rug at bottom-center
+  grid[h - 2][Math.floor(w / 2)] = T.RUG;
+  grid[h - 2][Math.floor(w / 2) - 1] = T.RUG;
+  return { w, h, grid, label: labelText, canvas: null,
+    exit: { x: Math.floor(w / 2) - 0.5, y: h - 2 } };
+}
+
+const houseInterior = buildInterior('House');
+const shopInterior = buildInterior('Shop');
+houseInterior.canvas = prerenderMap(houseInterior);
+shopInterior.canvas = prerenderMap(shopInterior);
+
+const buildings = [
+  {
+    name: 'house',
+    doorTileX: midSafe(overworld.w / 2 - 6), doorTileY: midSafe(overworld.h / 2 - 5),
+    interior: houseInterior,
+  },
+  {
+    name: 'shop',
+    doorTileX: midSafe(overworld.w / 2 + 6), doorTileY: midSafe(overworld.h / 2 - 5),
+    interior: shopInterior,
+  },
+];
+function midSafe(v) { return Math.round(v); }
+
+// carve building footprints into overworld grid (walls + roof look + door)
+function carveBuilding(b) {
+  const bw = 4, bh = 3;
+  const ox = b.doorTileX - 1, oy = b.doorTileY - bh + 1;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const gx = ox + x, gy = oy + y;
+      if (gx < 2 || gy < 2 || gx >= overworld.w - 2 || gy >= overworld.h - 2) continue;
+      overworld.grid[gy][gx] = T.WALL;
+    }
+  }
+  overworld.grid[b.doorTileY][b.doorTileX] = T.DOOR;
+  b.doorZone = { x: b.doorTileX, y: b.doorTileY, w: 1, h: 1 };
+  b.activation = { // 2-3 tile activation zone in front of door
+    minX: (b.doorTileX - 1) * CONFIG.TILE, maxX: (b.doorTileX + 2) * CONFIG.TILE,
+    minY: (b.doorTileY) * CONFIG.TILE, maxY: (b.doorTileY + 1) * CONFIG.TILE,
+  };
+  b.spawn = { x: (b.doorTileX + 0.5) * CONFIG.TILE, y: (b.doorTileY + 1.5) * CONFIG.TILE };
+}
+buildings.forEach(carveBuilding);
+overworldCanvas = prerenderMap(overworld); // re-render with buildings carved in
+
+// =========================================================================
+// Hero
+// =========================================================================
+const hero = {
+  x: (overworld.w / 2) * CONFIG.TILE, y: (overworld.h / 2 + 2) * CONFIG.TILE,
+  w: 12, h: 14, facing: 'down',
+  moving: false, animT: 0, animFrame: 0,
+  walkTargetX: null, walkTargetY: null,
+  dustTimer: 0,
+};
+const dustPuffs = []; // {x,y,life}
+const rippleMarkers = []; // {x,y,life}
+
+function currentMap() {
+  return world.mode === 'interior' ? world.interior : overworld;
+}
+function currentCanvas() {
+  return world.mode === 'interior' ? world.interior.canvas : overworldCanvas;
+}
+
+const world = { mode: 'overworld', interior: null, camX: 0, camY: 0 };
+
+function tileSolidAt(map, px, py) {
+  const tx = Math.floor(px / CONFIG.TILE), ty = Math.floor(py / CONFIG.TILE);
+  if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return true;
+  const t = map.grid[ty][tx];
+  return SOLID_TILES.has(t);
+}
+
+// axis-separated collision so hero slides along walls
+function moveWithCollision(entity, dx, dy, map) {
+  const hw = entity.w / 2, hh = entity.h / 2;
+  if (dx !== 0) {
+    const nx = entity.x + dx;
+    const corners = [[nx - hw, entity.y - hh], [nx + hw, entity.y - hh], [nx - hw, entity.y + hh - 1], [nx + hw, entity.y + hh - 1]];
+    if (!corners.some(c => tileSolidAt(map, c[0], c[1]))) entity.x = nx;
+  }
+  if (dy !== 0) {
+    const ny = entity.y + dy;
+    const corners = [[entity.x - hw, ny - hh], [entity.x + hw, ny - hh], [entity.x - hw, ny + hh - 1], [entity.x + hw, ny + hh - 1]];
+    if (!corners.some(c => tileSolidAt(map, c[0], c[1]))) entity.y = ny;
+  }
+}
+
+// =========================================================================
+// NPCs
+// =========================================================================
+function makeNPC(x, y, color, lines, opts) {
+  opts = opts || {};
+  return {
+    x, y, color, lines, w: 12, h: 14, facing: 'down',
+    wanderTimer: 0, wanderDx: 0, wanderDy: 0,
+    home: 'overworld', cameo: !!opts.cameo, name: opts.name || 'Villager',
+  };
+}
+
+const villagerNPCs = [
+  makeNPC((overworld.w / 2 - 3) * CONFIG.TILE, (overworld.h / 2 + 4) * CONFIG.TILE, '#c04040',
+    ["Hi there, traveler!", "Walking around is free, but attacking costs Action Points.", "Press Q anytime to answer a question and earn more AP!"]),
+  makeNPC((overworld.w / 2 + 5) * CONFIG.TILE, (overworld.h / 2 + 6) * CONFIG.TILE, '#4060c0',
+    ["Lovely day, isn't it?", "I heard smashing pots can be rewarding...", "Be kind to the villagers here!"]),
+  makeNPC((overworld.w / 2) * CONFIG.TILE, (overworld.h / 2 + 8) * CONFIG.TILE, '#40a060',
+    ["Have you visited the shop yet?", "They sell all sorts of neat gear.", "Good luck on your quest!"]),
+];
+
+const cameoNPCs = [
+  makeNPC((overworld.w / 2 - 8) * CONFIG.TILE, (overworld.h / 2 + 2) * CONFIG.TILE, '#e05030',
+    ["Mama mia! I've explored many worlds.", "Those clay pots nearby? They love hiding gold coins!", "Keep an eye out, my friend!"],
+    { cameo: true, name: 'Mustachioed Wanderer' }),
+  makeNPC((overworld.w / 2 + 10) * CONFIG.TILE, (overworld.h / 2 + 3) * CONFIG.TILE, '#8a6a4a',
+    ["*thumps chest* Big rocks... heavy!", "Somewhere past the stacked barrels, a hidden dungeon waits.", "Only the strong may move heavy rocks!"],
+    { cameo: true, name: 'Barrel-Loving Ape' }),
+  makeNPC((overworld.w / 2 + 2) * CONFIG.TILE, (overworld.h / 2 - 6) * CONFIG.TILE, '#5030a0',
+    ["Splat! I love ink so much.", "The shop sells something inky, I bet...", "Squid-tastic!"],
+    { cameo: true, name: 'Ink-Splatting Kid' }),
+];
+
+const houseNPCs = [
+  makeNPC(4 * CONFIG.TILE, 4 * CONFIG.TILE, '#a08040',
+    ["Welcome to my home!", "Psst - the shop across the way sells useful gear.", "Talk to the shopkeeper there!"], { home: 'house' }),
+];
+houseNPCs.forEach(n => n.home = 'house');
+
+function allNPCs() {
+  const list = villagerNPCs.concat(cameoNPCs);
+  if (world.mode === 'interior' && world.interior === houseInterior) return houseNPCs;
+  return world.mode === 'overworld' ? list : [];
+}
+
+// =========================================================================
+// Dialogue system
+// =========================================================================
+const dialogue = { active: false, npc: null, lineIndex: 0 };
+function openDialogue(npc) {
+  dialogue.active = true; dialogue.npc = npc; dialogue.lineIndex = 0;
+}
+function advanceDialogue() {
+  if (!dialogue.active) return;
+  dialogue.lineIndex++;
+  if (dialogue.lineIndex >= dialogue.npc.lines.length) {
+    dialogue.active = false; dialogue.npc = null;
+  }
+}
+
+// =========================================================================
+// HUD state (skeleton; grows Phase 2+)
+// =========================================================================
+const hud = { gold: 0, hintText: '', hintTimer: 0 };
+function showHint(text, seconds) {
+  hud.hintText = text; hud.hintTimer = seconds || 2;
+}
 
 function pickDifficulty(name) {
   CONFIG.DIFFICULTY = name;
@@ -182,6 +479,7 @@ function pointInRect(px, py, r) {
 // =========================================================================
 function update(dtMs) {
   const dt = dtMs / 1000;
+  updateFade(dt);
 
   if (gameState === STATE.TITLE) {
     if (Input.tapped) {
@@ -201,31 +499,196 @@ function update(dtMs) {
   }
 
   if (gameState === STATE.PLAYING) {
-    let dx = 0, dy = 0;
-    if (Input.keys['ArrowLeft'] || Input.keys['a'] || Input.keys['A']) dx -= 1;
-    if (Input.keys['ArrowRight'] || Input.keys['d'] || Input.keys['D']) dx += 1;
-    if (Input.keys['ArrowUp'] || Input.keys['w'] || Input.keys['W']) dy -= 1;
-    if (Input.keys['ArrowDown'] || Input.keys['s'] || Input.keys['S']) dy += 1;
-
-    if (dx !== 0 || dy !== 0) {
-      const len = Math.hypot(dx, dy) || 1;
-      hero.x += (dx / len) * CONFIG.HERO_SPEED * dt;
-      hero.y += (dy / len) * CONFIG.HERO_SPEED * dt;
-      if (dx < 0) hero.facing = 'left';
-      else if (dx > 0) hero.facing = 'right';
-      else if (dy < 0) hero.facing = 'up';
-      else if (dy > 0) hero.facing = 'down';
-    }
-
-    if (Input.tapped) {
-      // phase 0: just walk toward the tap (real tap-to-move comes phase 1)
-      hero.x = Input.tapX; hero.y = Input.tapY;
-      Input.tapped = false;
-    }
-
-    hero.x = Math.max(0, Math.min(CONFIG.GAME_W, hero.x));
-    hero.y = Math.max(0, Math.min(CONFIG.GAME_H, hero.y));
+    updatePlaying(dt);
   }
+}
+
+function worldPointFromScreen(sx, sy) {
+  return { x: sx + world.camX, y: sy + world.camY };
+}
+
+function updatePlaying(dt) {
+  if (hud.hintTimer > 0) { hud.hintTimer -= dt; if (hud.hintTimer < 0) hud.hintTimer = 0; }
+
+  // dialogue pauses the world
+  if (dialogue.active) {
+    if (Input.tapped) { advanceDialogue(); Input.tapped = false; }
+    if (Input.keys['e'] || Input.keys['E'] || Input.keys['Enter']) {
+      advanceDialogue();
+      Input.keys['e'] = Input.keys['E'] = Input.keys['Enter'] = false;
+    }
+    return;
+  }
+
+  const map = currentMap();
+
+  // --- keyboard movement (overrides tap target) ---
+  let dx = 0, dy = 0;
+  if (Input.keys['ArrowLeft'] || Input.keys['a'] || Input.keys['A']) dx -= 1;
+  if (Input.keys['ArrowRight'] || Input.keys['d'] || Input.keys['D']) dx += 1;
+  if (Input.keys['ArrowUp'] || Input.keys['w'] || Input.keys['W']) dy -= 1;
+  if (Input.keys['ArrowDown'] || Input.keys['s'] || Input.keys['S']) dy += 1;
+
+  let moving = false;
+
+  if (dx !== 0 || dy !== 0) {
+    hero.walkTargetX = null; hero.walkTargetY = null; // keyboard cancels tap-move
+    const len = Math.hypot(dx, dy) || 1;
+    moveWithCollision(hero, (dx / len) * CONFIG.HERO_SPEED * dt, (dy / len) * CONFIG.HERO_SPEED * dt, map);
+    if (dx < 0) hero.facing = 'left';
+    else if (dx > 0) hero.facing = 'right';
+    else if (dy < 0) hero.facing = 'up';
+    else if (dy > 0) hero.facing = 'down';
+    moving = true;
+  }
+
+  // --- tap-to-move ---
+  if (Input.tapped) {
+    const wp = worldPointFromScreen(Input.tapX, Input.tapY);
+    // check NPC tap first
+    const tappedNpc = allNPCs().find(n => Math.hypot(n.x - wp.x, n.y - wp.y) < 14);
+    if (tappedNpc) {
+      hero.pendingTalkTarget = tappedNpc;
+      hero.walkTargetX = tappedNpc.x; hero.walkTargetY = tappedNpc.y + 16;
+    } else {
+      hero.pendingTalkTarget = null;
+      hero.walkTargetX = wp.x; hero.walkTargetY = wp.y;
+      rippleMarkers.push({ x: wp.x, y: wp.y, life: 0.5 });
+    }
+    Input.tapped = false;
+  }
+
+  if (!moving && hero.walkTargetX !== null) {
+    const tdx = hero.walkTargetX - hero.x, tdy = hero.walkTargetY - hero.y;
+    const dist = Math.hypot(tdx, tdy);
+    if (dist < 3) {
+      hero.walkTargetX = null; hero.walkTargetY = null;
+      if (hero.pendingTalkTarget) {
+        const n = hero.pendingTalkTarget; hero.pendingTalkTarget = null;
+        if (Math.hypot(n.x - hero.x, n.y - hero.y) < CONFIG.NPC_TALK_RANGE + 20) openDialogue(n);
+      }
+    } else {
+      const ux = tdx / dist, uy = tdy / dist;
+      moveWithCollision(hero, ux * CONFIG.HERO_SPEED * dt, uy * CONFIG.HERO_SPEED * dt, map);
+      if (Math.abs(ux) > Math.abs(uy)) hero.facing = ux < 0 ? 'left' : 'right';
+      else hero.facing = uy < 0 ? 'up' : 'down';
+      moving = true;
+    }
+  }
+
+  hero.moving = moving;
+  if (moving) {
+    hero.animT += dt;
+    if (hero.animT > 0.18) { hero.animT = 0; hero.animFrame = 1 - hero.animFrame; }
+    hero.dustTimer -= dt;
+    if (hero.dustTimer <= 0) {
+      hero.dustTimer = CONFIG.DUST_STEP_INTERVAL;
+      dustPuffs.push({ x: hero.x, y: hero.y + hero.h / 2, life: 0.35 });
+    }
+  } else {
+    hero.animFrame = 0;
+  }
+
+  // keep hero inside map bounds
+  hero.x = Math.max(CONFIG.TILE, Math.min(map.w * CONFIG.TILE - CONFIG.TILE, hero.x));
+  hero.y = Math.max(CONFIG.TILE, Math.min(map.h * CONFIG.TILE - CONFIG.TILE, hero.y));
+
+  // --- talk via E key when adjacent ---
+  if (Input.keys['e'] || Input.keys['E']) {
+    Input.keys['e'] = Input.keys['E'] = false;
+    const near = allNPCs().find(n => Math.hypot(n.x - hero.x, n.y - hero.y) < CONFIG.NPC_TALK_RANGE + 20);
+    if (near) openDialogue(near);
+  }
+
+  // --- NPC wander AI ---
+  for (const n of allNPCs()) {
+    n.wanderTimer -= dt;
+    if (n.wanderTimer <= 0) {
+      n.wanderTimer = 1 + Math.random() * 2;
+      if (Math.random() < 0.4) { n.wanderDx = 0; n.wanderDy = 0; }
+      else {
+        const dir = Math.floor(Math.random() * 4);
+        n.wanderDx = [1, -1, 0, 0][dir]; n.wanderDy = [0, 0, 1, -1][dir];
+      }
+    }
+    if (n.wanderDx || n.wanderDy) {
+      const before = { x: n.x, y: n.y };
+      moveWithCollision(n, n.wanderDx * CONFIG.NPC_WANDER_SPEED * dt, n.wanderDy * CONFIG.NPC_WANDER_SPEED * dt, map);
+      if (n.x === before.x && n.y === before.y) { n.wanderDx = 0; n.wanderDy = 0; } // hit a solid, stop
+      if (Math.abs(n.wanderDx) > 0) n.facing = n.wanderDx < 0 ? 'left' : 'right';
+      else if (n.wanderDy) n.facing = n.wanderDy < 0 ? 'up' : 'down';
+    }
+  }
+
+  // --- building entry (overworld only) ---
+  if (world.mode === 'overworld') {
+    for (const b of buildings) {
+      const a = b.activation;
+      if (hero.x >= a.minX && hero.x <= a.maxX && hero.y >= a.minY && hero.y <= a.maxY) {
+        enterBuilding(b);
+        break;
+      }
+    }
+  } else if (world.mode === 'interior') {
+    const ex = world.interior.exit;
+    const exPx = ex.x * CONFIG.TILE, exPy = ex.y * CONFIG.TILE;
+    if (Math.abs(hero.x - exPx) < CONFIG.TILE && Math.abs(hero.y - exPy) < CONFIG.TILE) {
+      exitBuilding();
+    }
+  }
+
+  // dust puffs decay
+  for (let i = dustPuffs.length - 1; i >= 0; i--) {
+    dustPuffs[i].life -= dt;
+    if (dustPuffs[i].life <= 0) dustPuffs.splice(i, 1);
+  }
+  for (let i = rippleMarkers.length - 1; i >= 0; i--) {
+    rippleMarkers[i].life -= dt;
+    if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
+  }
+
+  // --- camera clamp ---
+  const m = currentMap();
+  world.camX = Math.max(0, Math.min(m.w * CONFIG.TILE - CONFIG.GAME_W, hero.x - CONFIG.GAME_W / 2));
+  world.camY = Math.max(0, Math.min(m.h * CONFIG.TILE - CONFIG.GAME_H, hero.y - CONFIG.GAME_H / 2));
+  if (m.w * CONFIG.TILE < CONFIG.GAME_W) world.camX = -(CONFIG.GAME_W - m.w * CONFIG.TILE) / 2;
+  if (m.h * CONFIG.TILE < CONFIG.GAME_H) world.camY = -(CONFIG.GAME_H - m.h * CONFIG.TILE) / 2;
+}
+
+let fadeAlpha = 0, fadeDir = 0, fadeCallback = null;
+function fadeTo(callback) {
+  fadeDir = 1; fadeCallback = callback;
+}
+function updateFade(dt) {
+  if (fadeDir !== 0) {
+    fadeAlpha += fadeDir * dt * 3;
+    if (fadeAlpha >= 1) {
+      fadeAlpha = 1;
+      if (fadeCallback) { fadeCallback(); fadeCallback = null; }
+      fadeDir = -1;
+    } else if (fadeAlpha <= 0) {
+      fadeAlpha = 0; fadeDir = 0;
+    }
+  }
+}
+
+function enterBuilding(b) {
+  if (world.mode !== 'overworld') return;
+  fadeTo(() => {
+    world.mode = 'interior';
+    world.interior = b.interior;
+    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    world.currentBuildingRef = b;
+    hero.x = b.interior.exit.x * CONFIG.TILE;
+    hero.y = (b.interior.exit.y - 1.2) * CONFIG.TILE;
+  });
+}
+function exitBuilding() {
+  fadeTo(() => {
+    world.mode = 'overworld';
+    hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
+    world.interior = null;
+  });
 }
 
 // =========================================================================
@@ -270,21 +733,145 @@ function draw() {
   }
 
   if (gameState === STATE.PLAYING) {
-    ctx.fillStyle = '#3a6b2e';
-    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
-
-    // placeholder hero
-    ctx.fillStyle = '#e0c080';
-    ctx.fillRect(hero.x - 8, hero.y - 8, 16, 16);
-    ctx.fillStyle = '#804010';
-    ctx.fillRect(hero.x - 8, hero.y - 8, 16, 4);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '12px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('Difficulty: ' + DIFFICULTY_LABELS[CONFIG.DIFFICULTY], 8, 16);
-    ctx.fillText('(Phase 0 placeholder world - move with WASD/arrows/tap)', 8, 32);
+    drawPlaying();
   }
+}
+
+function drawHeroSprite(x, y, facing, frame) {
+  // 16x16-ish code-drawn hero: tunic + head, simple 2-frame walk cycle
+  const bodyColor = '#3f8f3f', skin = '#e8b888', hair = '#5a3216';
+  const bob = frame === 1 ? 1 : 0;
+  ctx.fillStyle = '#000000';
+  ctx.globalAlpha = 0.25;
+  ctx.beginPath(); ctx.ellipse(x, y + 7, 6, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = bodyColor;
+  ctx.fillRect(x - 5, y - 2 - bob, 10, 8);
+  ctx.fillStyle = skin;
+  ctx.fillRect(x - 4, y - 9 - bob, 8, 7);
+  ctx.fillStyle = hair;
+  ctx.fillRect(x - 4, y - 9 - bob, 8, 3);
+
+  // direction indicator (simple eyes / arm) so facing is readable
+  ctx.fillStyle = '#20140a';
+  if (facing === 'down') { ctx.fillRect(x - 2, y - 6 - bob, 1, 1); ctx.fillRect(x + 1, y - 6 - bob, 1, 1); }
+  else if (facing === 'up') { ctx.fillStyle = hair; ctx.fillRect(x - 4, y - 9 - bob, 8, 6); }
+  else if (facing === 'left') { ctx.fillRect(x - 5, y - 6 - bob, 2, 1); }
+  else if (facing === 'right') { ctx.fillRect(x + 3, y - 6 - bob, 2, 1); }
+
+  // simple leg step
+  ctx.fillStyle = '#2a2a2a';
+  if (frame === 1) { ctx.fillRect(x - 4, y + 5, 3, 3); ctx.fillRect(x + 1, y + 5, 3, 2); }
+  else { ctx.fillRect(x - 4, y + 5, 3, 2); ctx.fillRect(x + 1, y + 5, 3, 3); }
+}
+
+function drawNpcSprite(x, y, color, facing) {
+  ctx.fillStyle = '#000000'; ctx.globalAlpha = 0.25;
+  ctx.beginPath(); ctx.ellipse(x, y + 7, 6, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = color;
+  ctx.fillRect(x - 5, y - 2, 10, 8);
+  ctx.fillStyle = '#e8b888';
+  ctx.fillRect(x - 4, y - 9, 8, 7);
+  ctx.fillStyle = '#3a2010';
+  ctx.fillRect(x - 4, y - 9, 8, 3);
+}
+
+function drawPlaying() {
+  const map = currentMap();
+  const canvasImg = currentCanvas();
+  ctx.save();
+  ctx.translate(-world.camX, -world.camY);
+
+  ctx.drawImage(canvasImg, 0, 0);
+
+  // dust puffs
+  for (const d of dustPuffs) {
+    ctx.globalAlpha = d.life / 0.35 * 0.5;
+    ctx.fillStyle = '#cfc19a';
+    ctx.beginPath(); ctx.arc(d.x, d.y, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // ripple tap markers
+  for (const r of rippleMarkers) {
+    ctx.strokeStyle = `rgba(255,255,255,${r.life / 0.5})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(r.x, r.y, (0.5 - r.life) * 24 + 4, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // NPCs
+  for (const n of allNPCs()) drawNpcSprite(n.x, n.y, n.color, n.facing);
+  for (const n of allNPCs()) {
+    if (Math.hypot(n.x - hero.x, n.y - hero.y) < CONFIG.NPC_TALK_RANGE + 20 && !dialogue.active) {
+      ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('!', n.x, n.y - 16);
+    }
+  }
+
+  // hero
+  drawHeroSprite(hero.x, hero.y, hero.facing, hero.animFrame);
+
+  ctx.restore();
+
+  // HUD (screen space)
+  drawHUD();
+
+  // dialogue box
+  if (dialogue.active) drawDialogueBox();
+
+  // hint text
+  if (hud.hintTimer > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(CONFIG.GAME_W / 2 - 160, 40, 320, 26);
+    ctx.fillStyle = '#ffe066';
+    ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(hud.hintText, CONFIG.GAME_W / 2, 58);
+  }
+
+  // fade overlay
+  if (fadeAlpha > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${fadeAlpha})`;
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  }
+}
+
+function drawHUD() {
+  // hearts placeholder (Phase 2 makes these real)
+  ctx.fillStyle = '#000'; ctx.globalAlpha = 0.35;
+  ctx.fillRect(4, 4, 130, 40); ctx.globalAlpha = 1;
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = '#d94f4f';
+    ctx.beginPath();
+    const hx = 14 + i * 18, hy = 14;
+    ctx.moveTo(hx, hy + 3);
+    ctx.bezierCurveTo(hx, hy, hx - 6, hy, hx - 6, hy + 4);
+    ctx.bezierCurveTo(hx - 6, hy + 8, hx, hy + 10, hx, hy + 12);
+    ctx.bezierCurveTo(hx, hy + 10, hx + 6, hy + 8, hx + 6, hy + 4);
+    ctx.bezierCurveTo(hx + 6, hy, hx, hy, hx, hy + 3);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
+  ctx.fillText('Gold: ' + hud.gold, 10, 36);
+}
+
+function drawDialogueBox() {
+  const boxH = 90;
+  ctx.fillStyle = 'rgba(15,15,30,0.92)';
+  ctx.fillRect(20, CONFIG.GAME_H - boxH - 16, CONFIG.GAME_W - 40, boxH);
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+  ctx.strokeRect(20, CONFIG.GAME_H - boxH - 16, CONFIG.GAME_W - 40, boxH);
+
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(dialogue.npc.name, 34, CONFIG.GAME_H - boxH + 4);
+
+  ctx.fillStyle = '#ffffff'; ctx.font = '14px monospace';
+  const line = dialogue.npc.lines[dialogue.lineIndex] || '';
+  ctx.fillText(line, 34, CONFIG.GAME_H - boxH + 32);
+
+  ctx.fillStyle = '#aaaaaa'; ctx.font = '11px monospace'; ctx.textAlign = 'right';
+  ctx.fillText('E / Enter / tap to continue', CONFIG.GAME_W - 34, CONFIG.GAME_H - 24);
 }
 
 // =========================================================================
