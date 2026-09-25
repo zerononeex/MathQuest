@@ -57,9 +57,15 @@ const CONFIG = {
   HERO_SPEED: 100,        // pixels per second the hero walks
   DUST_STEP_INTERVAL: 0.28, // seconds between dust puffs while walking
 
-  // --- World size (Phase 1 starter map; grows in Phase 8) ---
-  MAP_W: 64,               // tiles wide (>=60 required)
-  MAP_H: 44,               // tiles tall (>=40 required)
+  // --- World size ---
+  // Phase 1 starter map was 64x44 = 2816 tiles. Phase 8 grows this ~10x by
+  // TILE COUNT (bug registry #7: "10x bigger" means 10x tile count, not
+  // 10x pixel dimensions): 200x140 = 28000 tiles = 9.94x the original.
+  // Both pixel dimensions (200*16=3200, 140*16=2240) stay under the ~4096px
+  // single-canvas limit, so the overworld still uses one prerendered
+  // canvas (bug registry #3's chunking only kicks in above that).
+  MAP_W: 200,              // tiles wide (was 64)
+  MAP_H: 140,              // tiles tall (was 44)
 
   // --- NPCs ---
   NPC_WANDER_SPEED: 30,     // px/s for wandering villagers
@@ -414,8 +420,10 @@ const DIFFICULTY_LABELS = {
 const T = {
   GRASS: 0, DIRT: 1, WATER: 2, TREE: 3, FLOOR: 4, WALL: 5, DOOR: 6, RUG: 7,
   CHEST: 8, SWITCH: 9, TORCH: 10, LOCKDOOR: 11, BOSSDOOR: 12, STAIRS: 13, SIGNPOST: 14,
+  SAND: 15, SNOW: 16, CLIFF: 17, DARKGRASS: 18,
 };
-const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL, T.LOCKDOOR, T.BOSSDOOR, T.SIGNPOST]);
+const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL, T.LOCKDOOR, T.BOSSDOOR, T.SIGNPOST, T.CLIFF]);
+const heartPieces = []; // giant heart piece pickups: {x,y,t} (declared early so map-build code can spawn into it)
 
 function makeGrid(w, h, fill) {
   const g = new Array(h);
@@ -436,25 +444,105 @@ function mulberry32(seed) {
 // =========================================================================
 // Overworld map generation
 // =========================================================================
+// =========================================================================
+// Phase 8: five hand-designed regions ring the central start town. Every
+// region is produced by the SAME shared builder (paintRegionBase +
+// scatterFeature) fed a small per-region definition (palette/landmark/
+// seed/dungeon position) - the map is 10x the tiles, not 10x the code.
+// =========================================================================
+const TOWN_RADIUS = 17; // tiles around map center reserved for the start town
+const REGION_ORDER = ['darkness', 'mountain', 'desert', 'lakes', 'forest']; // clockwise from north
+const REGION_DEFS = {
+  forest: { base: T.GRASS, treeDensity: 0.22, label: 'Forest' },
+  mountain: { base: T.CLIFF, treeDensity: 0.03, label: 'Mountain', floorBase: T.GRASS },
+  lakes: { base: T.GRASS, treeDensity: 0.06, label: 'Lakes', waterPonds: true },
+  desert: { base: T.SAND, treeDensity: 0.01, label: 'Desert' },
+  darkness: { base: T.DARKGRASS, treeDensity: 0.14, label: 'Darkness' },
+};
+function regionAngleIndex(dx, dy) {
+  let deg = Math.atan2(dy, dx) * 180 / Math.PI; // 0=east, 90=south
+  deg = (deg + 360) % 360;
+  // rotate so "north" (dy<0, deg=270) lands at the start of the darkness sector
+  const rotated = (deg + 90) % 360; // now 0 = north
+  return Math.floor(rotated / 72);
+}
+function regionAt(tx, ty) {
+  const cx = CONFIG.MAP_W / 2, cy = CONFIG.MAP_H / 2;
+  const dx = tx - cx, dy = ty - cy;
+  const dist = Math.hypot(dx, dy);
+  if (dist < TOWN_RADIUS) return 'town';
+  return REGION_ORDER[regionAngleIndex(dx, dy)];
+}
+
+function drawRoadLine(grid, x0, y0, x1, y1) {
+  // simple straight dirt-road stamp between two tile points (shared by
+  // every region's road-to-landmark connector)
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i / steps;
+    const x = Math.round(x0 + (x1 - x0) * t), y = Math.round(y0 + (y1 - y0) * t);
+    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+      const gx = x + ox, gy = y + oy;
+      if (gx > 1 && gy > 1 && gx < grid[0].length - 2 && gy < grid.length - 2) {
+        if (Math.abs(ox) + Math.abs(oy) <= 1) grid[gy][gx] = T.DIRT;
+      }
+    }
+  }
+}
+
 function buildOverworld() {
   const w = CONFIG.MAP_W, h = CONFIG.MAP_H;
   const grid = makeGrid(w, h, T.GRASS);
   const rand = mulberry32(1337);
+  const cx = Math.floor(w / 2), cy = Math.floor(h / 2);
 
   // water border ring
   for (let x = 0; x < w; x++) { grid[0][x] = T.WATER; grid[1][x] = T.WATER; grid[h - 1][x] = T.WATER; grid[h - 2][x] = T.WATER; }
   for (let y = 0; y < h; y++) { grid[y][0] = T.WATER; grid[y][1] = T.WATER; grid[y][w - 1] = T.WATER; grid[y][w - 2] = T.WATER; }
 
-  // dirt paths: one horizontal + one vertical crossing near center
-  const midY = Math.floor(h / 2), midX = Math.floor(w / 2);
-  for (let x = 2; x < w - 2; x++) { grid[midY][x] = T.DIRT; grid[midY + 1][x] = T.DIRT; }
-  for (let y = 2; y < h - 2; y++) { grid[y][midX] = T.DIRT; grid[y][midX + 1] = T.DIRT; }
+  // paint each region's base terrain (shared loop, per-region def picks the tile)
+  for (let y = 2; y < h - 2; y++) {
+    for (let x = 2; x < w - 2; x++) {
+      const r = regionAt(x, y);
+      if (r === 'town') continue; // keep the town core as plain grass
+      const def = REGION_DEFS[r];
+      grid[y][x] = def.base;
+    }
+  }
 
-  // scattered trees (solid), avoid paths and border
-  for (let i = 0; i < 220; i++) {
+  // town streets: a small dirt cross at the map center
+  for (let x = cx - TOWN_RADIUS; x < cx + TOWN_RADIUS; x++) { grid[cy][x] = T.DIRT; grid[cy + 1][x] = T.DIRT; }
+  for (let y = cy - TOWN_RADIUS; y < cy + TOWN_RADIUS; y++) { grid[y][cx] = T.DIRT; grid[y][cx + 1] = T.DIRT; }
+
+  // per-region scattered features: trees in forest/darkness, rock outcrops
+  // in mountain, ponds in lakes, cacti-look sand tufts in desert - all via
+  // the same scatter loop, just fed a different density/tile per region.
+  for (const rname of REGION_ORDER) {
+    const def = REGION_DEFS[rname];
+    const count = Math.floor(w * h * 0.02 * def.treeDensity * 6);
+    for (let i = 0; i < count; i++) {
+      const x = 3 + Math.floor(rand() * (w - 6));
+      const y = 3 + Math.floor(rand() * (h - 6));
+      if (regionAt(x, y) !== rname) continue;
+      if (grid[y][x] === def.base) grid[y][x] = T.TREE;
+    }
+    if (def.waterPonds) {
+      for (let p = 0; p < 5; p++) {
+        const px = 3 + Math.floor(rand() * (w - 6)), py = 3 + Math.floor(rand() * (h - 6));
+        if (regionAt(px, py) !== rname) continue;
+        for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++) {
+          const gx = px + ox, gy = py + oy;
+          if (gx > 1 && gy > 1 && gx < w - 2 && gy < h - 2 && ox * ox + oy * oy <= 4 && regionAt(gx, gy) === rname) grid[gy][gx] = T.WATER;
+        }
+      }
+    }
+  }
+
+  // town-core light scatter of trees for flavor (kept sparse near buildings)
+  for (let i = 0; i < 40; i++) {
     const x = 3 + Math.floor(rand() * (w - 6));
     const y = 3 + Math.floor(rand() * (h - 6));
-    if (grid[y][x] === T.GRASS) grid[y][x] = T.TREE;
+    if (regionAt(x, y) === 'town' && grid[y][x] === T.GRASS) grid[y][x] = T.TREE;
   }
 
   return { w, h, grid };
@@ -585,6 +673,26 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
       octx.fillStyle = '#8a8a9a'; octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#5a5a6a'; octx.fillRect(px + 2, py + 2, TS - 4, 4);
       break;
+    case T.SAND: {
+      octx.fillStyle = ((gx || 0) * 7 + (gy || 0) * 3) % 9 === 0 ? '#e6c878' : '#dcc074';
+      octx.fillRect(px, py, TS, TS);
+      octx.strokeStyle = 'rgba(150,110,40,0.25)';
+      octx.beginPath(); octx.moveTo(px, py + 5); octx.quadraticCurveTo(px + 8, py + 2, px + TS, py + 5); octx.stroke();
+      break;
+    }
+    case T.SNOW:
+      octx.fillStyle = '#eef4fa'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = 'rgba(180,200,220,0.5)'; octx.fillRect(px + 3, py + 9, 4, 2);
+      break;
+    case T.CLIFF:
+      octx.fillStyle = '#8a7a6a'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = '#6a5a4a'; octx.fillRect(px, py + TS - 4, TS, 4);
+      octx.fillStyle = '#9a8a7a'; octx.fillRect(px + 2, py + 2, TS - 4, 3);
+      break;
+    case T.DARKGRASS:
+      octx.fillStyle = ((gx || 0) + (gy || 0)) % 6 === 0 ? '#233020' : '#1c2818';
+      octx.fillRect(px, py, TS, TS);
+      break;
     case T.SIGNPOST:
       octx.fillStyle = '#3f7a33'; octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#8a6a3a'; octx.fillRect(px + 7, py + 6, 2, 10);
@@ -679,10 +787,10 @@ function carveDoorGap(room, edge, tileType) {
 }
 
 const DUNGEON_DEFS = [
-  { id: 'forest', name: 'Forest Dungeon', color: '#2c5a22', enemyType: 'wolf', puzzle: 'pushblock', overworldOff: [-20, -10] },
-  { id: 'fire', name: 'Fire Dungeon', color: '#7a2a1a', enemyType: 'fireImp', puzzle: 'torches', overworldOff: [20, -10] },
-  { id: 'water', name: 'Water Dungeon', color: '#1a3a6a', enemyType: 'octorok', puzzle: 'switches', overworldOff: [-20, 12] },
-  { id: 'shadow', name: 'Shadow Dungeon', color: '#2a1a3a', enemyType: 'wraith', puzzle: 'riddle', overworldOff: [20, 12] },
+  { id: 'forest', name: 'Forest Dungeon', color: '#2c5a22', enemyType: 'wolf', puzzle: 'pushblock', region: 'forest' },
+  { id: 'fire', name: 'Fire Dungeon', color: '#7a2a1a', enemyType: 'fireImp', puzzle: 'torches', region: 'mountain' },
+  { id: 'water', name: 'Water Dungeon', color: '#1a3a6a', enemyType: 'octorok', puzzle: 'switches', region: 'lakes' },
+  { id: 'shadow', name: 'Shadow Dungeon', color: '#2a1a3a', enemyType: 'wraith', puzzle: 'riddle', region: 'darkness' },
 ];
 
 function makeDungeonEnemy(kind, x, y) {
@@ -782,39 +890,144 @@ function buildDungeon(def) {
 
 const dungeons = DUNGEON_DEFS.map(buildDungeon);
 
-// place 4 signposted entrances around the village, away from buildings
+// Find a tile at a fixed radius from the map center that falls inside the
+// named region (shared by every region's landmark placement - dungeons,
+// the castle gate, the second town - so one function serves all of them).
+function regionAnchor(regionName, radiusOverride, angleBias) {
+  const cx = Math.floor(overworld.w / 2), cy = Math.floor(overworld.h / 2);
+  const radius = radiusOverride || Math.min(overworld.w, overworld.h) / 2 - 12;
+  for (let a = (angleBias || 0); a < 360 + (angleBias || 0); a += 2) {
+    const rad = a * Math.PI / 180;
+    const tx = Math.round(cx + Math.cos(rad) * radius);
+    const ty = Math.round(cy + Math.sin(rad) * radius);
+    if (tx > 4 && ty > 4 && tx < overworld.w - 5 && ty < overworld.h - 5 && regionAt(tx, ty) === regionName) {
+      return { x: tx, y: ty };
+    }
+  }
+  return { x: cx, y: cy }; // fallback (should not happen with 5 full sectors)
+}
+// clear a small walkable pocket around a landmark tile (it may have landed
+// on a tree/cliff/pond from the region's scatter pass)
+function clearPocket(gx, gy, radius, fillTile) {
+  for (let oy = -radius; oy <= radius; oy++) for (let ox = -radius; ox <= radius; ox++) {
+    const x = gx + ox, y = gy + oy;
+    if (x > 1 && y > 1 && x < overworld.w - 2 && y < overworld.h - 2) overworld.grid[y][x] = fillTile;
+  }
+}
+
+// place 4 signposted dungeon entrances, one per region, connected to town
+// by a dirt road (bug registry-safe: never inside water/town core)
 function placeDungeonEntrances() {
   const cx = Math.floor(overworld.w / 2), cy = Math.floor(overworld.h / 2);
   dungeons.forEach(d => {
-    const [ox, oy] = d.def.overworldOff;
-    let tx = Math.max(4, Math.min(overworld.w - 5, cx + ox));
-    let ty = Math.max(4, Math.min(overworld.h - 5, cy + oy));
-    overworld.grid[ty][tx] = T.STAIRS;
-    overworld.grid[ty - 1][tx] = T.SIGNPOST;
+    const spot = regionAnchor(d.def.region);
+    clearPocket(spot.x, spot.y, 3, REGION_DEFS[d.def.region].floorBase || REGION_DEFS[d.def.region].base);
+    drawRoadLine(overworld.grid, cx, cy, spot.x, spot.y);
+    overworld.grid[spot.y][spot.x] = T.STAIRS;
+    overworld.grid[spot.y - 1][spot.x] = T.SIGNPOST;
     d.entranceZone = {
-      minX: (tx - 1) * CONFIG.TILE, maxX: (tx + 2) * CONFIG.TILE,
-      minY: ty * CONFIG.TILE, maxY: (ty + 1) * CONFIG.TILE,
+      minX: (spot.x - 1) * CONFIG.TILE, maxX: (spot.x + 2) * CONFIG.TILE,
+      minY: spot.y * CONFIG.TILE, maxY: (spot.y + 1) * CONFIG.TILE,
     };
-    d.overworldSpawn = { x: (tx + 0.5) * CONFIG.TILE, y: (ty + 1.5) * CONFIG.TILE };
+    d.overworldSpawn = { x: (spot.x + 0.5) * CONFIG.TILE, y: (spot.y + 0.5) * CONFIG.TILE }; // informational only
   });
 }
 placeDungeonEntrances();
 
-// Castle entrance: a sealed gate near the top-center of the map, walled
-// off with stone (reusing WALL tiles) and a stairway tile for the door.
+// Castle entrance: a sealed gate deep in the Darkness region (the spooky
+// approach to the castle), walled off with stone and a stairway door tile.
 const castleGate = {};
 (function placeCastleGate() {
-  const cx = Math.floor(overworld.w / 2);
-  const ty = 5;
-  for (let x = cx - 2; x <= cx + 2; x++) {
+  const cx = Math.floor(overworld.w / 2), cy = Math.floor(overworld.h / 2);
+  const spot = regionAnchor('darkness', Math.min(overworld.w, overworld.h) / 2 - 6);
+  clearPocket(spot.x, spot.y, 3, T.DARKGRASS);
+  drawRoadLine(overworld.grid, cx, cy, spot.x, spot.y);
+  const ty = spot.y;
+  for (let x = spot.x - 2; x <= spot.x + 2; x++) {
     overworld.grid[ty - 1][x] = T.WALL;
   }
-  overworld.grid[ty][cx] = T.STAIRS;
-  overworld.grid[ty - 1][cx] = T.DOOR;
+  overworld.grid[ty][spot.x] = T.STAIRS;
+  overworld.grid[ty - 1][spot.x] = T.DOOR;
   castleGate.zone = {
-    minX: (cx - 1) * CONFIG.TILE, maxX: (cx + 2) * CONFIG.TILE,
+    minX: (spot.x - 1) * CONFIG.TILE, maxX: (spot.x + 2) * CONFIG.TILE,
     minY: ty * CONFIG.TILE, maxY: (ty + 1) * CONFIG.TILE,
   };
+})();
+
+// =========================================================================
+// Phase 8: second small town in the Desert region, with its own shop
+// (reuses the same building/interior/shopkeeper machinery as the start
+// town - just placed at a different regionAnchor)
+// =========================================================================
+const desertShopInterior = buildInterior('Desert Outpost Shop');
+desertShopInterior.canvas = prerenderMap(desertShopInterior);
+const desertTownSpot = regionAnchor('desert', Math.min(overworld.w, overworld.h) / 2 - 22);
+clearPocket(desertTownSpot.x, desertTownSpot.y, 5, T.SAND);
+drawRoadLine(overworld.grid, Math.floor(overworld.w / 2), Math.floor(overworld.h / 2), desertTownSpot.x, desertTownSpot.y);
+const desertShopBuilding = {
+  name: 'desertShop',
+  doorTileX: desertTownSpot.x, doorTileY: desertTownSpot.y,
+  interior: desertShopInterior,
+};
+carveBuilding(desertShopBuilding);
+buildings.push(desertShopBuilding);
+// a couple of decorative (non-enterable) houses give the outpost some charm
+for (const [ox, oy] of [[-4, 2], [4, 2]]) {
+  const hx = desertTownSpot.x + ox, hy = desertTownSpot.y + oy;
+  if (hx > 3 && hy > 3 && hx < overworld.w - 4 && hy < overworld.h - 4) {
+    overworld.grid[hy - 1][hx] = T.WALL; overworld.grid[hy - 1][hx + 1] = T.WALL;
+    overworld.grid[hy][hx] = T.DOOR;
+  }
+}
+// (desert-town NPCs are created further down, once makeNPC/villagerNPCs exist - see near allNPCs())
+
+// =========================================================================
+// Phase 8: wilds - scattered pots, slashable bushes, heart pickups and
+// difficulty-scaled enemies across every region, away from the town core.
+// One secret area (a Giant Heart Piece walled off by trees with a single
+// hidden gap) with no signposted path to it.
+// =========================================================================
+const wildsPots = [];
+const wildsBushes = [];
+const wildsEnemies = [];
+(function scatterWilds() {
+  const rand = mulberry32(2024);
+  const cx = overworld.w / 2, cy = overworld.h / 2;
+  const enemyKindByRegion = { forest: 'wolf', mountain: 'fireImp', lakes: 'octorok', desert: 'wraith', darkness: 'wraith' };
+  for (let i = 0; i < 260; i++) {
+    const tx = 3 + Math.floor(rand() * (overworld.w - 6));
+    const ty = 3 + Math.floor(rand() * (overworld.h - 6));
+    const r = regionAt(tx, ty);
+    if (r === 'town') continue;
+    if (SOLID_TILES.has(overworld.grid[ty][tx])) continue;
+    const wx = (tx + 0.5) * CONFIG.TILE, wy = (ty + 0.5) * CONFIG.TILE;
+    const roll = rand();
+    if (roll < 0.35) {
+      wildsPots.push({ x: wx, y: wy, alive: true, w: 14, h: 14 });
+    } else if (roll < 0.6) {
+      wildsBushes.push({ x: wx, y: wy, alive: true, w: 14, h: 14, isBush: true });
+    } else if (roll < 0.9) {
+      const dist = Math.hypot(tx - cx, ty - cy);
+      const tier = Math.min(3, Math.floor(dist / 35)); // gentle scaling with distance from town
+      const e = makeDungeonEnemy(enemyKindByRegion[r] || 'wolf', wx, wy);
+      e.hp += tier; e.maxHp = e.hp; e.xp += tier * 2;
+      wildsEnemies.push(e);
+    }
+  }
+
+  // secret heart piece: a small clearing deep in the Forest region, walled
+  // by trees on every side except one 1-tile gap
+  const secretSpot = regionAnchor('forest', Math.min(overworld.w, overworld.h) / 2 - 15, 140);
+  const sx = secretSpot.x, sy = secretSpot.y;
+  for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++) {
+    const gx = sx + ox, gy = sy + oy;
+    if (gx > 1 && gy > 1 && gx < overworld.w - 2 && gy < overworld.h - 2) {
+      if (Math.abs(ox) === 2 || Math.abs(oy) === 2) overworld.grid[gy][gx] = T.TREE;
+      else overworld.grid[gy][gx] = T.GRASS;
+    }
+  }
+  overworld.grid[sy - 2][sx] = T.GRASS; // the single hidden gap north side
+  spawnHeartPiece((sx + 0.5) * CONFIG.TILE, (sy + 0.5) * CONFIG.TILE, null);
 })();
 
 overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon/castle entrances carved in
@@ -997,7 +1210,6 @@ function defeatMiniboss(d, e) {
 function spawnHeartPiece(x, y, d) {
   heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null });
 }
-const heartPieces = []; // giant heart piece pickups: {x,y,t}
 function updateDungeonRoom(dt, room) {
   const d = world.dungeon;
   handleDungeonDoors(d, room, dt);
@@ -1345,10 +1557,24 @@ const shopkeeper = makeNPC(4 * CONFIG.TILE, 3 * CONFIG.TILE, '#c8a030',
 shopkeeper.isShopkeeper = true;
 const shopNPCs = [shopkeeper];
 
+// desert outpost town NPCs (map tiles/building were carved earlier at
+// map-build time; the NPC objects need makeNPC/villagerNPCs to exist first)
+const desertShopkeeper = makeNPC((desertTownSpot.x + 0) * CONFIG.TILE, (desertTownSpot.y - 2) * CONFIG.TILE, '#c8a030',
+  ['Welcome to the Desert Outpost!'], { home: 'desertShop' });
+desertShopkeeper.isShopkeeper = true;
+const desertShopNPCs = [desertShopkeeper];
+villagerNPCs.push(
+  makeNPC((desertTownSpot.x - 3) * CONFIG.TILE, (desertTownSpot.y + 3) * CONFIG.TILE, '#c88030',
+    ["Hot out here, isn't it?", "This outpost sells desert gear.", "Watch for sandstorms!"]),
+  makeNPC((desertTownSpot.x + 3) * CONFIG.TILE, (desertTownSpot.y + 3) * CONFIG.TILE, '#8a6a30',
+    ["There's a secret somewhere out there...", "Look for a gap in a dense thicket.", "Good luck, hero!"]),
+);
+
 function allNPCs() {
   const list = villagerNPCs.concat(cameoNPCs);
   if (world.mode === 'interior' && world.interior === houseInterior) return houseNPCs;
   if (world.mode === 'interior' && world.interior === shopInterior) return shopNPCs;
+  if (world.mode === 'interior' && world.interior === desertShopInterior) return desertShopNPCs;
   return world.mode === 'overworld' ? list : [];
 }
 
@@ -1517,15 +1743,21 @@ function spawnEnemies() {
 }
 const overworldEnemies = spawnEnemies();
 
+let cachedOverworldPots = null;
 function currentPots() {
   if (world.mode === 'dungeon') return world.dungeon.pots[world.dungeon.roomIndex];
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].pots;
-  return world.mode === 'overworld' ? overworldPots : [];
+  if (world.mode !== 'overworld') return [];
+  if (!cachedOverworldPots) cachedOverworldPots = overworldPots.concat(wildsPots, wildsBushes);
+  return cachedOverworldPots;
 }
+let cachedOverworldEnemies = null;
 function currentEnemies() {
   if (world.mode === 'dungeon') return world.dungeon.enemies[world.dungeon.roomIndex];
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].enemies;
-  return world.mode === 'overworld' ? overworldEnemies : [];
+  if (world.mode !== 'overworld') return [];
+  if (!cachedOverworldEnemies) cachedOverworldEnemies = overworldEnemies.concat(wildsEnemies);
+  return cachedOverworldEnemies;
 }
 
 function tierAPReward() { return CONFIG.AP_PER_CORRECT[CONFIG.DIFFICULTY]; }
@@ -1701,6 +1933,13 @@ function updateArrows(dt, map) {
 function smashPot(p) {
   if (!p.alive) return;
   p.alive = false;
+  if (p.isBush) {
+    SFX.inkSplat(); // reused as a quick "rustle" sound for cut bushes
+    const roll = Math.random();
+    if (roll < 0.3) spawnCoin(p.x, p.y);
+    else if (roll < 0.42) spawnHeartPickup(p.x, p.y);
+    return;
+  }
   SFX.potSmash();
   if (Math.random() < 0.6) spawnCoin(p.x, p.y);
 }
@@ -2607,7 +2846,7 @@ function drawPlaying() {
   ctx.drawImage(canvasImg, 0, 0);
 
   if (world.mode === 'overworld') {
-    for (const p of currentPots()) if (p.alive) drawPot(p.x, p.y);
+    for (const p of currentPots()) if (p.alive) { p.isBush ? drawBush(p.x, p.y) : drawPot(p.x, p.y); }
     for (const e of currentEnemies()) if (e.alive) drawEnemy(e);
   }
 
@@ -2717,11 +2956,56 @@ function drawPlaying() {
     ctx.fillText(hud.hintText, CONFIG.GAME_W / 2, 58);
   }
 
+  // region weather overlay (Phase 8) - drawn in screen space, cheap and
+  // stateless (positions derived from time so nothing needs updating)
+  if (world.mode === 'overworld') drawWeatherOverlay();
+
   // fade overlay
   if (fadeAlpha > 0) {
     ctx.fillStyle = `rgba(0,0,0,${fadeAlpha})`;
     ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
   }
+}
+
+function drawWeatherOverlay() {
+  const tx = Math.floor(hero.x / CONFIG.TILE), ty = Math.floor(hero.y / CONFIG.TILE);
+  const region = regionAt(tx, ty);
+  const t = performance.now() / 1000;
+  if (region === 'forest') {
+    ctx.strokeStyle = 'rgba(180,200,255,0.35)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 40; i++) {
+      const x = (i * 53 + t * 260) % CONFIG.GAME_W;
+      const y = (i * 97 + t * 380) % CONFIG.GAME_H;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 3, y + 9); ctx.stroke();
+    }
+  } else if (region === 'mountain') {
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    for (let i = 0; i < 50; i++) {
+      const x = (i * 61 + Math.sin(t + i) * 20) % CONFIG.GAME_W;
+      const y = (i * 71 + t * 60) % CONFIG.GAME_H;
+      ctx.fillRect(x, y, 2, 2);
+    }
+  } else if (region === 'desert') {
+    ctx.fillStyle = 'rgba(220,190,110,0.12)';
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+    ctx.fillStyle = 'rgba(220,190,110,0.3)';
+    for (let i = 0; i < 30; i++) {
+      const x = (i * 83 + t * 300) % CONFIG.GAME_W;
+      const y = (i * 41) % CONFIG.GAME_H;
+      ctx.fillRect(x, y, 6, 1);
+    }
+  } else if (region === 'darkness') {
+    ctx.fillStyle = 'rgba(0,0,10,0.28)';
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  }
+}
+
+function drawBush(x, y) {
+  const sway = Math.sin(performance.now() / 500 + x) * 1.2;
+  ctx.fillStyle = '#245a20';
+  ctx.beginPath(); ctx.ellipse(x + sway, y - 2, 7, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#357a30';
+  ctx.beginPath(); ctx.ellipse(x - 3 + sway, y - 4, 4, 4, 0, 0, Math.PI * 2); ctx.fill();
 }
 
 function drawPot(x, y) {
