@@ -65,8 +65,102 @@ const CONFIG = {
   NPC_WANDER_SPEED: 30,     // px/s for wandering villagers
   NPC_TALK_RANGE: 22,       // px distance to allow E-to-talk
 
+  // --- Combat / AP ---
+  STARTING_AP: 5,           // Action Points the hero starts with
+  MAX_AP: 10,                // AP bar cap
+  SWORD_AP_COST: 1,          // AP spent per sword swing
+  BOOMERANG_AP_COST: 2,      // AP spent per boomerang throw
+  SWORD_COOLDOWN: 0.35,      // seconds between sword swings
+  SWORD_RANGE: 28,           // px - sword only works this close
+  ENEMY_TAP_HITBOX_MULT: 1.5, // forgiving tap hitbox multiplier for enemies
+  ENEMY_TAP_HITBOX_MIN: 48,   // minimum forgiving tap hitbox in px
+
+  // --- Math popup tiers ---
+  // grade band, AP reward per correct answer
+  AP_PER_CORRECT: { LITTLE_HERO: 3, ADVENTURER: 4, MASTER: 5, LEGEND: 6 },
+  // chance (0-1) a defeated enemy drops a healing heart, per tier
+  HEART_DROP_CHANCE: { LITTLE_HERO: 0.35, ADVENTURER: 0.25, MASTER: 0.18, LEGEND: 0.12 },
+
   // --- Fixed timestep ---
   STEP_MS: 1000 / 60,     // physics update runs at 60hz regardless of screen fps
+
+  // --- Question category ---
+  // Which category of question the Q popup asks. Today only 'math' exists;
+  // see QUESTION_BANK below for how to add more (e.g. spelling, geometry)
+  // without touching any popup/game logic.
+  ACTIVE_CATEGORY: 'math',
+};
+
+// =========================================================================
+// QUESTION BANK
+// One entry per category. Each category needs only a label and a
+// generateQuestion(tier) function returning
+// { questionText, answers: [a,b,c], correctIndex }.
+// Adding a new category (see NOTES near the bottom of this file for the
+// exact prompt) never requires touching the math popup or game logic -
+// just add a new key here and flip CONFIG.ACTIVE_CATEGORY.
+// =========================================================================
+function shuffle3(correct, wrongA, wrongB) {
+  const arr = [{ v: correct, correct: true }, { v: wrongA, correct: false }, { v: wrongB, correct: false }];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return { answers: arr.map(a => String(a.v)), correctIndex: arr.findIndex(a => a.correct) };
+}
+function plausibleWrongs(correct, spread) {
+  let a = correct + (Math.floor(Math.random() * spread) + 1) * (Math.random() < 0.5 ? -1 : 1);
+  let b = correct + (Math.floor(Math.random() * spread) + 1) * (Math.random() < 0.5 ? -1 : 1);
+  if (a < 0) a = correct + Math.abs(a) + 1;
+  if (b < 0) b = correct + Math.abs(b) + 1;
+  if (a === correct) a += 1;
+  if (b === correct || b === a) b = a + 1;
+  return [a, b];
+}
+
+const QUESTION_BANK = {
+  math: {
+    label: 'Math',
+    generateQuestion(tier) {
+      let a, b, op, text, correct;
+      const r = (n) => 1 + Math.floor(Math.random() * n);
+      if (tier === 'LITTLE_HERO') {
+        // grades 1-2: addition/subtraction within 20, never negative
+        op = Math.random() < 0.5 ? '+' : '-';
+        if (op === '+') { a = r(10); b = r(10); correct = a + b; }
+        else { a = r(10) + 5; b = r(a); correct = a - b; }
+      } else if (tier === 'ADVENTURER') {
+        // grades 3-4: multiplication/division + bigger add/sub
+        const ops = ['+', '-', '*'];
+        op = ops[Math.floor(Math.random() * ops.length)];
+        if (op === '+') { a = r(50) + 10; b = r(50) + 10; correct = a + b; }
+        else if (op === '-') { a = r(60) + 20; b = r(a); correct = a - b; }
+        else { a = r(9) + 1; b = r(9) + 1; correct = a * b; }
+      } else if (tier === 'MASTER') {
+        // grades 5-6: multiplication/division with larger numbers
+        const ops = ['*', '/', '+'];
+        op = ops[Math.floor(Math.random() * ops.length)];
+        if (op === '*') { a = r(12) + 2; b = r(12) + 2; correct = a * b; }
+        else if (op === '/') { b = r(11) + 2; correct = r(11) + 1; a = b * correct; }
+        else { a = r(400) + 50; b = r(400) + 50; correct = a + b; }
+      } else { // LEGEND: grades 7+: mix incl. simple exponents/two-step
+        const ops = ['*', '/', '^', '2step'];
+        op = ops[Math.floor(Math.random() * ops.length)];
+        if (op === '*') { a = r(20) + 5; b = r(20) + 5; correct = a * b; }
+        else if (op === '/') { b = r(15) + 2; correct = r(15) + 2; a = b * correct; }
+        else if (op === '^') { a = r(5) + 2; b = 2; correct = Math.pow(a, b); }
+        else { a = r(12) + 2; b = r(12) + 2; const c = r(10) + 1; correct = a * b + c; text = `${a} x ${b} + ${c} = ?`; }
+      }
+      if (!text) {
+        const opSym = op === '*' ? 'x' : op === '/' ? '÷' : op === '^' ? '^' : op;
+        text = `${a} ${opSym} ${b} = ?`;
+      }
+      const spread = tier === 'LITTLE_HERO' ? 3 : tier === 'ADVENTURER' ? 6 : tier === 'MASTER' ? 10 : 15;
+      const [w1, w2] = plausibleWrongs(correct, spread);
+      const shuffled = shuffle3(correct, w1, w2);
+      return { questionText: text, answers: shuffled.answers, correctIndex: shuffled.correctIndex };
+    },
+  },
 };
 
 // =========================================================================
@@ -115,6 +209,35 @@ function unlockAudio() {
 window.addEventListener('touchstart', unlockAudio, { once: true });
 window.addEventListener('mousedown', unlockAudio, { once: true });
 window.addEventListener('keydown', unlockAudio, { once: true });
+
+// simple WebAudio oscillator SFX helper (Phase 2+; more sounds added later)
+function playTone(freq, dur, type, gainAmt, startDelay) {
+  if (!audioCtx) return;
+  try {
+    const t0 = audioCtx.currentTime + (startDelay || 0);
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type || 'square';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(gainAmt || 0.15, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  } catch (e) { /* ignore */ }
+}
+const SFX = {
+  swish: () => { playTone(520, 0.12, 'triangle', 0.12); playTone(760, 0.08, 'triangle', 0.08, 0.03); },
+  hit: () => playTone(140, 0.1, 'square', 0.15),
+  defeat: () => { playTone(300, 0.08, 'square', 0.12); playTone(180, 0.12, 'square', 0.12, 0.06); },
+  coin: (pitch) => playTone(880 + (pitch || 0) * 40, 0.09, 'square', 0.12),
+  potSmash: () => playTone(200, 0.08, 'sawtooth', 0.1),
+  hurt: () => playTone(110, 0.2, 'sawtooth', 0.15),
+  correct: () => { playTone(523, 0.1, 'triangle', 0.15); playTone(659, 0.1, 'triangle', 0.15, 0.08); playTone(784, 0.15, 'triangle', 0.15, 0.16); },
+  wrong: () => playTone(220, 0.18, 'sine', 0.1),
+  door: () => playTone(180, 0.3, 'sine', 0.1),
+  revive: () => { playTone(392, 0.12, 'triangle', 0.15); playTone(523, 0.12, 'triangle', 0.15, 0.1); playTone(659, 0.2, 'triangle', 0.15, 0.2); },
+};
 
 // =========================================================================
 // Input handling
@@ -445,11 +568,345 @@ function advanceDialogue() {
 }
 
 // =========================================================================
-// HUD state (skeleton; grows Phase 2+)
+// HUD state
 // =========================================================================
 const hud = { gold: 0, hintText: '', hintTimer: 0 };
 function showHint(text, seconds) {
   hud.hintText = text; hud.hintTimer = seconds || 2;
+}
+
+// =========================================================================
+// Player combat/progress state (Phase 2)
+// =========================================================================
+const player = {
+  hearts: 3, maxHearts: 3,
+  ap: CONFIG.STARTING_AP, maxAp: CONFIG.MAX_AP,
+  invincibleT: 0,
+  attackCooldown: 0,
+  questionsAnswered: 0, revivesUsed: 0,
+  swordSwingT: 0, // >0 while swing animation plays
+  downed: false, // true when hearts hit 0 (revive flow)
+  zeroApAttackTimer: 0, // counts up after attacking at 0 AP, auto-opens math popup at 1s
+};
+
+const floatingTexts = []; // {x,y,text,life,color}
+const confettiParticles = []; // {x,y,vx,vy,life,color}
+function spawnFloatingText(x, y, text, color) {
+  floatingTexts.push({ x, y, text, life: 1.0, color: color || '#ffe066' });
+}
+function spawnConfetti(x, y, count) {
+  const colors = ['#ff5050', '#50d0ff', '#ffe066', '#50ff90', '#c060ff'];
+  for (let i = 0; i < (count || 16); i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 40 + Math.random() * 80;
+    confettiParticles.push({
+      x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd - 40,
+      life: 0.8 + Math.random() * 0.4, color: colors[i % colors.length],
+    });
+  }
+}
+
+function gainAP(n) {
+  player.ap = Math.min(player.maxAp, player.ap + n);
+}
+function spendAP(n) {
+  if (player.ap < n) return false;
+  player.ap -= n;
+  return true;
+}
+
+// --- Pots ---
+function spawnPots() {
+  const rand = mulberry32(4242);
+  const list = [];
+  for (let i = 0; i < 8; i++) {
+    const x = (overworld.w / 2 - 12 + (i % 4) * 5) * CONFIG.TILE + rand() * 20;
+    const y = (overworld.h / 2 + 10 + Math.floor(i / 4) * 4) * CONFIG.TILE + rand() * 20;
+    list.push({ x, y, alive: true, w: 14, h: 14 });
+  }
+  return list;
+}
+const pots = spawnPots();
+
+// --- Coins ---
+const coins = []; // {x,y,vy,vx,t,collected}
+function spawnCoin(x, y) {
+  coins.push({ x, y: y - 6, startY: y - 6, vx: (Math.random() - 0.5) * 40, vy: -60, t: 0 });
+}
+
+// --- Hearts pickups ---
+const heartPickups = []; // {x,y,t}
+function spawnHeartPickup(x, y) {
+  heartPickups.push({ x, y, t: 0 });
+}
+
+// --- Enemies ---
+function makeSlime(x, y) {
+  return { type: 'slime', x, y, w: 14, h: 12, hp: 2, maxHp: 2, alive: true,
+    hopTimer: Math.random() * 1, hopDx: 0, hopDy: 0, hitFlash: 0, range: 120 };
+}
+function makeBat(x, y) {
+  return { type: 'bat', x, y, w: 12, h: 10, hp: 1, maxHp: 1, alive: true,
+    t: Math.random() * 10, baseX: x, baseY: y, hitFlash: 0, range: 150 };
+}
+function spawnEnemies() {
+  const rand = mulberry32(777);
+  const list = [];
+  const cx = overworld.w / 2, cy = overworld.h / 2;
+  const slimeSpots = [[-14, 10], [-16, 14], [12, 12], [16, 16], [-6, 18], [8, 20]];
+  for (const [ox, oy] of slimeSpots) list.push(makeSlime((cx + ox) * CONFIG.TILE, (cy + oy) * CONFIG.TILE));
+  const batSpots = [[-18, 4], [18, 6], [-10, -6], [10, -8]];
+  for (const [ox, oy] of batSpots) list.push(makeBat((cx + ox) * CONFIG.TILE, (cy + oy) * CONFIG.TILE));
+  return list;
+}
+const enemies = spawnEnemies();
+
+function tierAPReward() { return CONFIG.AP_PER_CORRECT[CONFIG.DIFFICULTY]; }
+function tierHeartChance() { return CONFIG.HEART_DROP_CHANCE[CONFIG.DIFFICULTY]; }
+
+function damageEnemy(e, dmg) {
+  e.hp -= dmg; e.hitFlash = 0.1;
+  if (e.hp <= 0 && e.alive) {
+    e.alive = false;
+    SFX.defeat();
+    spawnConfetti(e.x, e.y, 8);
+    const goldAmt = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < goldAmt; i++) spawnCoin(e.x + (Math.random() - 0.5) * 10, e.y);
+    if (Math.random() < tierHeartChance()) spawnHeartPickup(e.x, e.y);
+  } else {
+    SFX.hit();
+  }
+}
+
+function trySwingSword() {
+  if (player.attackCooldown > 0 || dialogue.active || player.downed) return;
+  // find nearest enemy or pot in sword range
+  let target = null, bestDist = CONFIG.SWORD_RANGE;
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    const d = Math.hypot(e.x - hero.x, e.y - hero.y);
+    if (d < bestDist) { bestDist = d; target = e; }
+  }
+  if (!spendAP(CONFIG.SWORD_AP_COST)) {
+    showHint('Not enough AP! Press Q to earn more!', 2);
+    player.zeroApAttackTimer = 0.0001; // start the auto-popup countdown
+    return;
+  }
+  player.attackCooldown = CONFIG.SWORD_COOLDOWN;
+  player.swordSwingT = 0.2;
+  SFX.swish();
+  // lunge
+  const lunge = 6;
+  const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  moveWithCollision(hero, dirVec[0] * lunge, dirVec[1] * lunge, currentMap());
+
+  // hit anything within range + facing arc (~120deg)
+  const facingAngle = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 }[hero.facing];
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    const d = Math.hypot(e.x - hero.x, e.y - hero.y);
+    if (d > CONFIG.SWORD_RANGE) continue;
+    const ang = Math.atan2(e.y - hero.y, e.x - hero.x);
+    let diff = Math.abs(ang - facingAngle);
+    if (diff > Math.PI) diff = Math.PI * 2 - diff;
+    if (diff < Math.PI * 0.65) damageEnemy(e, 1);
+  }
+  for (const p of pots) {
+    if (!p.alive) continue;
+    const d = Math.hypot(p.x - hero.x, p.y - hero.y);
+    if (d <= CONFIG.SWORD_RANGE) smashPot(p);
+  }
+}
+
+function smashPot(p) {
+  if (!p.alive) return;
+  p.alive = false;
+  SFX.potSmash();
+  if (Math.random() < 0.6) spawnCoin(p.x, p.y);
+}
+
+// --- Math popup / AP earning ---
+const QUESTION_TIERS = {
+  LITTLE_HERO: { label: 'Little Hero', grade: '1st-2nd grade' },
+  ADVENTURER: { label: 'Adventurer', grade: '3rd-4th grade' },
+  MASTER: { label: 'Master', grade: '5th-6th grade' },
+  LEGEND: { label: 'Legend', grade: '7th grade+' },
+};
+
+function generateMathQuestion(tier) {
+  return QUESTION_BANK[CONFIG.ACTIVE_CATEGORY].generateQuestion(tier);
+}
+
+const mathPopup = { active: false, question: null, wrongIdx: -1, purpose: 'ap' };
+function openMathPopup(purpose) {
+  mathPopup.active = true;
+  mathPopup.question = generateMathQuestion(CONFIG.DIFFICULTY);
+  mathPopup.wrongIdx = -1;
+  mathPopup.purpose = purpose || 'ap'; // 'ap' or 'revive'
+}
+function closeMathPopup() {
+  mathPopup.active = false; mathPopup.question = null;
+}
+function answerMathPopup(idx) {
+  if (!mathPopup.active) return;
+  const q = mathPopup.question;
+  if (idx === q.correctIndex) {
+    player.questionsAnswered++;
+    SFX.correct();
+    if (mathPopup.purpose === 'revive') {
+      closeMathPopup();
+      doRevive();
+    } else {
+      const reward = tierAPReward();
+      gainAP(reward);
+      closeMathPopup();
+      spawnConfetti(hero.x, hero.y, 14);
+      spawnFloatingText(hero.x, hero.y - 20, '+' + reward + ' AP', '#8effc1');
+      player.zeroApAttackTimer = 0;
+    }
+  } else {
+    SFX.wrong();
+    mathPopup.wrongIdx = idx;
+    showHint('', 0);
+  }
+}
+
+function doRevive() {
+  player.downed = false;
+  player.hearts = Math.min(player.maxHearts, 3);
+  player.invincibleT = 3;
+  player.revivesUsed++;
+  SFX.revive();
+  spawnFloatingText(hero.x, hero.y - 24, 'REVIVED!', '#ffe066');
+}
+
+function damageHero(amount, fromX, fromY) {
+  if (player.invincibleT > 0 || player.downed) return;
+  player.hearts -= amount;
+  player.invincibleT = 1.0;
+  SFX.hurt();
+  const kx = hero.x - fromX, ky = hero.y - fromY;
+  const len = Math.hypot(kx, ky) || 1;
+  moveWithCollision(hero, (kx / len) * 14, (ky / len) * 14, currentMap());
+  screenShake(4, 0.2);
+  if (player.hearts <= 0) {
+    player.hearts = 0;
+    player.downed = true;
+    openMathPopup('revive');
+  }
+}
+
+// --- screen shake ---
+let shakeT = 0, shakeMag = 0;
+function screenShake(mag, dur) { shakeMag = mag; shakeT = dur; }
+
+function updateEnemies(dt, map) {
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    if (e.hitFlash > 0) e.hitFlash -= dt;
+    const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
+
+    if (e.type === 'slime') {
+      e.hopTimer -= dt;
+      if (dist < e.range) {
+        if (e.hopTimer <= 0) {
+          e.hopTimer = 0.9;
+          const ux = (hero.x - e.x) / (dist || 1), uy = (hero.y - e.y) / (dist || 1);
+          e.hopDx = ux * 40; e.hopDy = uy * 40;
+        }
+      } else if (e.hopTimer <= 0) {
+        e.hopTimer = 1.5; e.hopDx = 0; e.hopDy = 0;
+      }
+      moveWithCollision(e, e.hopDx * dt, e.hopDy * dt, map);
+      e.hopDx *= 0.9; e.hopDy *= 0.9;
+    } else if (e.type === 'bat') {
+      e.t += dt;
+      if (dist < e.range) {
+        const ux = (hero.x - e.x) / (dist || 1);
+        e.x += ux * 35 * dt;
+        e.y = e.baseY + Math.sin(e.t * 4) * 14;
+      } else {
+        e.y = e.baseY + Math.sin(e.t * 2) * 6;
+      }
+    }
+
+    // contact damage
+    if (Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) {
+      damageHero(1, e.x, e.y);
+    }
+  }
+}
+
+function updateCoinsAndPickups(dt) {
+  let comboPitch = 0;
+  for (let i = coins.length - 1; i >= 0; i--) {
+    const c = coins[i];
+    c.t += dt;
+    if (c.t < 0.35) {
+      c.x += c.vx * dt; c.y += c.vy * dt; c.vy += 220 * dt;
+      if (c.vy > 0 && c.y > c.startY) c.vy *= -0.4;
+    } else {
+      const d = Math.hypot(hero.x - c.x, hero.y - c.y);
+      if (d < 60) {
+        const ux = (hero.x - c.x) / (d || 1), uy = (hero.y - c.y) / (d || 1);
+        c.x += ux * 220 * dt; c.y += uy * 220 * dt;
+      }
+      if (d < 8) {
+        hud.gold += 1;
+        SFX.coin(comboPitch++);
+        coins.splice(i, 1);
+      }
+    }
+  }
+  for (let i = heartPickups.length - 1; i >= 0; i--) {
+    const h = heartPickups[i];
+    h.t += dt;
+    if (Math.hypot(hero.x - h.x, hero.y - h.y) < 12) {
+      if (player.hearts < player.maxHearts) player.hearts++;
+      spawnFloatingText(h.x, h.y - 10, '+1', '#ff8fa8');
+      heartPickups.splice(i, 1);
+    }
+  }
+}
+
+function updateFloatingAndConfetti(dt) {
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const f = floatingTexts[i];
+    f.life -= dt; f.y -= 20 * dt;
+    if (f.life <= 0) floatingTexts.splice(i, 1);
+  }
+  for (let i = confettiParticles.length - 1; i >= 0; i--) {
+    const c = confettiParticles[i];
+    c.life -= dt; c.x += c.vx * dt; c.y += c.vy * dt; c.vy += 120 * dt;
+    if (c.life <= 0) confettiParticles.splice(i, 1);
+  }
+}
+
+function updateMathPopupInput() {
+  const q = mathPopup.question;
+  if (Input.keys['1']) { Input.keys['1'] = false; answerMathPopup(0); }
+  if (Input.keys['2']) { Input.keys['2'] = false; answerMathPopup(1); }
+  if (Input.keys['3']) { Input.keys['3'] = false; answerMathPopup(2); }
+  if (mathPopup.purpose === 'ap' && (Input.keys['Escape'] || Input.keys['x'] || Input.keys['X'])) {
+    Input.keys['Escape'] = Input.keys['x'] = Input.keys['X'] = false;
+    closeMathPopup(); // ESC/X: no reward, no penalty
+  }
+  if (Input.tapped) {
+    const wp = { x: Input.tapX, y: Input.tapY };
+    const btns = getMathButtons();
+    for (let i = 0; i < btns.length; i++) {
+      if (pointInRect(wp.x, wp.y, btns[i])) { answerMathPopup(i); break; }
+    }
+    Input.tapped = false;
+  }
+}
+
+function getMathButtons() {
+  const btnW = 180, btnH = 50, gap = 14;
+  const totalW = btnW * 3 + gap * 2;
+  const startX = CONFIG.GAME_W / 2 - totalW / 2;
+  const y = 220;
+  return [0, 1, 2].map(i => ({ x: startX + i * (btnW + gap), y, w: btnW, h: btnH }));
 }
 
 function pickDifficulty(name) {
@@ -520,6 +977,37 @@ function updatePlaying(dt) {
     return;
   }
 
+  // math popup pauses the world (works even mid-boss-fight later; bug #5)
+  if (mathPopup.active) {
+    updateMathPopupInput();
+    return;
+  }
+
+  // always-available Q shortcut to open the math popup (also updates timers)
+  if (Input.keys['q'] || Input.keys['Q']) {
+    Input.keys['q'] = Input.keys['Q'] = false;
+    openMathPopup('ap');
+  }
+
+  if (player.attackCooldown > 0) player.attackCooldown -= dt;
+  if (player.invincibleT > 0) player.invincibleT -= dt;
+  if (player.swordSwingT > 0) player.swordSwingT -= dt;
+  if (shakeT > 0) shakeT -= dt;
+
+  if (player.zeroApAttackTimer > 0) {
+    player.zeroApAttackTimer += dt;
+    if (player.zeroApAttackTimer > 1) {
+      player.zeroApAttackTimer = 0;
+      openMathPopup('ap');
+    }
+  }
+
+  // downed (0 hearts): world dims, hero can't move, revive popup already open
+  if (player.downed) {
+    updateFloatingAndConfetti(dt);
+    return;
+  }
+
   const map = currentMap();
 
   // --- keyboard movement (overrides tap target) ---
@@ -542,20 +1030,70 @@ function updatePlaying(dt) {
     moving = true;
   }
 
-  // --- tap-to-move ---
+  // --- tap-to-move / tap-to-attack / tap-to-interact ---
   if (Input.tapped) {
     const wp = worldPointFromScreen(Input.tapX, Input.tapY);
-    // check NPC tap first
     const tappedNpc = allNPCs().find(n => Math.hypot(n.x - wp.x, n.y - wp.y) < 14);
-    if (tappedNpc) {
+    const tappedEnemy = enemies.find(e => e.alive &&
+      Math.hypot(e.x - wp.x, e.y - wp.y) < Math.max(CONFIG.ENEMY_TAP_HITBOX_MIN, e.w * CONFIG.ENEMY_TAP_HITBOX_MULT));
+    const tappedPot = pots.find(p => p.alive && Math.hypot(p.x - wp.x, p.y - wp.y) < 14);
+    if (tappedEnemy) {
+      hero.pendingTalkTarget = null;
+      const d0 = Math.hypot(tappedEnemy.x - hero.x, tappedEnemy.y - hero.y);
+      if (d0 > 60) {
+        showHint('Too far for your sword!', 1.5);
+        hero.pendingAttackTarget = null;
+      } else {
+        hero.pendingAttackTarget = tappedEnemy;
+      }
+      hero.walkTargetX = null; hero.walkTargetY = null;
+    } else if (tappedPot) {
+      hero.pendingTalkTarget = null;
+      hero.pendingAttackTarget = tappedPot;
+      hero.walkTargetX = null; hero.walkTargetY = null;
+    } else if (tappedNpc) {
       hero.pendingTalkTarget = tappedNpc;
       hero.walkTargetX = tappedNpc.x; hero.walkTargetY = tappedNpc.y + 16;
     } else {
-      hero.pendingTalkTarget = null;
+      hero.pendingTalkTarget = null; hero.pendingAttackTarget = null;
       hero.walkTargetX = wp.x; hero.walkTargetY = wp.y;
       rippleMarkers.push({ x: wp.x, y: wp.y, life: 0.5 });
     }
     Input.tapped = false;
+  }
+
+  // --- tap-to-attack: walk into range then swing ---
+  if (hero.pendingAttackTarget) {
+    const tgt = hero.pendingAttackTarget;
+    if (!tgt.alive) { hero.pendingAttackTarget = null; }
+    else {
+      const d = Math.hypot(tgt.x - hero.x, tgt.y - hero.y);
+      if (d > CONFIG.SWORD_RANGE - 4) {
+        const ux = (tgt.x - hero.x) / d, uy = (tgt.y - hero.y) / d;
+        moveWithCollision(hero, ux * CONFIG.HERO_SPEED * dt, uy * CONFIG.HERO_SPEED * dt, map);
+        if (Math.abs(ux) > Math.abs(uy)) hero.facing = ux < 0 ? 'left' : 'right';
+        else hero.facing = uy < 0 ? 'up' : 'down';
+        moving = true;
+      } else {
+        const ang = Math.atan2(tgt.y - hero.y, tgt.x - hero.x);
+        if (Math.abs(ang) < Math.PI / 4) hero.facing = 'right';
+        else if (Math.abs(ang) > Math.PI * 3 / 4) hero.facing = 'left';
+        else hero.facing = ang > 0 ? 'down' : 'up';
+        if (player.attackCooldown <= 0) trySwingSword();
+        hero.pendingAttackTarget = null;
+      }
+    }
+  }
+
+  // --- keyboard attack: Space / J ---
+  if (Input.keys[' '] || Input.keys['j'] || Input.keys['J']) {
+    Input.keys[' '] = Input.keys['j'] = Input.keys['J'] = false;
+    trySwingSword();
+  }
+  if (Input.keys['e'] || Input.keys['E']) {
+    // E on a pot in range smashes it too
+    const nearPot = pots.find(p => p.alive && Math.hypot(p.x - hero.x, p.y - hero.y) < CONFIG.SWORD_RANGE);
+    if (nearPot) { smashPot(nearPot); Input.keys['e'] = Input.keys['E'] = false; }
   }
 
   if (!moving && hero.walkTargetX !== null) {
@@ -646,6 +1184,10 @@ function updatePlaying(dt) {
     rippleMarkers[i].life -= dt;
     if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
   }
+
+  if (world.mode === 'overworld') updateEnemies(dt, map);
+  updateCoinsAndPickups(dt);
+  updateFloatingAndConfetti(dt);
 
   // --- camera clamp ---
   const m = currentMap();
@@ -781,10 +1323,17 @@ function drawNpcSprite(x, y, color, facing) {
 function drawPlaying() {
   const map = currentMap();
   const canvasImg = currentCanvas();
+  const shx = shakeT > 0 ? (Math.random() - 0.5) * shakeMag : 0;
+  const shy = shakeT > 0 ? (Math.random() - 0.5) * shakeMag : 0;
   ctx.save();
-  ctx.translate(-world.camX, -world.camY);
+  ctx.translate(-world.camX + shx, -world.camY + shy);
 
   ctx.drawImage(canvasImg, 0, 0);
+
+  if (world.mode === 'overworld') {
+    for (const p of pots) if (p.alive) drawPot(p.x, p.y);
+    for (const e of enemies) if (e.alive) drawEnemy(e);
+  }
 
   // dust puffs
   for (const d of dustPuffs) {
@@ -810,16 +1359,47 @@ function drawPlaying() {
     }
   }
 
-  // hero
-  drawHeroSprite(hero.x, hero.y, hero.facing, hero.animFrame);
+  // hero (blink while invincible)
+  if (!(player.invincibleT > 0 && Math.floor(player.invincibleT * 12) % 2 === 0)) {
+    drawHeroSprite(hero.x, hero.y, hero.facing, hero.animFrame);
+  }
+  if (player.swordSwingT > 0) drawSwordArc(hero.x, hero.y, hero.facing, player.swordSwingT);
+
+  if (world.mode === 'overworld') {
+    for (const c of coins) drawCoin(c.x, c.y);
+    for (const h of heartPickups) drawHeartPickup(h.x, h.y, h.t);
+  }
+
+  // confetti + floating text (world space)
+  for (const c of confettiParticles) {
+    ctx.globalAlpha = Math.max(0, c.life);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(c.x - 2, c.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  for (const f of floatingTexts) {
+    ctx.globalAlpha = Math.max(0, f.life);
+    ctx.fillStyle = f.color; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
 
   ctx.restore();
+
+  // dim overlay while downed (never a game-over screen, bug #8)
+  if (player.downed) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  }
 
   // HUD (screen space)
   drawHUD();
 
   // dialogue box
   if (dialogue.active) drawDialogueBox();
+
+  // math popup (blocking box; correct-answer celebration itself never blocks)
+  if (mathPopup.active) drawMathPopup();
 
   // hint text
   if (hud.hintTimer > 0) {
@@ -837,14 +1417,135 @@ function drawPlaying() {
   }
 }
 
+function drawPot(x, y) {
+  ctx.fillStyle = '#000'; ctx.globalAlpha = 0.2;
+  ctx.beginPath(); ctx.ellipse(x, y + 6, 6, 2, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#b06a3a';
+  ctx.beginPath(); ctx.moveTo(x - 6, y - 6); ctx.lineTo(x + 6, y - 6); ctx.lineTo(x + 5, y + 6); ctx.lineTo(x - 5, y + 6); ctx.fill();
+  ctx.fillStyle = '#8a4e28';
+  ctx.fillRect(x - 6, y - 8, 12, 3);
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  if (e.hitFlash > 0) ctx.filter = 'brightness(2)';
+  if (e.type === 'slime') {
+    ctx.fillStyle = '#3fc766';
+    ctx.beginPath(); ctx.ellipse(e.x, e.y, 7, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#20211a';
+    ctx.fillRect(e.x - 3, e.y - 2, 2, 2); ctx.fillRect(e.x + 1, e.y - 2, 2, 2);
+  } else {
+    ctx.fillStyle = '#6a4a9a';
+    ctx.beginPath(); ctx.ellipse(e.x, e.y, 6, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(e.x - 6, e.y); ctx.lineTo(e.x - 11, e.y - 4); ctx.lineTo(e.x - 6, e.y - 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(e.x + 6, e.y); ctx.lineTo(e.x + 11, e.y - 4); ctx.lineTo(e.x + 6, e.y - 2); ctx.fill();
+  }
+  ctx.restore();
+  // small HP bar for damaged enemies
+  if (e.hp < e.maxHp) {
+    ctx.fillStyle = '#000'; ctx.fillRect(e.x - 8, e.y - 14, 16, 3);
+    ctx.fillStyle = '#e03030'; ctx.fillRect(e.x - 8, e.y - 14, 16 * (e.hp / e.maxHp), 3);
+  }
+}
+
+function drawCoin(x, y) {
+  ctx.fillStyle = '#ffd84a';
+  ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#a87c10'; ctx.lineWidth = 1; ctx.stroke();
+}
+
+function drawHeartPickup(x, y, t) {
+  const bob = Math.sin(t * 5) * 3;
+  ctx.fillStyle = '#ff5a7a';
+  const hx = x, hy = y + bob;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy + 4);
+  ctx.bezierCurveTo(hx, hy, hx - 6, hy, hx - 6, hy + 3);
+  ctx.bezierCurveTo(hx - 6, hy + 7, hx, hy + 9, hx, hy + 11);
+  ctx.bezierCurveTo(hx, hy + 9, hx + 6, hy + 7, hx + 6, hy + 3);
+  ctx.bezierCurveTo(hx + 6, hy, hx, hy, hx, hy + 4);
+  ctx.fill();
+}
+
+function drawSwordArc(x, y, facing, t) {
+  const progress = 1 - t / 0.2;
+  const baseAngle = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 }[facing];
+  const sweep = Math.PI * 0.8;
+  const ang = baseAngle - sweep / 2 + sweep * progress;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.arc(0, 0, 16, -0.3, 0.3); ctx.stroke();
+  ctx.fillStyle = '#d8d8e8';
+  ctx.fillRect(4, -2, CONFIG.SWORD_RANGE * 0.7, 4);
+  ctx.fillStyle = '#8a6a3a';
+  ctx.fillRect(0, -3, 5, 6);
+  ctx.restore();
+}
+
+function drawMathPopup() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  const bw = 460, bh = 240;
+  const bx = CONFIG.GAME_W / 2 - bw / 2, by = 60;
+  ctx.fillStyle = '#20304a';
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 3;
+  roundRect(bx, by, bw, bh, 14); ctx.fill(); ctx.stroke();
+
+  const tierLabel = mathPopup.purpose === 'revive' ? 'Revive!' : 'Earn Action Points!';
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(tierLabel + ' - ' + QUESTION_TIERS[CONFIG.DIFFICULTY].label, CONFIG.GAME_W / 2, by + 34);
+
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 28px monospace';
+  ctx.fillText(mathPopup.question.questionText, CONFIG.GAME_W / 2, by + 90);
+
+  const btns = getMathButtons();
+  const q = mathPopup.question;
+  for (let i = 0; i < btns.length; i++) {
+    const b = btns[i];
+    const isWrong = i === mathPopup.wrongIdx;
+    ctx.fillStyle = isWrong ? '#555555' : '#3a5a8a';
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    roundRect(b.x, b.y, b.w, b.h, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = isWrong ? '#999999' : '#ffffff';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillText(q.answers[i], b.x + b.w / 2, b.y + b.h / 2 + 8);
+  }
+
+  ctx.fillStyle = '#cccccc'; ctx.font = '12px monospace';
+  if (mathPopup.wrongIdx >= 0) {
+    ctx.fillStyle = '#ffb3b3';
+    ctx.fillText('Good try! Have another go!', CONFIG.GAME_W / 2, by + bh - 14);
+  } else if (mathPopup.purpose === 'ap') {
+    ctx.fillText('Tap an answer, or press 1/2/3    (ESC/X to close)', CONFIG.GAME_W / 2, by + bh - 14);
+  } else {
+    ctx.fillText('Answer to revive your hero!', CONFIG.GAME_W / 2, by + bh - 14);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function drawHUD() {
-  // hearts placeholder (Phase 2 makes these real)
   ctx.fillStyle = '#000'; ctx.globalAlpha = 0.35;
-  ctx.fillRect(4, 4, 130, 40); ctx.globalAlpha = 1;
-  for (let i = 0; i < 3; i++) {
-    ctx.fillStyle = '#d94f4f';
+  ctx.fillRect(4, 4, 220, 56); ctx.globalAlpha = 1;
+
+  // hearts (real, tracks player.hearts/maxHearts)
+  for (let i = 0; i < player.maxHearts; i++) {
+    const hx = 16 + i * 18, hy = 14;
+    const filled = i < player.hearts;
+    ctx.fillStyle = filled ? '#d94f4f' : '#4a2020';
     ctx.beginPath();
-    const hx = 14 + i * 18, hy = 14;
     ctx.moveTo(hx, hy + 3);
     ctx.bezierCurveTo(hx, hy, hx - 6, hy, hx - 6, hy + 4);
     ctx.bezierCurveTo(hx - 6, hy + 8, hx, hy + 10, hx, hy + 12);
@@ -852,8 +1553,19 @@ function drawHUD() {
     ctx.bezierCurveTo(hx + 6, hy, hx, hy, hx, hy + 3);
     ctx.fill();
   }
+
+  // AP bar: 10 segments under hearts
+  const apX = 10, apY = 28, segW = 18, segH = 10, segGap = 2;
+  for (let i = 0; i < player.maxAp; i++) {
+    const filled = i < player.ap;
+    ctx.fillStyle = filled ? '#4fc3ff' : '#1a2a3a';
+    ctx.fillRect(apX + i * (segW + segGap), apY, segW, segH);
+    ctx.strokeStyle = '#0a1420'; ctx.lineWidth = 1;
+    ctx.strokeRect(apX + i * (segW + segGap), apY, segW, segH);
+  }
+
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
-  ctx.fillText('Gold: ' + hud.gold, 10, 36);
+  ctx.fillText('Gold: ' + hud.gold, 10, 52);
 }
 
 function drawDialogueBox() {
