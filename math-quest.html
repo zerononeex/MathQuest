@@ -87,6 +87,10 @@ const CONFIG = {
   XP_SLIME: 5, XP_BAT: 8, XP_MINIBOSS: 50,
   WEAPON_REACH_TILES: { sword: 1, sharpSword: 1.1, heroSword: 1.5 }, // sword reach in tiles
 
+  // --- Music (Phase 6) ---
+  MUSIC_VOLUME: 0.05,  // quiet background chiptune volume so SFX stays audible
+  MUSIC_TEMPO: 1.0,     // 1.0 = normal speed; >1 faster, <1 slower
+
   // --- Castle finale (Phase 5) ---
   GANON_MAX_HP: 60,           // total HP across all 3 phases
   GANON_PHASE2_HP_FRAC: 0.66, // HP fraction where phase 2 begins
@@ -250,6 +254,7 @@ function playTone(freq, dur, type, gainAmt, startDelay) {
 const SFX = {
   swish: () => { playTone(520, 0.12, 'triangle', 0.12); playTone(760, 0.08, 'triangle', 0.08, 0.03); },
   hit: () => playTone(140, 0.1, 'square', 0.15),
+  thud: () => playTone(100, 0.08, 'square', 0.12),
   defeat: () => { playTone(300, 0.08, 'square', 0.12); playTone(180, 0.12, 'square', 0.12, 0.06); },
   coin: (pitch) => playTone(880 + (pitch || 0) * 40, 0.09, 'square', 0.12),
   potSmash: () => playTone(200, 0.08, 'sawtooth', 0.1),
@@ -258,7 +263,94 @@ const SFX = {
   wrong: () => playTone(220, 0.18, 'sine', 0.1),
   door: () => playTone(180, 0.3, 'sine', 0.1),
   revive: () => { playTone(392, 0.12, 'triangle', 0.15); playTone(523, 0.12, 'triangle', 0.15, 0.1); playTone(659, 0.2, 'triangle', 0.15, 0.2); },
+  boomerangThrow: () => { playTone(300, 0.15, 'sawtooth', 0.08); playTone(500, 0.1, 'sawtooth', 0.06, 0.05); },
+  boomerangReturn: () => playTone(600, 0.12, 'sawtooth', 0.1),
+  bowTwang: () => playTone(700, 0.08, 'triangle', 0.12),
+  fireWhoosh: () => { playTone(150, 0.2, 'sawtooth', 0.1); playTone(400, 0.1, 'sawtooth', 0.05, 0.05); },
+  iceChime: () => { playTone(1200, 0.1, 'sine', 0.1); playTone(1500, 0.08, 'sine', 0.08, 0.05); },
+  bombFuse: () => playTone(900, 0.05, 'square', 0.05),
+  bombExplode: () => { playTone(80, 0.3, 'sawtooth', 0.2); playTone(60, 0.25, 'square', 0.15, 0.05); },
+  barrelRoll: () => playTone(120, 0.4, 'sawtooth', 0.08),
+  inkSplat: () => playTone(250, 0.12, 'sawtooth', 0.1),
+  levelUp: () => { [523, 659, 784, 1046].forEach((f, i) => playTone(f, 0.14, 'triangle', 0.15, i * 0.08)); },
+  medallion: () => { [660, 880, 1100].forEach((f, i) => playTone(f, 0.2, 'triangle', 0.15, i * 0.12)); },
+  chestFanfare: () => { [523, 659, 784].forEach((f, i) => playTone(f, 0.18, 'square', 0.15, i * 0.1)); },
+  victoryMelody: () => { [523, 659, 784, 1046, 784, 1046].forEach((f, i) => playTone(f, 0.22, 'triangle', 0.16, i * 0.18)); },
+  ganonLaugh: () => { for (let i = 0; i < 4; i++) playTone(90 - i * 6, 0.18, 'sawtooth', 0.12, i * 0.12); },
 };
+
+// simple mute toggle (M key or HUD speaker icon)
+const audioSettings = { muted: false };
+const _playTone = playTone;
+playTone = function (freq, dur, type, gainAmt, startDelay) {
+  if (audioSettings.muted) return;
+  _playTone(freq, dur, type, gainAmt, startDelay);
+};
+
+// =========================================================================
+// MUSIC (Phase 6): short original looping chiptunes, square lead + triangle
+// bass, as [note, durationBeats] arrays. Never copies real melodies.
+// =========================================================================
+const NOTE_FREQ = { C4: 261.6, D4: 293.7, E4: 329.6, F4: 349.2, G4: 392.0, A4: 440.0, B4: 493.9,
+  C5: 523.3, D5: 587.3, E5: 659.3, F5: 698.5, G5: 784.0, A5: 880.0,
+  C3: 130.8, D3: 146.8, E3: 164.8, F3: 174.6, G3: 196.0, A3: 220.0, B3: 246.9, REST: 0 };
+
+const MUSIC_TRACKS = {
+  title: {
+    lead: [['C5', 1], ['E5', 1], ['G5', 1], ['E5', 1], ['F5', 1], ['A5', 1], ['G5', 2]],
+    bass: [['C3', 2], ['F3', 2], ['G3', 2], ['C3', 2]],
+  },
+  overworld: {
+    lead: [['C5', 1], ['REST', 1], ['E5', 1], ['G5', 1], ['REST', 1], ['F5', 1], ['E5', 1], ['D5', 1]],
+    bass: [['C3', 1], ['G3', 1], ['C3', 1], ['G3', 1], ['F3', 1], ['C3', 1], ['G3', 1], ['C3', 1]],
+  },
+  dungeon: {
+    lead: [['A4', 1], ['C5', 1], ['A4', 1], ['G4', 1], ['F4', 1], ['A4', 1], ['E4', 2]],
+    bass: [['A3', 2], ['F3', 2], ['E3', 2], ['A3', 2]],
+  },
+  boss: {
+    lead: [['E4', 0.5], ['E4', 0.5], ['F4', 0.5], ['G4', 0.5], ['E4', 0.5], ['C4', 0.5], ['D4', 1]],
+    bass: [['E3', 0.5], ['E3', 0.5], ['E3', 0.5], ['E3', 0.5], ['A3', 1], ['A3', 1]],
+  },
+  victory: {
+    lead: [['C5', 0.5], ['E5', 0.5], ['G5', 0.5], ['C5', 0.5], ['G5', 1], ['E5', 1], ['C5', 2]],
+    bass: [['C3', 1], ['G3', 1], ['C3', 2]],
+  },
+};
+
+const music = { track: null, beatIndex: 0, leadTimer: 0, bassLeadTimer: 0, area: null };
+function setMusicArea(area) {
+  if (music.area === area) return;
+  music.area = area;
+  music.track = MUSIC_TRACKS[area] || null;
+  music.leadIndex = 0; music.bassIndex = 0;
+  music.leadTimer = 0; music.bassTimer = 0;
+}
+function beatSeconds() { return 0.35 / CONFIG.MUSIC_TEMPO; }
+function updateMusic(dt) {
+  if (!music.track || audioSettings.muted) return;
+  music.leadTimer -= dt;
+  if (music.leadTimer <= 0) {
+    const [note, beats] = music.track.lead[music.leadIndex % music.track.lead.length];
+    music.leadIndex++;
+    music.leadTimer = beats * beatSeconds();
+    if (note !== 'REST') playTone(NOTE_FREQ[note], beats * beatSeconds() * 0.9, 'square', CONFIG.MUSIC_VOLUME);
+  }
+  music.bassTimer -= dt;
+  if (music.bassTimer <= 0) {
+    const [note, beats] = music.track.bass[music.bassIndex % music.track.bass.length];
+    music.bassIndex++;
+    music.bassTimer = beats * beatSeconds();
+    if (note !== 'REST') playTone(NOTE_FREQ[note], beats * beatSeconds() * 0.9, 'triangle', CONFIG.MUSIC_VOLUME * 1.3);
+  }
+}
+function musicAreaForWorld() {
+  if (gameState === STATE.TITLE) return 'title';
+  if (gameState === STATE.VICTORY) return 'victory';
+  if (world.mode === 'dungeon') return 'dungeon';
+  if (world.mode === 'castle') return 'boss';
+  return 'overworld';
+}
 
 // =========================================================================
 // Input handling
@@ -284,6 +376,17 @@ canvas.addEventListener('touchstart', e => {
   const t = e.changedTouches[0];
   const p = canvasToGameCoords(t.clientX, t.clientY);
   Input.tapX = p.x; Input.tapY = p.y; Input.tapped = true;
+  Input.swipeStartX = p.x; Input.swipeStartY = p.y;
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  const t = e.changedTouches[0];
+  const p = canvasToGameCoords(t.clientX, t.clientY);
+  if (Input.swipeStartX !== undefined) {
+    const dx = p.x - Input.swipeStartX, dy = p.y - Input.swipeStartY;
+    if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 2) {
+      Input.swipe = { x: Input.swipeStartX, y: Input.swipeStartY, dx };
+    }
+  }
 }, { passive: false });
 
 canvas.addEventListener('mousedown', e => {
@@ -843,9 +946,10 @@ function openDungeonChest(d) {
   if (ability.id === 'fireSword') player.owned.fireSwordAbility = true;
   if (ability.id === 'pegasusBoots') player.owned.pegasusBoots = true;
   if (ability.id === 'powerBracelet') player.owned.powerBracelet = true;
-  if (d.def.id === 'shadow') player.shadowTunicUnlocked = true; // Phase 6 skin auto-grant
+  if (d.def.id === 'shadow') { player.shadowTunicUnlocked = true; player.unlockedSkins.shadow = true; } // Phase 6 skin auto-grant
+  SFX.chestFanfare();
   spawnConfetti(hero.x, hero.y, 24);
-  SFX.correct();
+  setTimeout(() => SFX.medallion(), 250);
   showHint(d.def.name + ' cleared! Got the ' + ability.name + '!', 3);
 }
 
@@ -997,6 +1101,7 @@ function updateCastleRoom(dt, map) {
           castle.rooms[1].enemies = [castle.ganon];
           castle.startTime = performance.now();
           screenShake(6, 0.3);
+          SFX.ganonLaugh();
         }
       });
     }
@@ -1098,7 +1203,9 @@ function ganonDefeated(g) {
   castle.defeated = true;
   screenShake(8, 0.5);
   spawnConfetti(g.x, g.y, 40);
-  SFX.correct();
+  SFX.victoryMelody();
+  player.unlockedSkins.golden = true;
+  player.skin = 'golden';
   victoryStats.timeMs = performance.now() - castle.startTime;
   victoryStats.gold = hud.gold;
   victoryStats.questionsAnswered = player.questionsAnswered;
@@ -1264,7 +1371,19 @@ const player = {
   medallions: { forest: false, fire: false, water: false, shadow: false },
   shadowTunicUnlocked: false,
   skin: 'classic',
+  unlockedSkins: { classic: true, red: false, blue: false, shadow: false, plumber: false, golden: false },
 };
+
+// --- Skins (Phase 6): palette swaps only, hitbox/behavior unchanged ---
+const TUNIC_SKINS = {
+  classic: { name: 'Classic Green', body: '#3f8f3f', trim: '#245a24' },
+  red: { name: 'Red', body: '#a83f3f', trim: '#5a2020' },
+  blue: { name: 'Blue', body: '#3f5fa8', trim: '#20305a' },
+  shadow: { name: 'Shadow', body: '#3a2a4a', trim: '#1a1025' },
+  plumber: { name: 'Plumber Nod', body: '#c03030', trim: '#1a3a6a' },
+  golden: { name: 'Golden Hero', body: '#d8b840', trim: '#8a6a10' },
+};
+function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
 
 // weapon damage table (min-1 floor applied at hit time)
 const WEAPON_DAMAGE = { sword: 0, sharpSword: 0, heroSword: 1, boomerang: 0, galeBoomerang: 1, bow: 1 };
@@ -1287,7 +1406,7 @@ function gainXP(amount) {
     player.level++;
     player.xpToNext = CONFIG.XP_PER_LEVEL + (player.level - 1) * 4;
     player.levelUpChoicePending = true;
-    SFX.correct();
+    SFX.levelUp();
   }
 }
 
@@ -1443,6 +1562,7 @@ function throwBoomerang() {
   const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
   const speed = player.owned.galeBoomerang ? 240 : 180;
   const dist = player.owned.galeBoomerang ? 170 : 120;
+  SFX.boomerangThrow();
   boomerangs.push({
     x: hero.x, y: hero.y, vx: dirVec[0] * speed, vy: dirVec[1] * speed,
     dist, traveled: 0, returning: false, hitOnce: player.owned.galeBoomerang, hasHit: false,
@@ -1454,7 +1574,7 @@ function updateBoomerangs(dt, map) {
     if (!b.returning) {
       b.x += b.vx * dt; b.y += b.vy * dt;
       b.traveled += Math.hypot(b.vx, b.vy) * dt;
-      if (tileSolidAt(map, b.x, b.y) || b.traveled >= b.dist) b.returning = true;
+      if (tileSolidAt(map, b.x, b.y) || b.traveled >= b.dist) { b.returning = true; SFX.boomerangReturn(); }
     } else {
       const dx = hero.x - b.x, dy = hero.y - b.y;
       const d = Math.hypot(dx, dy) || 1;
@@ -1488,6 +1608,7 @@ const bombs = []; // {x,y,t}
 function throwBomb() {
   if (!player.bombBag || dialogue.active || player.downed) return;
   const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  SFX.bombFuse();
   bombs.push({ x: hero.x + dirVec[0] * 14, y: hero.y + dirVec[1] * 14, t: 2 });
 }
 function updateBombs(dt) {
@@ -1497,6 +1618,7 @@ function updateBombs(dt) {
     if (b.t <= 0) {
       spawnConfetti(b.x, b.y, 10);
       screenShake(4, 0.2);
+      SFX.bombExplode();
       for (const e of currentEnemies()) if (e.alive && Math.hypot(e.x - b.x, e.y - b.y) < 28) damageEnemy(e, 'bow');
       bombs.splice(i, 1);
     }
@@ -1514,6 +1636,9 @@ function fireArrow() {
   }
   player.attackCooldown = 0.2;
   const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  if (player.arrowType === 'fire') SFX.fireWhoosh();
+  else if (player.arrowType === 'ice') SFX.iceChime();
+  else SFX.bowTwang();
   arrows.push({ x: hero.x, y: hero.y, vx: dirVec[0] * 260, vy: dirVec[1] * 260, type: player.arrowType });
 }
 function updateArrows(dt, map) {
@@ -1761,6 +1886,9 @@ const SHOP_ITEMS = [
   { id: 'fireFlower', name: 'Fire Flower', price: CONFIG.SHOP.fireFlower, desc: '20s fiery sword.', consumable: true },
   { id: 'dkBarrel', name: 'DK Barrel', price: CONFIG.SHOP.dkBarrel, desc: 'Rolls straight, breaks on hit.', consumable: true },
   { id: 'inkBlaster', name: 'Ink Blaster', price: CONFIG.SHOP.inkBlaster, desc: '15s ink blobs slow foes.', consumable: true },
+  { id: 'skinRed', name: 'Red Tunic', price: 20, desc: 'A bold red look.', skin: 'red' },
+  { id: 'skinBlue', name: 'Blue Tunic', price: 35, desc: 'Cool and calm.', skin: 'blue' },
+  { id: 'skinPlumber', name: 'Plumber Nod', price: 60, desc: 'Mama mia!', skin: 'plumber' },
 ];
 
 const shop = { active: false, scroll: 0 };
@@ -1770,6 +1898,7 @@ function closeShop() { shop.active = false; }
 function canBuy(item) {
   if (item.prereq && !player.owned[item.prereq]) return false;
   if (item.consumable) return true;
+  if (item.skin) return !player.unlockedSkins[item.skin];
   if (item.id === 'heartContainer') return player.heartContainersBought < 2;
   return !player.owned[item.id];
 }
@@ -1777,7 +1906,10 @@ function buyItem(item) {
   if (hud.gold < item.price) { showHint("That's okay! Come back with more gold.", 1.5); return; }
   if (!canBuy(item)) return;
   hud.gold -= item.price;
-  if (item.consumable) {
+  if (item.skin) {
+    player.unlockedSkins[item.skin] = true;
+    player.skin = item.skin;
+  } else if (item.consumable) {
     player.owned[item.id] = (player.owned[item.id] || 0) + 1;
   } else if (item.id === 'heartContainer') {
     player.heartContainersBought++;
@@ -1897,6 +2029,20 @@ function pointInRect(px, py, r) {
 function update(dtMs) {
   const dt = dtMs / 1000;
   updateFade(dt);
+  setMusicArea(musicAreaForWorld());
+  updateMusic(dt);
+  if (Input.keys['m'] || Input.keys['M']) { Input.keys['m'] = Input.keys['M'] = false; audioSettings.muted = !audioSettings.muted; }
+  if (Input.tapped && tapSpeakerIcon(Input.tapX, Input.tapY)) { Input.tapped = false; }
+  if (Input.swipe) {
+    const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
+    for (let i = 0; i < 3; i++) {
+      const x = startX + i * (slotSize + gap);
+      if (pointInRect(Input.swipe.x, Input.swipe.y, { x, y, w: slotSize, h: slotSize }) && player.slots[i] === 'bow') {
+        cycleArrowType();
+      }
+    }
+    Input.swipe = null;
+  }
 
   if (gameState === STATE.TITLE) {
     if (Input.tapped) {
@@ -1929,6 +2075,30 @@ function resetGame() {
   location.reload();
 }
 
+function speakerIconRect() {
+  return { x: CONFIG.GAME_W - 34, y: CONFIG.GAME_H - 34, w: 28, h: 28 };
+}
+function tapSpeakerIcon(sx, sy) {
+  return pointInRect(sx, sy, speakerIconRect());
+}
+function drawSpeakerIcon() {
+  const r = speakerIconRect();
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(r.x + 6, r.y + 11, 5, 6);
+  ctx.beginPath();
+  ctx.moveTo(r.x + 11, r.y + 11); ctx.lineTo(r.x + 17, r.y + 6); ctx.lineTo(r.x + 17, r.y + 22); ctx.lineTo(r.x + 11, r.y + 17);
+  ctx.fill();
+  if (audioSettings.muted) {
+    ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(r.x + 4, r.y + 4); ctx.lineTo(r.x + 24, r.y + 24); ctx.stroke();
+  } else {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(r.x + 20, r.y + 14, 6, -0.6, 0.6); ctx.stroke();
+  }
+}
+
 function worldPointFromScreen(sx, sy) {
   return { x: sx + world.camX, y: sy + world.camY };
 }
@@ -1947,6 +2117,16 @@ function updatePlaying(dt) {
     updateShopInput();
     return;
   }
+
+  // wardrobe popup pauses the world
+  if (wardrobe.active) {
+    updateWardrobeInput();
+    return;
+  }
+
+  // P key or HUD button opens the wardrobe from normal play
+  if (Input.keys['p'] || Input.keys['P']) { Input.keys['p'] = Input.keys['P'] = false; openWardrobe(); return; }
+  if (Input.tapped && tapWardrobeButton(Input.tapX, Input.tapY)) { Input.tapped = false; openWardrobe(); return; }
 
   // dialogue pauses the world
   if (dialogue.active) {
@@ -2326,7 +2506,8 @@ function drawVictoryScreen() {
 
 function drawHeroSprite(x, y, facing, frame) {
   // 16x16-ish code-drawn hero: tunic + head, simple 2-frame walk cycle
-  const bodyColor = '#3f8f3f', skin = '#e8b888', hair = '#5a3216';
+  const tunic = currentTunic();
+  const bodyColor = tunic.body, skin = '#e8b888', hair = '#5a3216';
   const bob = frame === 1 ? 1 : 0;
   ctx.fillStyle = '#000000';
   ctx.globalAlpha = 0.25;
@@ -2335,6 +2516,8 @@ function drawHeroSprite(x, y, facing, frame) {
 
   ctx.fillStyle = bodyColor;
   ctx.fillRect(x - 5, y - 2 - bob, 10, 8);
+  ctx.fillStyle = tunic.trim;
+  ctx.fillRect(x - 5, y + 4 - bob, 10, 2);
   ctx.fillStyle = skin;
   ctx.fillRect(x - 4, y - 9 - bob, 8, 7);
   ctx.fillStyle = hair;
@@ -2454,6 +2637,8 @@ function drawPlaying() {
   // weapon slots + XP bar (always visible during play)
   drawWeaponSlots();
   drawXPBar();
+  drawSpeakerIcon();
+  drawWardrobeButton();
 
   // boss HP bar (top of screen, Phase 5)
   if (world.mode === 'castle' && castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) {
@@ -2465,6 +2650,9 @@ function drawPlaying() {
 
   // shop
   if (shop.active) drawShop();
+
+  // wardrobe
+  if (wardrobe.active) drawWardrobe();
 
   // level-up choice (blocking, allowed exception)
   if (player.levelUpChoicePending) drawLevelUpPopup();
@@ -2735,12 +2923,86 @@ function drawXPBar() {
   ctx.fillText('Lv ' + player.level, x, y + 18);
 }
 
+// =========================================================================
+// Wardrobe (Phase 6): P key or HUD button, blocking pause, tap to preview
+// and apply a skin everywhere (hero sprite + slot icons) immediately.
+// =========================================================================
+const wardrobe = { active: false };
+function openWardrobe() { wardrobe.active = true; }
+function closeWardrobe() { wardrobe.active = false; }
+function wardrobeButtonRect() { return { x: CONFIG.GAME_W - 68, y: CONFIG.GAME_H - 34, w: 28, h: 28 }; }
+function tapWardrobeButton(sx, sy) { return pointInRect(sx, sy, wardrobeButtonRect()); }
+function drawWardrobeButton() {
+  const r = wardrobeButtonRect();
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = currentTunic().body; ctx.fillRect(r.x + 6, r.y + 6, 16, 16);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(r.x, r.y, r.w, r.h);
+}
+function getWardrobeSwatches() {
+  const keys = Object.keys(TUNIC_SKINS);
+  const size = 70, gap = 14, cols = 3;
+  const totalW = cols * size + (cols - 1) * gap;
+  const startX = CONFIG.GAME_W / 2 - totalW / 2, startY = 90;
+  return keys.map((k, i) => ({
+    key: k, x: startX + (i % cols) * (size + gap), y: startY + Math.floor(i / cols) * (size + gap), w: size, h: size,
+  }));
+}
+function updateWardrobeInput() {
+  if (Input.keys['p'] || Input.keys['P'] || Input.keys['Escape']) {
+    Input.keys['p'] = Input.keys['P'] = Input.keys['Escape'] = false;
+    closeWardrobe(); return;
+  }
+  if (Input.tapped) {
+    const wp = { x: Input.tapX, y: Input.tapY };
+    if (pointInRect(wp.x, wp.y, { x: CONFIG.GAME_W - 40, y: 10, w: 30, h: 30 })) { closeWardrobe(); Input.tapped = false; return; }
+    for (const sw of getWardrobeSwatches()) {
+      if (pointInRect(wp.x, wp.y, sw)) {
+        if (player.unlockedSkins[sw.key]) { player.skin = sw.key; SFX.coin(1); }
+        else showHint('Not unlocked yet!', 1.2);
+        break;
+      }
+    }
+    Input.tapped = false;
+  }
+}
+function drawWardrobe() {
+  ctx.fillStyle = 'rgba(10,10,20,0.92)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('WARDROBE', CONFIG.GAME_W / 2, 40);
+  ctx.fillStyle = '#fff'; ctx.font = '11px monospace';
+  ctx.fillText('Tap a tunic to wear it - P/ESC to close', CONFIG.GAME_W / 2, 58);
+  for (const sw of getWardrobeSwatches()) {
+    const tunic = TUNIC_SKINS[sw.key];
+    const unlocked = player.unlockedSkins[sw.key];
+    ctx.fillStyle = unlocked ? '#25314a' : '#1a1a1a';
+    ctx.fillRect(sw.x, sw.y, sw.w, sw.h);
+    ctx.strokeStyle = sw.key === player.skin ? '#ffd84a' : '#4a5a7a';
+    ctx.lineWidth = sw.key === player.skin ? 3 : 1;
+    ctx.strokeRect(sw.x, sw.y, sw.w, sw.h);
+    ctx.fillStyle = unlocked ? tunic.body : '#333';
+    ctx.fillRect(sw.x + sw.w / 2 - 10, sw.y + 14, 20, 24);
+    ctx.fillStyle = '#fff'; ctx.font = '10px monospace';
+    ctx.fillText(unlocked ? tunic.name : 'Locked', sw.x + sw.w / 2, sw.y + sw.h - 8);
+  }
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 16px monospace';
+  ctx.fillText('X', CONFIG.GAME_W - 25, 30);
+}
+
+function cycleArrowType() {
+  const avail = ['normal'];
+  if (player.owned.fireArrow) avail.push('fire');
+  if (player.owned.iceArrow) avail.push('ice');
+  const idx = avail.indexOf(player.arrowType);
+  player.arrowType = avail[(idx + 1) % avail.length];
+  showHint('Arrow: ' + player.arrowType, 1.2);
+}
 function tapWeaponSlot(sx, sy) {
   const slotSize = 48, gap = 6, startX = CONFIG.GAME_W - (slotSize + gap) * 3 - 10, y = CONFIG.GAME_H - slotSize - 10;
   for (let i = 0; i < 3; i++) {
     const x = startX + i * (slotSize + gap);
     if (pointInRect(sx, sy, { x, y, w: slotSize, h: slotSize })) {
-      if (player.slots[i]) player.activeSlot = i;
+      if (player.slots[i] === 'bow' && player.activeSlot === i) cycleArrowType();
+      else if (player.slots[i]) player.activeSlot = i;
       return true;
     }
   }
