@@ -474,50 +474,85 @@ function prerenderMap(mapData) {
     for (let x = 0; x < mapData.w; x++) {
       const t = mapData.grid[y][x];
       const px = x * CONFIG.TILE, py = y * CONFIG.TILE;
-      drawTile(octx, t, px, py, rand);
+      drawTile(octx, t, px, py, rand, mapData, x, y);
     }
   }
   return off;
 }
 
-function drawTile(octx, t, px, py, rand) {
+// Phase 7 shared palette accents (art-only; no gameplay/hitbox impact)
+const GRASS_SHADES = ['#3f7a33', '#457f37', '#3a7530', '#457c3a'];
+function neighborTile(mapData, x, y, dx, dy) {
+  const nx = x + dx, ny = y + dy;
+  if (!mapData || ny < 0 || ny >= mapData.h || nx < 0 || nx >= mapData.w) return null;
+  return mapData.grid[ny][nx];
+}
+function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
   const TS = CONFIG.TILE;
   switch (t) {
-    case T.GRASS:
-      octx.fillStyle = (Math.floor(px / TS + py / TS)) % 7 === 0 ? '#4a8f3c' : '#3f7a33';
+    case T.GRASS: {
+      const variant = Math.abs(Math.floor(Math.sin((gx || 0) * 12.9898 + (gy || 0) * 78.233) * 43758.5453)) % GRASS_SHADES.length;
+      octx.fillStyle = GRASS_SHADES[variant];
       octx.fillRect(px, py, TS, TS);
+      // sparse blade/flower detail, deterministic per-tile
+      if (variant === 1) { octx.fillStyle = '#5aa04a'; octx.fillRect(px + 4, py + 10, 2, 4); octx.fillRect(px + 10, py + 6, 2, 4); }
+      if (variant === 3) { octx.fillStyle = '#e8d95a'; octx.fillRect(px + 7, py + 8, 2, 2); }
       break;
+    }
     case T.DIRT:
       octx.fillStyle = '#a9814f';
       octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#96703f';
       octx.fillRect(px + 2, py + 6, 3, 2);
+      octx.fillStyle = '#8a6535';
+      octx.fillRect(px + 10, py + 3, 2, 2); octx.fillRect(px + 6, py + 11, 3, 2);
       break;
-    case T.WATER:
+    case T.WATER: {
       octx.fillStyle = '#2a5fa0';
       octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#3f79c2';
       octx.fillRect(px, py + (Math.floor(px / TS) % 2 === 0 ? 3 : 9), TS, 2);
+      // foam along any edge touching non-water (simple autotile shoreline)
+      octx.fillStyle = 'rgba(255,255,255,0.55)';
+      if (neighborTile(mapData, gx, gy, 0, -1) !== T.WATER) octx.fillRect(px, py, TS, 2);
+      if (neighborTile(mapData, gx, gy, 0, 1) !== T.WATER) octx.fillRect(px, py + TS - 2, TS, 2);
+      if (neighborTile(mapData, gx, gy, -1, 0) !== T.WATER) octx.fillRect(px, py, 2, TS);
+      if (neighborTile(mapData, gx, gy, 1, 0) !== T.WATER) octx.fillRect(px + TS - 2, py, 2, TS);
       break;
-    case T.TREE:
+    }
+    case T.TREE: {
+      const pine = ((gx || 0) + (gy || 0) * 3) % 3 === 0;
       octx.fillStyle = '#3f7a33';
       octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = 'rgba(0,0,0,0.15)';
+      octx.beginPath(); octx.ellipse(px + 8, py + 14, 6, 2, 0, 0, Math.PI * 2); octx.fill();
       octx.fillStyle = '#5a3a1e';
       octx.fillRect(px + 6, py + 10, 4, 6);
-      octx.fillStyle = '#2c5a22';
-      octx.beginPath();
-      octx.arc(px + 8, py + 7, 8, 0, Math.PI * 2);
-      octx.fill();
+      if (pine) {
+        octx.fillStyle = '#245022';
+        octx.beginPath(); octx.moveTo(px + 8, py - 1); octx.lineTo(px + 15, py + 11); octx.lineTo(px + 1, py + 11); octx.fill();
+        octx.fillStyle = '#2f6a2a';
+        octx.beginPath(); octx.moveTo(px + 8, py + 3); octx.lineTo(px + 14, py + 12); octx.lineTo(px + 2, py + 12); octx.fill();
+      } else {
+        octx.fillStyle = '#2c5a22';
+        octx.beginPath(); octx.arc(px + 8, py + 7, 8, 0, Math.PI * 2); octx.fill();
+        octx.fillStyle = '#3d7a30';
+        octx.beginPath(); octx.arc(px + 6, py + 5, 4, 0, Math.PI * 2); octx.fill();
+      }
       break;
+    }
     case T.FLOOR:
-      octx.fillStyle = '#c9a876';
+      octx.fillStyle = ((gx || 0) + (gy || 0)) % 5 === 0 ? '#cdae7d' : '#c9a876';
       octx.fillRect(px, py, TS, TS);
+      octx.strokeStyle = 'rgba(0,0,0,0.06)'; octx.strokeRect(px + 0.5, py + 0.5, TS - 1, TS - 1);
       break;
     case T.WALL:
       octx.fillStyle = '#6b4a2a';
       octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#543a20';
       octx.fillRect(px, py, TS, 3);
+      octx.fillStyle = 'rgba(0,0,0,0.15)';
+      octx.fillRect(px, py + TS - 3, TS, 3);
       break;
     case T.RUG:
       octx.fillStyle = '#c9a876';
@@ -2514,14 +2549,26 @@ function drawHeroSprite(x, y, facing, frame) {
   ctx.beginPath(); ctx.ellipse(x, y + 7, 6, 2.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
 
+  // shield peeking out on the back when not facing down (ALttP-style nod)
+  if (facing !== 'down') {
+    ctx.fillStyle = '#8a6a3a';
+    ctx.fillRect(x + (facing === 'left' ? 3 : -5), y - 4 - bob, 3, 9);
+    ctx.fillStyle = '#c04040';
+    ctx.fillRect(x + (facing === 'left' ? 3 : -5), y - 2 - bob, 3, 4);
+  }
+
   ctx.fillStyle = bodyColor;
   ctx.fillRect(x - 5, y - 2 - bob, 10, 8);
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+  ctx.strokeRect(x - 5.5, y - 2.5 - bob, 11, 9);
   ctx.fillStyle = tunic.trim;
   ctx.fillRect(x - 5, y + 4 - bob, 10, 2);
   ctx.fillStyle = skin;
   ctx.fillRect(x - 4, y - 9 - bob, 8, 7);
   ctx.fillStyle = hair;
   ctx.fillRect(x - 4, y - 9 - bob, 8, 3);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(x - 3, y - 9 - bob, 2, 1); // hair highlight
 
   // direction indicator (simple eyes / arm) so facing is readable
   ctx.fillStyle = '#20140a';
@@ -2537,15 +2584,16 @@ function drawHeroSprite(x, y, facing, frame) {
 }
 
 function drawNpcSprite(x, y, color, facing) {
+  const bob = Math.sin(performance.now() / 400 + x) > 0 ? 0 : 1; // slow 2-frame idle breathing
   ctx.fillStyle = '#000000'; ctx.globalAlpha = 0.25;
   ctx.beginPath(); ctx.ellipse(x, y + 7, 6, 2.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
   ctx.fillStyle = color;
-  ctx.fillRect(x - 5, y - 2, 10, 8);
+  ctx.fillRect(x - 5, y - 2 - bob, 10, 8);
   ctx.fillStyle = '#e8b888';
-  ctx.fillRect(x - 4, y - 9, 8, 7);
+  ctx.fillRect(x - 4, y - 9 - bob, 8, 7);
   ctx.fillStyle = '#3a2010';
-  ctx.fillRect(x - 4, y - 9, 8, 3);
+  ctx.fillRect(x - 4, y - 9 - bob, 8, 3);
 }
 
 function drawPlaying() {
@@ -2689,7 +2737,11 @@ function drawPot(x, y) {
 const ENEMY_COLORS = { wolf: '#8a6a4a', fireImp: '#e05a2a', octorok: '#3a7a9a', wraith: '#5a3a7a' };
 function drawEnemy(e) {
   ctx.save();
-  if (e.hitFlash > 0) ctx.filter = 'brightness(2)';
+  if (e.hitFlash > 0) {
+    ctx.filter = 'brightness(2)';
+    const squash = e.hitFlash / 0.1; // squash-stretch pop on hit
+    ctx.translate(e.x, e.y); ctx.scale(1 + squash * 0.25, 1 - squash * 0.2); ctx.translate(-e.x, -e.y);
+  }
   const scale = e.isMiniboss ? 1.8 : 1;
   if (e.type === 'slime') {
     ctx.fillStyle = '#3fc766';
