@@ -1,0 +1,158 @@
+[
+  {
+    "name": "Portrait: canvas fills available space with no overflow",
+    "ok": true,
+    "detail": "{\"w\":400,\"h\":225,\"vw\":400,\"vh\":800}"
+  },
+  {
+    "name": "Landscape: canvas fills available space with no overflow",
+    "ok": true,
+    "detail": "{\"w\":640,\"h\":360,\"vw\":800,\"vh\":400}"
+  },
+  {
+    "name": "Title -> New Game reaches playing state",
+    "ok": true
+  },
+  {
+    "name": "Tap-to-move: hero approaches every sampled destination (no stuck spot)",
+    "ok": true,
+    "detail": "[{\"before\":80,\"after\":1.6666666666684478,\"improved\":true},{\"before\":111.96477620712164,\"after\":1.9647762071171124,\"improved\":true},{\"before\":133.53609378195995,\"after\":1.8694271152899868,\"improved\":true}]"
+  },
+  {
+    "name": "Smash pot -> coin -> gold counter increases",
+    "ok": true,
+    "detail": "{\"before\":0,\"after\":2,\"potAlive\":false}"
+  },
+  {
+    "name": "Shop: buy boomerang, auto-assigned to a weapon slot",
+    "ok": true
+  },
+  {
+    "name": "AP drains on sword swing",
+    "ok": true
+  },
+  {
+    "name": "Math popup auto-opens ~1s after attacking at 0 AP",
+    "ok": true
+  },
+  {
+    "name": "Correct answer closes popup instantly + grants AP + confetti",
+    "ok": true,
+    "detail": "apAfterCorrect=4"
+  },
+  {
+    "name": "Wrong answer keeps popup open for retry, no AP penalty",
+    "ok": true
+  },
+  {
+    "name": "ESC closes AP popup with no reward/penalty",
+    "ok": true
+  },
+  {
+    "name": "0 hearts opens a revive math popup (never a game-over screen)",
+    "ok": true
+  },
+  {
+    "name": "Correct revive answer: REVIVED with 3 hearts + invincibility blink",
+    "ok": true
+  },
+  {
+    "name": "No \"game over\" state exists anywhere in the state machine",
+    "ok": true
+  },
+  {
+    "name": "No exceptions during the above sequence",
+    "ok": true
+  },
+  {
+    "name": "Dungeon forest: key/door/puzzle/boss-seal/chest/medallion all correct",
+    "ok": true,
+    "detail": "{\"id\":\"forest\",\"lockedOk\":true,\"doorOpened\":true,\"puzzleOk\":true,\"sealedBeforeDefeat\":true,\"openAfterDefeat\":true,\"chestRefusedWithoutKey\":true,\"chestOpened\":true,\"medallion\":true,\"heartPiece\":true}"
+  },
+  {
+    "name": "Dungeon fire: key/door/puzzle/boss-seal/chest/medallion all correct",
+    "ok": true,
+    "detail": "{\"id\":\"fire\",\"lockedOk\":true,\"doorOpened\":true,\"puzzleOk\":true,\"sealedBeforeDefeat\":true,\"openAfterDefeat\":true,\"chestRefusedWithoutKey\":true,\"chestOpened\":true,\"medallion\":true,\"heartPiece\":true}"
+  },
+  {
+    "name": "Dungeon water: key/door/puzzle/boss-seal/chest/medallion all correct",
+    "ok": true,
+    "detail": "{\"id\":\"water\",\"lockedOk\":true,\"doorOpened\":true,\"puzzleOk\":true,\"sealedBeforeDefeat\":true,\"openAfterDefeat\":true,\"chestRefusedWithoutKey\":true,\"chestOpened\":true,\"medallion\":true,\"heartPiece\":true}"
+  },
+  {
+    "name": "Dungeon shadow: key/door/puzzle/boss-seal/chest/medallion all correct",
+    "ok": true,
+    "detail": "{\"id\":\"shadow\",\"lockedOk\":true,\"doorOpened\":true,\"puzzleOk\":true,\"sealedBeforeDefeat\":true,\"openAfterDefeat\":true,\"chestRefusedWithoutKey\":true,\"chestOpened\":true,\"medallion\":true,\"heartPiece\":true}"
+  },
+  {
+    "name": "Bow: cycling arrow type wraps normal->fire->ice->normal",
+    "ok": true,
+    "detail": "{\"before\":\"normal\",\"afterOne\":\"fire\",\"backToStart\":true,\"arrowClinked\":true}"
+  },
+  {
+    "name": "Arrows clink off walls (removed, never pass through)",
+    "ok": true
+  },
+  {
+    "name": "Level up shows blocking choice popup and applies the pick",
+    "ok": true,
+    "detail": "{\"before\":{\"maxHearts\":7,\"attack\":1,\"level\":1},\"popupShown\":true,\"after\":{\"maxHearts\":7,\"attack\":2,\"level\":2}}"
+  },
+  {
+    "name": "Castle gate shows X/4 medallion progress",
+    "ok": true,
+    "detail": "\"2/4\""
+  },
+  {
+    "name": "Ganondorf: phase 1/2/3 transitions correctly by HP%",
+    "ok": true,
+    "detail": "{\"progressText\":\"2/4\",\"phase1\":1,\"phase2\":2,\"phase3\":3,\"siphonWorked\":true,\"defeated\":true}"
+  },
+  {
+    "name": "Dark Siphon steals AP in phase 2+",
+    "ok": true
+  },
+  {
+    "name": "Defeating Ganondorf leads to the VICTORY screen with stats",
+    "ok": true,
+    "detail": "{\"timeMs\":0.8000000002793968,\"gold\":450,\"questionsAnswered\":2,\"revivesUsed\":1,\"level\":2}"
+  },
+  {
+    "name": "Wardrobe skin selection is reflected by currentTunic() used in hero draw",
+    "ok": true,
+    "detail": "{\"tunicColor\":\"#3f5fa8\",\"musicSwitched\":true}"
+  },
+  {
+    "name": "Music area switches (overworld/dungeon/boss/title/victory)",
+    "ok": true
+  },
+  {
+    "name": "Save + Continue round-trip restores state",
+    "ok": true,
+    "detail": "{\"saveResult\":{\"ok\":true,\"hasSave\":true},\"continueResult\":{\"gold\":77,\"state\":\"playing\"}}"
+  },
+  {
+    "name": "Corrupt save falls back to a fresh start without crashing",
+    "ok": true,
+    "detail": "{\"state\":\"playing\",\"hearts\":7,\"crashed\":false}"
+  },
+  {
+    "name": "Overworld is ~10x the original tile count",
+    "ok": true,
+    "detail": "ratio=9.943181818181818"
+  },
+  {
+    "name": "Slashable bushes can be cut",
+    "ok": true
+  },
+  {
+    "name": "All 5 regions + town are reachable/present on the map",
+    "ok": true,
+    "detail": "[\"darkness\",\"desert\",\"forest\",\"lakes\",\"mountain\",\"town\"]"
+  },
+  {
+    "name": "Zero uncaught console errors across the whole acceptance run",
+    "ok": true,
+    "detail": "[]"
+  }
+]
