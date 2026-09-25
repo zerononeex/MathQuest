@@ -87,6 +87,14 @@ const CONFIG = {
   XP_SLIME: 5, XP_BAT: 8, XP_MINIBOSS: 50,
   WEAPON_REACH_TILES: { sword: 1, sharpSword: 1.1, heroSword: 1.5 }, // sword reach in tiles
 
+  // --- Castle finale (Phase 5) ---
+  GANON_MAX_HP: 60,           // total HP across all 3 phases
+  GANON_PHASE2_HP_FRAC: 0.66, // HP fraction where phase 2 begins
+  GANON_PHASE3_HP_FRAC: 0.33, // HP fraction where phase 3 begins
+  GANON_ATTACK_INTERVAL: 2.2, // seconds between telegraphed attacks (phase 1/2)
+  GANON_SIPHON_INTERVAL: 20,  // seconds between Dark Siphon AP-steal attacks
+  GANON_SIPHON_AP: 3,         // AP stolen per Dark Siphon
+
   // --- Shop item prices (gold) ---
   SHOP: {
     sharpSword: 30, boomerang: 50, heroSword: 150, bow: 120,
@@ -286,7 +294,7 @@ canvas.addEventListener('mousedown', e => {
 // =========================================================================
 // Game state machine
 // =========================================================================
-const STATE = { TITLE: 'title', PLAYING: 'playing' };
+const STATE = { TITLE: 'title', PLAYING: 'playing', VICTORY: 'victory' };
 let gameState = STATE.TITLE;
 
 const DIFFICULTIES = ['LITTLE_HERO', 'ADVENTURER', 'MASTER', 'LEGEND'];
@@ -653,7 +661,25 @@ function placeDungeonEntrances() {
   });
 }
 placeDungeonEntrances();
-overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon entrances carved in
+
+// Castle entrance: a sealed gate near the top-center of the map, walled
+// off with stone (reusing WALL tiles) and a stairway tile for the door.
+const castleGate = {};
+(function placeCastleGate() {
+  const cx = Math.floor(overworld.w / 2);
+  const ty = 5;
+  for (let x = cx - 2; x <= cx + 2; x++) {
+    overworld.grid[ty - 1][x] = T.WALL;
+  }
+  overworld.grid[ty][cx] = T.STAIRS;
+  overworld.grid[ty - 1][cx] = T.DOOR;
+  castleGate.zone = {
+    minX: (cx - 1) * CONFIG.TILE, maxX: (cx + 2) * CONFIG.TILE,
+    minY: ty * CONFIG.TILE, maxY: (ty + 1) * CONFIG.TILE,
+  };
+})();
+
+overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon/castle entrances carved in
 
 function enterDungeon(d) {
   if (world.mode !== 'overworld') return;
@@ -896,6 +922,194 @@ function collectHeartPiece(hp) {
 }
 
 // =========================================================================
+// CASTLE FINALE (Phase 5)
+// =========================================================================
+const MEDALLION_NAMES = { forest: 'Forest Medallion', fire: 'Fire Medallion', water: 'Water Medallion', shadow: 'Shadow Medallion' };
+function medallionCount() { return Object.values(player.medallions).filter(Boolean).length; }
+function missingMedallionNames() {
+  return Object.keys(MEDALLION_NAMES).filter(k => !player.medallions[k]).map(k => MEDALLION_NAMES[k]);
+}
+
+function buildCastle() {
+  const hallway = makeRoom(16, 10, '#2a2a3a');
+  const arena = makeRoom(20, 14, '#1a1a28');
+  carveDoorGap(hallway, 'east', T.FLOOR); // one-way: no lock, no going back
+  const hallwayEnemies = [
+    Object.assign(makeDungeonEnemy('wolf', 8 * CONFIG.TILE, 4 * CONFIG.TILE), { hp: 4, maxHp: 4 }),
+    Object.assign(makeDungeonEnemy('wraith', 8 * CONFIG.TILE, 7 * CONFIG.TILE), { hp: 4, maxHp: 4 }),
+  ];
+  hallway.canvas = prerenderMap(hallway);
+  arena.canvas = prerenderMap(arena);
+  return {
+    roomIndex: 0,
+    rooms: [
+      { map: hallway, pots: [], enemies: hallwayEnemies },
+      { map: arena, pots: [], enemies: [] },
+    ],
+    ganon: null,
+    defeated: false,
+    startTime: 0,
+  };
+}
+const castle = buildCastle();
+
+function castleEntranceCheck() {
+  const n = medallionCount();
+  if (n < 4) {
+    const missing = missingMedallionNames().join(', ');
+    showHint('The castle door needs all 4 medallions (' + n + '/4). Missing: ' + missing, 2.5);
+    return false;
+  }
+  return true;
+}
+
+function enterCastle() {
+  if (world.mode !== 'overworld') return;
+  if (!castleEntranceCheck()) return;
+  fadeTo(() => {
+    world.mode = 'castle';
+    castle.roomIndex = 0;
+    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[0].map.h / 2) * CONFIG.TILE;
+    SFX.door();
+  });
+}
+
+function makeGanon(x, y) {
+  return {
+    type: 'ganon', x, y, w: 44, h: 48, hp: CONFIG.GANON_MAX_HP, maxHp: CONFIG.GANON_MAX_HP,
+    defense: 0, alive: true, hitFlash: 0, isBoss: true,
+    phase: 1, attackTimer: 1.5, siphonTimer: CONFIG.GANON_SIPHON_INTERVAL,
+    telegraph: 0, teleportCooldown: 0, projectiles: [],
+  };
+}
+
+function updateCastleRoom(dt, map) {
+  // hallway -> arena transition (one-way; no locked door, but no going back)
+  if (castle.roomIndex === 0) {
+    const midY = Math.floor(map.h / 2);
+    if (hero.x > (map.w - 1.2) * CONFIG.TILE && map.grid[midY][map.w - 1] === T.FLOOR) {
+      fadeTo(() => {
+        castle.roomIndex = 1;
+        hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[1].map.h / 2) * CONFIG.TILE;
+        if (!castle.ganon) {
+          castle.ganon = makeGanon((castle.rooms[1].map.w - 5) * CONFIG.TILE, Math.floor(castle.rooms[1].map.h / 2) * CONFIG.TILE);
+          castle.rooms[1].enemies = [castle.ganon];
+          castle.startTime = performance.now();
+          screenShake(6, 0.3);
+        }
+      });
+    }
+  } else if (castle.roomIndex === 1 && castle.ganon) {
+    updateGanon(dt, map);
+  }
+}
+
+function ganonProjectileSpeed() { return castle.ganon.phase >= 3 ? 130 : 90; }
+
+function updateGanon(dt, map) {
+  const g = castle.ganon;
+  if (!g.alive) return;
+  const frac = g.hp / g.maxHp;
+  g.phase = frac <= CONFIG.GANON_PHASE3_HP_FRAC ? 3 : frac <= CONFIG.GANON_PHASE2_HP_FRAC ? 2 : 1;
+  const speedMult = g.phase === 3 ? 0.55 : 1;
+
+  if (g.hitFlash > 0) g.hitFlash -= dt;
+  if (g.telegraph > 0) {
+    g.telegraph -= dt;
+    if (g.telegraph <= 0) ganonUnleashAttack(g);
+  } else {
+    g.attackTimer -= dt;
+    if (g.attackTimer <= 0) {
+      g.attackTimer = CONFIG.GANON_ATTACK_INTERVAL * speedMult;
+      g.telegraph = 0.5; // flash/wind-up before the attack lands
+    }
+  }
+
+  if (g.phase >= 2) {
+    g.teleportCooldown -= dt;
+    if (g.teleportCooldown <= 0) {
+      g.teleportCooldown = 3.5 * speedMult;
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 60 + Math.random() * 40;
+      let nx = hero.x + Math.cos(ang) * dist, ny = hero.y + Math.sin(ang) * dist;
+      nx = Math.max(3 * CONFIG.TILE, Math.min((map.w - 3) * CONFIG.TILE, nx));
+      ny = Math.max(3 * CONFIG.TILE, Math.min((map.h - 3) * CONFIG.TILE, ny));
+      g.x = nx; g.y = ny;
+      spawnConfetti(g.x, g.y, 6);
+    }
+    g.siphonTimer -= dt;
+    if (g.siphonTimer <= 0) {
+      g.siphonTimer = CONFIG.GANON_SIPHON_INTERVAL;
+      const stolen = Math.min(player.ap, CONFIG.GANON_SIPHON_AP);
+      player.ap -= stolen;
+      spawnFloatingText(hero.x, hero.y - 24, '-' + stolen + ' AP (Dark Siphon!)', '#c060ff');
+      screenShake(3, 0.2);
+    }
+  }
+
+  // projectiles
+  for (let i = g.projectiles.length - 1; i >= 0; i--) {
+    const p = g.projectiles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+    if (p.life <= 0 || tileSolidAt(map, p.x, p.y)) { g.projectiles.splice(i, 1); continue; }
+    if (Math.hypot(hero.x - p.x, hero.y - p.y) < 10) {
+      damageHero(1, p.x, p.y);
+      g.projectiles.splice(i, 1);
+    }
+  }
+
+  // melee contact (phase 1 sword duel + any phase touch)
+  if (Math.hypot(hero.x - g.x, hero.y - g.y) < (g.w + hero.w) / 2 - 6) {
+    damageHero(1, g.x, g.y);
+  }
+
+  if (g.hp <= 0) ganonDefeated(g);
+}
+
+function ganonUnleashAttack(g) {
+  if (g.phase === 1) {
+    // slow telegraphed sword swing - melee only, handled by contact check
+    SFX.hit();
+  } else {
+    const count = g.phase >= 3 ? 2 : 1;
+    for (let i = 0; i < count; i++) {
+      const spread = (i - (count - 1) / 2) * 0.3;
+      const ang = Math.atan2(hero.y - g.y, hero.x - g.x) + spread;
+      const spd = ganonProjectileSpeed();
+      g.projectiles.push({ x: g.x, y: g.y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, life: 3 });
+    }
+    SFX.swish();
+  }
+}
+
+function damageGanon(g, weaponKind) {
+  let dmg = computeDamage(weaponKind, g.defense);
+  if (g.phase === 3) dmg *= 2; // takes double damage in phase 3
+  g.hp -= dmg; g.hitFlash = 0.1;
+  spawnFloatingText(g.x, g.y - 24, '-' + dmg, '#ffffff');
+  if (g.hp <= 0 && g.alive) ganonDefeated(g);
+  else SFX.hit();
+}
+
+function ganonDefeated(g) {
+  if (!g.alive) return;
+  g.alive = false;
+  castle.defeated = true;
+  screenShake(8, 0.5);
+  spawnConfetti(g.x, g.y, 40);
+  SFX.correct();
+  victoryStats.timeMs = performance.now() - castle.startTime;
+  victoryStats.gold = hud.gold;
+  victoryStats.questionsAnswered = player.questionsAnswered;
+  victoryStats.revivesUsed = player.revivesUsed;
+  victoryStats.level = player.level;
+  setTimeout(() => { gameState = STATE.VICTORY; }, 1400);
+}
+
+const victoryStats = { timeMs: 0, gold: 0, questionsAnswered: 0, revivesUsed: 0, level: 1 };
+
+// =========================================================================
 // Hero
 // =========================================================================
 const hero = {
@@ -911,11 +1125,13 @@ const rippleMarkers = []; // {x,y,life}
 function currentMap() {
   if (world.mode === 'interior') return world.interior;
   if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex];
+  if (world.mode === 'castle') return castle.rooms[castle.roomIndex].map;
   return overworld;
 }
 function currentCanvas() {
   if (world.mode === 'interior') return world.interior.canvas;
   if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex].canvas;
+  if (world.mode === 'castle') return castle.rooms[castle.roomIndex].map.canvas;
   return overworldCanvas;
 }
 
@@ -1149,10 +1365,12 @@ const overworldEnemies = spawnEnemies();
 
 function currentPots() {
   if (world.mode === 'dungeon') return world.dungeon.pots[world.dungeon.roomIndex];
+  if (world.mode === 'castle') return castle.rooms[castle.roomIndex].pots;
   return world.mode === 'overworld' ? overworldPots : [];
 }
 function currentEnemies() {
   if (world.mode === 'dungeon') return world.dungeon.enemies[world.dungeon.roomIndex];
+  if (world.mode === 'castle') return castle.rooms[castle.roomIndex].enemies;
   return world.mode === 'overworld' ? overworldEnemies : [];
 }
 
@@ -1160,6 +1378,7 @@ function tierAPReward() { return CONFIG.AP_PER_CORRECT[CONFIG.DIFFICULTY]; }
 function tierHeartChance() { return CONFIG.HEART_DROP_CHANCE[CONFIG.DIFFICULTY]; }
 
 function damageEnemy(e, weaponKind) {
+  if (e.isBoss) { damageGanon(e, weaponKind); return; }
   const dmg = computeDamage(weaponKind, e.defense);
   e.hp -= dmg; e.hitFlash = 0.1;
   spawnFloatingText(e.x, e.y - 10, '-' + dmg, '#ffffff');
@@ -1403,7 +1622,7 @@ function screenShake(mag, dur) { shakeMag = mag; shakeT = dur; }
 
 function updateEnemies(dt, map) {
   for (const e of currentEnemies()) {
-    if (!e.alive || e.isMiniboss) continue; // minibosses handled by updateDungeonRoom
+    if (!e.alive || e.isMiniboss || e.isBoss) continue; // minibosses/Ganondorf handled by their own update fns
     if (e.hitFlash > 0) e.hitFlash -= dt;
     const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
 
@@ -1699,6 +1918,15 @@ function update(dtMs) {
   if (gameState === STATE.PLAYING) {
     updatePlaying(dt);
   }
+
+  if (gameState === STATE.VICTORY) {
+    if (Input.tapped) { Input.tapped = false; resetGame(); }
+    if (Input.keys['Enter'] || Input.keys[' ']) { Input.keys['Enter'] = Input.keys[' '] = false; resetGame(); }
+  }
+}
+
+function resetGame() {
+  location.reload();
 }
 
 function worldPointFromScreen(sx, sy) {
@@ -1947,6 +2175,15 @@ function updatePlaying(dt) {
         break;
       }
     }
+    {
+      const z = castleGate.zone;
+      if (hero.x >= z.minX && hero.x <= z.maxX && hero.y >= z.minY && hero.y <= z.maxY && !castleGate.hintShown) {
+        enterCastle();
+        castleGate.hintShown = true;
+      } else if (!(hero.x >= z.minX && hero.x <= z.maxX && hero.y >= z.minY && hero.y <= z.maxY)) {
+        castleGate.hintShown = false;
+      }
+    }
   } else if (world.mode === 'interior') {
     const ex = world.interior.exit;
     const exPx = ex.x * CONFIG.TILE, exPy = ex.y * CONFIG.TILE;
@@ -1955,6 +2192,8 @@ function updatePlaying(dt) {
     }
   } else if (world.mode === 'dungeon') {
     updateDungeonRoom(dt, map);
+  } else if (world.mode === 'castle') {
+    updateCastleRoom(dt, map);
   }
 
   // dust puffs decay
@@ -1967,7 +2206,7 @@ function updatePlaying(dt) {
     if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
   }
 
-  if (world.mode === 'overworld' || world.mode === 'dungeon') updateEnemies(dt, map);
+  if (world.mode === 'overworld' || world.mode === 'dungeon' || world.mode === 'castle') updateEnemies(dt, map);
   updateBoomerangs(dt, map);
   updateArrows(dt, map);
   updateBombs(dt);
@@ -2062,6 +2301,27 @@ function draw() {
   if (gameState === STATE.PLAYING) {
     drawPlaying();
   }
+
+  if (gameState === STATE.VICTORY) {
+    drawVictoryScreen();
+  }
+}
+
+function drawVictoryScreen() {
+  ctx.fillStyle = '#1a2f4a';
+  ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  drawPixelText('GANONDORF DEFEATED!', CONFIG.GAME_W / 2, 70, 30, '#ffd84a');
+  const secs = Math.floor(victoryStats.timeMs / 1000);
+  const mins = Math.floor(secs / 60), rem = secs % 60;
+  const lines = [
+    'Time: ' + mins + 'm ' + rem + 's',
+    'Gold collected: ' + victoryStats.gold,
+    'Questions answered: ' + victoryStats.questionsAnswered,
+    'Revives used: ' + victoryStats.revivesUsed,
+    'Level reached: ' + victoryStats.level,
+  ];
+  lines.forEach((l, i) => drawPixelText(l, CONFIG.GAME_W / 2, 130 + i * 26, 15, '#ffffff'));
+  drawPixelText('Tap or press Enter to play again', CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 13, '#8effc1');
 }
 
 function drawHeroSprite(x, y, facing, frame) {
@@ -2195,6 +2455,11 @@ function drawPlaying() {
   drawWeaponSlots();
   drawXPBar();
 
+  // boss HP bar (top of screen, Phase 5)
+  if (world.mode === 'castle' && castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) {
+    drawBossHPBar(castle.ganon);
+  }
+
   // dialogue box
   if (dialogue.active) drawDialogueBox();
 
@@ -2260,12 +2525,42 @@ function drawEnemy(e) {
     else if (e.type === 'wraith') { ctx.globalAlpha = 0.75; }
     if (e.tribute) { ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillText('*', e.x, e.y - 12); }
   }
+  if (e.type === 'ganon') drawGanon(e);
   ctx.restore();
   // small HP bar for damaged enemies
   if (e.hp < e.maxHp) {
     ctx.fillStyle = '#000'; ctx.fillRect(e.x - 8, e.y - 14, 16, 3);
     ctx.fillStyle = '#e03030'; ctx.fillRect(e.x - 8, e.y - 14, 16 * (e.hp / e.maxHp), 3);
   }
+}
+
+function drawGanon(g) {
+  const flash = g.telegraph > 0 && Math.floor(g.telegraph * 10) % 2 === 0;
+  ctx.fillStyle = flash ? '#ffffff' : '#2a1a2a';
+  ctx.fillRect(g.x - 18, g.y - 22, 36, 40);
+  ctx.fillStyle = flash ? '#ffcccc' : '#7a1a1a';
+  ctx.fillRect(g.x - 16, g.y - 20, 32, 10); // cape/armor trim
+  ctx.fillStyle = '#e8b888';
+  ctx.fillRect(g.x - 6, g.y - 32, 12, 10); // head
+  ctx.fillStyle = '#b02020';
+  ctx.fillRect(g.x - 7, g.y - 36, 14, 6); // red hair
+  ctx.fillStyle = '#111';
+  ctx.fillRect(g.x - 4, g.y - 28, 2, 2); ctx.fillRect(g.x + 2, g.y - 28, 2, 2);
+  for (const p of g.projectiles) {
+    ctx.fillStyle = '#c060ff';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawBossHPBar(g) {
+  const w = 400, h = 16, x = CONFIG.GAME_W / 2 - w / 2, y = 14;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 4, y - 20, w + 8, h + 30);
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('GANONDORF - Phase ' + g.phase, CONFIG.GAME_W / 2, y - 6);
+  ctx.fillStyle = '#3a0a0a'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = g.phase === 3 ? '#ff8020' : g.phase === 2 ? '#c020c0' : '#e02020';
+  ctx.fillRect(x, y, w * Math.max(0, g.hp / g.maxHp), h);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
 }
 
 function drawDungeonExtras(d) {
@@ -2419,6 +2714,16 @@ function drawHUD() {
 
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
   ctx.fillText('Gold: ' + hud.gold, 10, 52);
+
+  // medallion icons
+  const medOrder = ['forest', 'fire', 'water', 'shadow'];
+  const medColors = { forest: '#3fc766', fire: '#e05a2a', water: '#3a8ac9', shadow: '#7a4aa0' };
+  medOrder.forEach((k, i) => {
+    const mx = 150 + i * 16, my = 44;
+    ctx.fillStyle = player.medallions[k] ? medColors[k] : '#333';
+    ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+  });
 }
 
 function drawXPBar() {
