@@ -543,7 +543,7 @@ function check(name, ok, detail) {
   // --- Walk full 10x map / regions / bushes ---
   const mapResult = await page.evaluate(() => {
     try {
-      const ratio = (overworld.w * overworld.h) / (64 * 44);
+      const ratio = (overworld.w * overworld.h) / (200 * 140); // vs the Phase 8 map
       const bush = wildsBushes[0];
       const goldBefore = hud.gold + heartPickups.length; // proxy
       smashPot(bush);
@@ -555,7 +555,7 @@ function check(name, ok, detail) {
       return { ratio, bushCut: !bush.alive, regionsSeen: [...regionsSeen].sort() };
     } catch (e) { return { exception: e.message }; }
   });
-  check('Overworld is ~10x the original tile count', mapResult.ratio > 9 && mapResult.ratio < 11, 'ratio=' + mapResult.ratio);
+  check('Overworld is ~1.5x the Phase 8 map (not a sprawling empty world)', mapResult.ratio > 1.4 && mapResult.ratio < 1.6, 'ratio=' + mapResult.ratio);
   check('Slashable bushes can be cut', mapResult.bushCut);
   check('All 5 regions + town are reachable/present on the map', mapResult.regionsSeen && mapResult.regionsSeen.length === 6, JSON.stringify(mapResult.regionsSeen));
 
@@ -726,6 +726,127 @@ function check(name, ok, detail) {
     check('Glimmer Wisp is invulnerable while faded except to fire arrows; a burrowed mole cannot be targeted',
       ne.wispFadedSword === false && ne.wispFadedFire === true && ne.moleHiddenTargetable === false, JSON.stringify(ne));
     await sp.close();
+  }
+
+  // --- Phase B overworld: reachability, density and every new mechanic ---
+  {
+    const ow = await browser.newPage();
+    ow.on('pageerror', e => errorsAll.push('overworld: ' + e.message));
+    await ow.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 500));
+    const r = await ow.evaluate(() => {
+      const out = {};
+      try {
+        localStorage.removeItem(SAVE_KEY);
+        startNewGame();
+        const TS = CONFIG.TILE, W = overworld.w, H = overworld.h;
+        const step = n => { for (let i = 0; i < n; i++) { updatePlaying(1 / 60); if (fadeCallback) { const f = fadeCallback; fadeCallback = null; f(); fadeAlpha = 0; fadeDir = 0; } } };
+        const clear = () => { dialogue.active = false; mathPopup.active = false; player.levelUpChoicePending = false; player.invincibleT = 999;
+          for (const k of Object.keys(Input.keys)) Input.keys[k] = false; hero.walkTargetX = null; hero.walkTargetY = null; hero.hop = null;
+          for (const e of wildsEnemies) e.alive = false; };
+        const solveLock = () => mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true);
+        clear();
+        // 1. every landmark reachable on foot (lake bridge lowered for the island)
+        for (const [bx, by] of overworld.bridgeTiles.lakeBridge) overworld.grid[by][bx] = T.BRIDGE;
+        const seen = owReachable(overworld, Math.floor(W / 2), Math.floor(H / 2) + 2);
+        out.unreachable = OW_TARGETS.filter(t => !seen[t.x + t.y * W]).map(t => t.name);
+        for (const [bx, by] of overworld.bridgeTiles.lakeBridge) overworld.grid[by][bx] = T.WATER;
+        // ...and the island is cut off while the bridge is up
+        const seenUp = owReachable(overworld, Math.floor(W / 2), Math.floor(H / 2) + 2);
+        const [wx, wy] = OW_LAYOUT.dungeons.water;
+        out.islandCutOff = !seenUp[wx + wy * W];
+        // 2. something to find on every screen that has land
+        const sw = 40, sh = 22, pois = [];
+        for (const c of owChests) pois.push([c.x, c.y]);
+        for (const sg of owSigns) pois.push([sg.x, sg.y]);
+        for (const f of owFountains) pois.push([f.x, f.y]);
+        for (const p of owProps) pois.push([p.x, p.y]);
+        for (const g of owGates) pois.push([g.x, g.y]);
+        for (const g of owGroveSpots) pois.push([g.x, g.y]);
+        for (const c of overworld.caves) pois.push([c.x, c.y]);
+        for (const [x, y] of OW_LAYOUT.stairs) pois.push([x, y]);
+        for (const b of buildings) pois.push([b.doorTileX, b.doorTileY]);
+        pois.push([secretSpot.x, secretSpot.y], OW_LAYOUT.castleGate);
+        const empty = [];
+        for (let sy = 0; sy < H; sy += sh) for (let sx = 0; sx < W; sx += sw) {
+          let land = 0;
+          for (let y = sy; y < Math.min(H, sy + sh); y++) for (let x = sx; x < Math.min(W, sx + sw); x++) if (overworld.grid[y][x] !== T.WATER) land++;
+          if (land < sw * sh * 0.3) continue;
+          if (!pois.some(([x, y]) => x >= sx && x < sx + sw && y >= sy && y < sy + sh)) empty.push(sx / sw + ',' + sy / sh);
+        }
+        out.emptyScreens = empty;
+        // 3. bridge lever: math lock lowers the bridge
+        const lever = owProps.find(p => p.kind === 'lever');
+        clear(); hero.x = (lever.x + 0.5) * TS; hero.y = (lever.y + 1.5) * TS; hero.facing = 'up';
+        Input.keys['e'] = true; step(1);
+        out.leverAsks = mathPopup.active && mathPopup.purpose === 'lock';
+        solveLock(); step(1);
+        out.bridgeDown = !!owState.bridges.lakeBridge && overworld.bridgeTiles.lakeBridge.every(([x, y]) => overworld.grid[y][x] === T.BRIDGE);
+        // 4. small chest: gold once; big chest: math lock then heart
+        const small = owChests.find(c => !c.big), big = owChests.find(c => c.big && c.reward === 'heart' && !c.gated);
+        clear(); hero.x = (small.x + 0.5) * TS; hero.y = (small.y + 1.5) * TS; hero.facing = 'up';
+        const g0 = hud.gold; Input.keys['e'] = true; step(1);
+        out.smallChest = hud.gold === g0 + small.gold && owState.chests[small.id] === true;
+        Input.keys['e'] = true; step(1); out.smallOnce = hud.gold === g0 + small.gold;
+        clear(); hero.x = (big.x + 0.5) * TS; hero.y = (big.y + 1.5) * TS; hero.facing = 'up';
+        const h0 = player.maxHearts; Input.keys['e'] = true; step(1);
+        out.bigAsks = mathPopup.active && mathPopup.purpose === 'lock' && !owState.chests[big.id];
+        solveLock(); out.bigHeart = player.maxHearts === h0 + 1;
+        // 5. heavy boulder: refused without the Titan Bracelet, lifted with it
+        const bg = owGates.find(g => g.kind === 'boulder');
+        clear(); hero.x = (bg.x + 1) * TS; hero.y = (bg.y + 2.6) * TS; hero.facing = 'up';
+        player.owned.powerBracelet = false; Input.keys['e'] = true; step(1);
+        out.boulderStays = overworld.grid[bg.y][bg.x] === T.BOULDER;
+        player.owned.powerBracelet = true; Input.keys['e'] = true; step(1);
+        out.boulderLifted = overworld.grid[bg.y][bg.x] !== T.BOULDER && owState.lifted[bg.id] === true;
+        // 6. cracked rock breaks to a bomb
+        const cg = owGates.find(g => g.kind === 'cracked');
+        clear(); hero.x = (cg.x + 1) * TS; hero.y = (cg.y + 2.6) * TS; hero.facing = 'up';
+        player.bombBag = true; Input.keys['b'] = true; step(1); step(150);
+        out.rockBombed = overworld.grid[cg.y][cg.x] !== T.CRACKED && owState.bombed[cg.id] === true;
+        // 7. caves: walking into a mouth comes out of its twin
+        const c0 = overworld.caves[0], c1 = overworld.caves.find(c => c.id === c0.to);
+        clear(); hero.x = (c0.x + 0.5) * TS; hero.y = (c0.y + 1.6) * TS;
+        Input.keys['ArrowUp'] = true; step(60); Input.keys['ArrowUp'] = false; step(10); // held Up must not bounce back in
+        out.caveTo = [Math.floor(hero.x / TS), Math.floor(hero.y / TS)]; out.caveWant = [c1.x, c1.y + 1];
+        out.caveOk = Math.abs(out.caveTo[0] - c1.x) <= 1 && Math.abs(out.caveTo[1] - (c1.y + 1)) <= 1;
+        // 8. ledges: hop down going south, impassable going north
+        let lx = -1, ly = -1;
+        for (let y = 2; y < H - 2 && lx < 0; y++) for (let x = 2; x < W - 2; x++) {
+          if (overworld.grid[y][x] === T.LEDGE && overworld.grid[y][x - 1] === T.LEDGE && overworld.grid[y][x + 1] === T.LEDGE &&
+              !SOLID_TILES.has(overworld.grid[y - 1][x]) && !SOLID_TILES.has(overworld.grid[y + 1][x]) && !SOLID_TILES.has(overworld.grid[y + 2][x])) { lx = x; ly = y; break; }
+        }
+        clear(); hero.x = (lx + 0.5) * TS; hero.y = (ly - 0.6) * TS;
+        Input.keys['ArrowDown'] = true; step(40); Input.keys['ArrowDown'] = false; step(30);
+        out.hopped = hero.y > (ly + 1) * TS;
+        Input.keys['ArrowUp'] = true; step(60); Input.keys['ArrowUp'] = false;
+        out.ledgeBlocksNorth = hero.y > (ly + 1) * TS;
+        // 9. world state survives a save/load
+        saveGame();
+        out.saved = JSON.parse(localStorage.getItem(SAVE_KEY)).world;
+      } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+      return out;
+    });
+    await ow.reload({ waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 500));
+    const back = await ow.evaluate(() => {
+      continueSavedGame();
+      const bg = owGates.find(g => g.kind === 'boulder'), cg = owGates.find(g => g.kind === 'cracked');
+      const out = { bridge: overworld.bridgeTiles.lakeBridge.every(([x, y]) => overworld.grid[y][x] === T.BRIDGE),
+        boulder: overworld.grid[bg.y][bg.x] !== T.BOULDER, rock: overworld.grid[cg.y][cg.x] !== T.CRACKED,
+        chests: Object.keys(owState.chests).length };
+      localStorage.removeItem(SAVE_KEY);
+      return out;
+    });
+    const J = x => JSON.stringify(x);
+    check('Overworld: every landmark is reachable on foot; the Water Dungeon island only via the lowered bridge', !r.exception && r.unreachable.length === 0 && r.islandCutOff, J({ u: r.unreachable, island: r.islandCutOff, ex: r.exception }));
+    check('Overworld: every land screen has at least one point of interest', r.emptyScreens && r.emptyScreens.length === 0, J(r.emptyScreens));
+    check('Overworld: the lake lever asks a math question and lowers the bridge', r.leverAsks && r.bridgeDown, J(r));
+    check('Overworld: small chests give gold once; big chests are math-locked (+1 max heart)', r.smallChest && r.smallOnce && r.bigAsks && r.bigHeart, J(r));
+    check('Overworld: boulders need the Titan Bracelet; cracked rocks break to bombs', r.boulderStays && r.boulderLifted && r.rockBombed, J(r));
+    check('Overworld: a cave carries the hero to its twin; ledges hop south and block north', r.caveOk && r.hopped && r.ledgeBlocksNorth, J(r));
+    check('Overworld: bridge / boulder / rock / chests stay changed after save + reload', back.bridge && back.boulder && back.rock && back.chests >= 2, J(back));
+    await ow.close();
   }
 
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct

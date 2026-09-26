@@ -61,8 +61,12 @@ stopping the agent keeps the accumulated time offset so that the game clock does
   it can afford gear) → castle and final boss → victory.
 - **Pathing:** A* runs over the real tile grid, using `SOLID_TILES` and `tileSolidAt`. Door,
   building and dungeon trigger zones are avoided unless they are the goal. The hero is steered
-  through tile centres so its 12x14 hitbox always fits.
-- **Modals:** the math popup is solved by parsing `questionText` itself, never `correctIndex`,
+  through tile centres so its 12x14 hitbox always fits. Ledges count as solid and caves are
+  not used, so every route the agent takes is walkable without those shortcuts.
+- **Bridge lever:** before walking to the Water Dungeon, the agent walks to the lake lever,
+  presses E and answers its math lock, and reports a CRITICAL if the bridge doesn't come down.
+- **Modals:** the math popup (AP, revive, or a `lock` on a boss door, big chest or lever) is
+  solved by parsing `questionText` itself, never `correctIndex`,
   and the matching button is tapped. The agent also handles the level-up choice, dialogue, the
   shop (tap to buy, scroll with the wheel or arrow keys, close with X), and the pause and
   wardrobe menus.

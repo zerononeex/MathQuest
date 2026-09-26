@@ -1357,10 +1357,29 @@
   }
 
   // ---- dungeon crawl ----
+  // Overworld bridge levers (Phase B): the Water Dungeon island is reached
+  // over a bridge that a shore lever lowers after a math question. Walk
+  // there and pull it the way a player would (E, then answer).
+  function* useBridgeLever() {
+    if (typeof owProps === 'undefined') return false;
+    const lv = owProps.find(p => p.kind === 'lever' && !owState.bridges[p.bridge]);
+    if (!lv) return false;
+    QA.goal = 'pull the bridge lever';
+    const r = yield* navTo(lv.x, lv.y + 1, { label: 'walk to the bridge lever', timeoutMs: 300000 });
+    if (r === 'nopath') { report('CRITICAL', 'progression', 'No walkable path to the bridge lever at (' + lv.x + ',' + lv.y + ')'); return false; }
+    Inp.press('e');
+    const opened = yield* waitUntil(() => mathPopup.active || owState.bridges[lv.bridge], 1500);
+    if (!opened) { report('CRITICAL', 'interaction', 'E beside the bridge lever did nothing'); return false; }
+    const down = yield* waitUntil(() => owState.bridges[lv.bridge], 20000);
+    if (!down) { report('CRITICAL', 'interaction', 'Answering the bridge lever question did not lower the bridge'); return false; }
+    milestone('Lowered the ' + lv.bridge + ' with its lever (math lock)');
+    return true;
+  }
   function* enterDungeonGen(d) {
     const z = d.entranceZone, sx = Math.round(z.minX / TS()) + 1, sy = Math.round(z.minY / TS());
     for (let attempt = 0; attempt < 3; attempt++) {
       yield* ensureOverworld();
+      if (d.def.id === 'water') yield* useBridgeLever();
       const r = yield* navTo(sx, sy, { allowZone: true, expectTransition: true, label: 'walk to ' + d.def.name + ' entrance', timeoutMs: 300000 });
       yield* waitUntil(() => !fading(), 1500);
       if (world.mode === 'dungeon' && world.dungeon === d) {
