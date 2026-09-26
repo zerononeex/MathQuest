@@ -811,7 +811,7 @@
           QA.bossReported[id] = true;
           report('CRITICAL', 'progression', d.def.name + ': boss "' + (boss.bossKind || boss.type) + '" was killed (alive=false, hp=' + boss.hp + ') but the dungeon never registers it: bossDefeated=' + d.bossDefeated +
             ', hasBossKey=' + d.hasBossKey + ', no Boss Key / heart piece spawned, boss door tile stays ' + tileName(d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1]) + ' - dungeon cannot be completed',
-            { dungeon: id, suspected: 'updateDungeonRoom() skips enemies with alive=false before its "e.hp <= 0 && !d.bossDefeated -> defeatMiniboss()" check, but damageEnemy() already set alive=false on the killing blow, so defeatMiniboss() never runs' },
+            { dungeon: id, repro: 'New Game -> enter the ' + d.def.name + ', get the Small Key, solve the puzzle, kill the boss in room 2, then walk to the east door: it stays sealed and no Boss Key drops', suspected: 'updateDungeonRoom() skips enemies with alive=false before its "e.hp <= 0 && !d.bossDefeated -> defeatMiniboss()" check, but damageEnemy() already set alive=false on the killing blow, so defeatMiniboss() never runs' },
             'bosskey|' + id);
         }
       }
@@ -1500,7 +1500,8 @@
         }
         if (!lit) {
           report('CRITICAL', 'progression', d.def.name + ': torch puzzle cannot be solved - pressing E while standing on torch ' + (k + 1) + ' (tile ' + t.x + ',' + t.y + ') never lights it (puzzle.lit stays ' + JSON.stringify(p.lit) + '); the way east never opens',
-            { suspected: 'updatePlaying() clears Input.keys.e in its "talk via E" block (after the pot check) on every step, before updateDungeonRoom() -> updateDungeonPuzzle() reads it, so the torch check never sees E' }, 'torch|' + d.def.id);
+            { repro: 'New Game -> walk to the ' + d.def.name + ', smash the entrance-room pots for the Small Key, go through the east door; in the torch room stand on torch tile (' + t.x + ',' + t.y + ') and press E: it never lights',
+              suspected: 'updatePlaying() clears Input.keys.e in its "talk via E" block (after the pot check) on every step, before updateDungeonRoom() -> updateDungeonPuzzle() reads it, so the torch check never sees E' }, 'torch|' + d.def.id);
           return false;
         }
       }
@@ -1521,7 +1522,8 @@
     if (!d.chestOpened) { yield* navTo(cx - 1, cy, { label: 'back beside chest' }); for (let a = 0; a < 2 && !d.chestOpened; a++) { Inp.press('E'); yield* waitUntil(() => d.chestOpened, 400); } }
     if (!d.chestOpened) {
       report('CRITICAL', 'progression', d.def.name + ': treasure chest cannot be opened (hasBossKey=' + d.hasBossKey + '): pressed E x5 within ' + Math.hypot(hero.x - chX, hero.y - chY).toFixed(0) + 'px and tapped it x2 - medallion unobtainable',
-        { suspected: 'handleDungeonDoors() reads Input.keys.e / Input.tapped, but updatePlaying() already consumed both earlier in the same step (talk-via-E block and tap-to-move block)' }, 'chest|' + d.def.id);
+        { repro: 'New Game -> clear the ' + d.def.name + ' (Small Key, puzzle, boss -> Boss Key), walk into the treasure room, stand next to the chest at tile (' + cx + ',' + cy + ') and press E (or tap the chest): it never opens',
+          suspected: 'handleDungeonDoors() reads Input.keys.e / Input.tapped, but updatePlaying() already consumed both earlier in the same step (talk-via-E block and tap-to-move block)' }, 'chest|' + d.def.id);
       return false;
     }
     return true;
@@ -1917,7 +1919,7 @@
     const p = j.progress;
     if (p.level !== undefined) {
       L.push('- Level ' + p.level + ', hearts ' + p.hearts + ', attack ' + p.attack + ', gold ' + p.gold + ', medallions ' + p.medallionCount + '/4');
-      L.push('- Weapon slots: ' + p.slots.join(', ') + ' | owned gear: ' + Object.keys(p.owned).filter(k => p.owned[k] === true || p.owned[k] > 0).join(', '));
+      L.push('- Weapon slots: ' + p.slots.map(x => x || '(empty)').join(', ') + ' | owned gear: ' + Object.keys(p.owned).filter(k => p.owned[k] === true || p.owned[k] > 0).join(', '));
     }
     L.push('- Bought: ' + (j.stats.bought.length ? j.stats.bought.map(b => b.name + ' (' + b.price + 'g @' + b.gameT + 's)').join(', ') : 'nothing'));
     L.push('- Kills ' + j.stats.kills + ', pots/bushes ' + j.stats.pots + ', sword swings ' + j.stats.swings + ', ranged shots ' + j.stats.rangedShots + ', math solved ' + j.stats.mathSolved + ', revives ' + j.stats.revives + ', level-ups ' + j.stats.levelUps);
@@ -1941,6 +1943,7 @@
         L.push('- Where: ' + w.map + ' pos (' + w.x + ', ' + w.y + ') tile (' + w.tx + ', ' + w.ty + '), facing ' + w.facing + ', HP ' + w.hearts + ', AP ' + w.ap + ', gold ' + w.gold);
         if (b.extra) {
           const ex = Object.assign({}, b.extra);
+          if (ex.repro) { L.push('- Manual repro: ' + ex.repro); delete ex.repro; }
           if (ex.suspected) { L.push('- Suspected cause (static reading of the game code): ' + ex.suspected); delete ex.suspected; }
           if (ex.stack) { L.push('- Stack:', '```', ex.stack, '```'); delete ex.stack; }
           if (Object.keys(ex).length) L.push('- Details: `' + JSON.stringify(ex).slice(0, 600) + '`');
