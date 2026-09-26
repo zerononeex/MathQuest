@@ -50,6 +50,11 @@ const CONFIG = {
   GAME_W: 640,           // internal game width in pixels (native canvas resolution)
   GAME_H: 360,           // internal game height in pixels
   TILE: 16,               // size of one world tile in pixels
+  // Backing-store pixels per game pixel. Game logic, HUD layout and input
+  // all stay in the 640x360 coordinate system above; the canvas is just
+  // rendered at RENDER_SCALE x that size so the big source sprites are
+  // resampled with more detail and text is crisp. 1 = the old look.
+  RENDER_SCALE: 2,
 
   // --- Difficulty / math tiers ---
   // Which tier is selected by default on the title screen.
@@ -302,7 +307,7 @@ const SRC = {
     bat: [708, 407, 215, 91],
   },
   ui: {
-    panel: [15, 15, 500, 265],
+    panel: [54, 53, 458, 240], // tight alpha bbox (old crop had a 40px empty margin top/left, which offset the frame)
     buttonUp: [575, 57, 173, 167],
     buttonDown: [802, 55, 168, 170],
     heartFull: [576, 266, 175, 160],
@@ -469,8 +474,9 @@ function _hslToRgb(h, s, l) {
   return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
 }
 // op: '+'-separated list of pixel operations applied to a cached sprite.
-function _applySpriteOps(c, ops) {
+function _applySpriteOps(c, ops, rs) {
   const x = c.getContext('2d'), w = c.width, h = c.height;
+  rs = rs || 1; // backing pixels per game pixel (the leg lift stays 1 game px)
   for (const op of ops.split('+')) {
     if (!op) continue;
     if (op === 'white') {
@@ -483,12 +489,12 @@ function _applySpriteOps(c, ops) {
     const d = id.data;
     if (op === 'legL' || op === 'legR') {
       // lift one foot 1px: shift the bottom ~22% of rows up on one half
-      const rows = Math.max(3, Math.round(h * 0.22)), mid = Math.floor(w / 2);
+      const rows = Math.max(3 * rs, Math.round(h * 0.22)), mid = Math.floor(w / 2);
       const x0 = op === 'legL' ? 0 : mid, x1 = op === 'legL' ? mid : w;
       for (let yy = h - rows; yy < h; yy++) {
         for (let xx = x0; xx < x1; xx++) {
-          const di = (yy * w + xx) * 4, si = ((yy + 1) * w + xx) * 4;
-          for (let k = 0; k < 4; k++) d[di + k] = yy + 1 < h ? d[si + k] : 0;
+          const di = (yy * w + xx) * 4, si = ((yy + rs) * w + xx) * 4;
+          for (let k = 0; k < 4; k++) d[di + k] = yy + rs < h ? d[si + k] : 0;
         }
       }
     } else if (op.startsWith('tint:')) {
@@ -517,15 +523,23 @@ function _applySpriteOps(c, ops) {
     x.putImageData(id, 0, 0);
   }
 }
-function scaledSprite(key, src, dw, dh, ops) {
-  const w = Math.max(1, Math.round(dw)), h = Math.max(1, Math.round(dh));
+// Render scale of a drawing context: backing pixels per game pixel (the main
+// canvas and hi-res offscreen canvases tag their 2D context with _rs).
+function ctxScale(dctx) { return (dctx && dctx._rs) || 1; }
+// Returns a cached canvas of the sprite resampled to (dw x dh) GAME pixels
+// at `rs` backing pixels each, i.e. (dw*rs x dh*rs) real pixels; the cache
+// is keyed by that real size, so each render scale gets its own resample.
+// Callers draw it back at (dw x dh) game units.
+function scaledSprite(key, src, dw, dh, ops, rs) {
+  rs = rs || 1;
+  const w = Math.max(1, Math.round(dw)) * rs, h = Math.max(1, Math.round(dh)) * rs;
   const ck = key + '|' + src[0] + ',' + src[1] + ',' + src[2] + ',' + src[3] + '|' + w + 'x' + h + '|' + (ops || '');
   let c = _spriteCache.get(ck);
   if (c) return c;
   if (ops) {
     c = makeCanvas(w, h);
-    c.getContext('2d').drawImage(scaledSprite(key, src, w, h), 0, 0);
-    _applySpriteOps(c, ops);
+    c.getContext('2d').drawImage(scaledSprite(key, src, dw, dh, '', rs), 0, 0);
+    _applySpriteOps(c, ops, rs);
   } else {
     let cur = ATLAS[key], sx = src[0], sy = src[1], sw = src[2], sh = src[3];
     while (sw >= w * 2 && sh >= h * 2) {
@@ -554,9 +568,10 @@ function scaledSprite(key, src, dw, dh, ops) {
 // fall back to procedural drawing. Large reductions go through the cache.
 function drawSprite(dctx, key, src, dx, dy, dw, dh) {
   if (!imgReady(key)) return false;
-  if (dw * 1.5 < src[2] || dh * 1.5 < src[3]) {
-    const c = scaledSprite(key, src, dw, dh);
-    dctx.drawImage(c, Math.round(dx), Math.round(dy));
+  const rs = ctxScale(dctx);
+  if (dw * rs * 1.5 < src[2] || dh * rs * 1.5 < src[3]) {
+    const c = scaledSprite(key, src, dw, dh, '', rs);
+    dctx.drawImage(c, Math.round(dx), Math.round(dy), c.width / rs, c.height / rs);
   } else {
     dctx.drawImage(ATLAS[key], src[0], src[1], src[2], src[3], dx, dy, dw, dh);
   }
@@ -571,12 +586,12 @@ function drawSpriteFoot(dctx, key, src, x, footY, h, opts) {
   opts = opts || {};
   const baseW = opts.w || src[2] * h / src[3];
   const w = Math.max(1, Math.round(baseW * (opts.sx || 1))), hh = Math.max(1, Math.round(h * (opts.sy || 1)));
-  const c = scaledSprite(key, src, w, hh, opts.ops);
+  const c = scaledSprite(key, src, w, hh, opts.ops, ctxScale(dctx));
   const dx = Math.round(x - w / 2), dy = Math.round(footY) - hh;
   if (opts.flip) {
-    dctx.save(); dctx.translate(dx + w, dy); dctx.scale(-1, 1); dctx.drawImage(c, 0, 0); dctx.restore();
+    dctx.save(); dctx.translate(dx + w, dy); dctx.scale(-1, 1); dctx.drawImage(c, 0, 0, w, hh); dctx.restore();
   } else {
-    dctx.drawImage(c, dx, dy);
+    dctx.drawImage(c, dx, dy, w, hh);
   }
   return true;
 }
@@ -624,30 +639,43 @@ function drawPropFoot(dctx, name, x, footY, ops) {
 // fall back to a plain procedural panel.
 function drawPanelFrame(dctx, key, src, dx, dy, dw, dh, srcCorner, destCorner) {
   if (!imgReady(key)) return false;
-  const img = ATLAS[key];
   const [sx, sy, sw, sh] = src;
   const c = Math.min(srcCorner, sw / 2, sh / 2);
-  const dc = Math.min(destCorner, dw / 2, dh / 2);
+  const rs = ctxScale(dctx);
+  dx = Math.round(dx); dy = Math.round(dy); dw = Math.round(dw); dh = Math.round(dh);
+  const dc = Math.round(Math.min(destCorner, dw / 2, dh / 2));
+  // every slice goes through the box-filtered sprite cache: the source art
+  // is ~5x bigger than the panel, so raw nearest sampling drops pixels
+  const piece = (px, py, pw, ph, qx, qy, qw, qh) => {
+    if (qw <= 0 || qh <= 0) return;
+    dctx.drawImage(scaledSprite(key, [px, py, pw, ph], qw, qh, '', rs), qx, qy, qw, qh);
+  };
   // corners
-  dctx.drawImage(img, sx, sy, c, c, dx, dy, dc, dc);
-  dctx.drawImage(img, sx + sw - c, sy, c, c, dx + dw - dc, dy, dc, dc);
-  dctx.drawImage(img, sx, sy + sh - c, c, c, dx, dy + dh - dc, dc, dc);
-  dctx.drawImage(img, sx + sw - c, sy + sh - c, c, c, dx + dw - dc, dy + dh - dc, dc, dc);
+  piece(sx, sy, c, c, dx, dy, dc, dc);
+  piece(sx + sw - c, sy, c, c, dx + dw - dc, dy, dc, dc);
+  piece(sx, sy + sh - c, c, c, dx, dy + dh - dc, dc, dc);
+  piece(sx + sw - c, sy + sh - c, c, c, dx + dw - dc, dy + dh - dc, dc, dc);
   // edges (stretched along their long axis only)
-  if (dw - 2 * dc > 0) {
-    dctx.drawImage(img, sx + c, sy, sw - 2 * c, c, dx + dc, dy, dw - 2 * dc, dc);
-    dctx.drawImage(img, sx + c, sy + sh - c, sw - 2 * c, c, dx + dc, dy + dh - dc, dw - 2 * dc, dc);
-  }
-  if (dh - 2 * dc > 0) {
-    dctx.drawImage(img, sx, sy + c, c, sh - 2 * c, dx, dy + dc, dc, dh - 2 * dc);
-    dctx.drawImage(img, sx + sw - c, sy + c, c, sh - 2 * c, dx + dw - dc, dy + dc, dc, dh - 2 * dc);
-  }
+  piece(sx + c, sy, sw - 2 * c, c, dx + dc, dy, dw - 2 * dc, dc);
+  piece(sx + c, sy + sh - c, sw - 2 * c, c, dx + dc, dy + dh - dc, dw - 2 * dc, dc);
+  piece(sx, sy + c, c, sh - 2 * c, dx, dy + dc, dc, dh - 2 * dc);
+  piece(sx + sw - c, sy + c, c, sh - 2 * c, dx + dw - dc, dy + dc, dc, dh - 2 * dc);
   return true;
 }
 
-canvas.width = CONFIG.GAME_W;
-canvas.height = CONFIG.GAME_H;
+// Hi-DPI backing store: RENDER_SCALE x the logical game size. Every frame
+// starts with setTransform(RS) (beginFrame) so all drawing code keeps using
+// 640x360 game coordinates; the CSS size and tap mapping are unchanged.
+const RS = Math.max(1, Math.min(3, Math.round(CONFIG.RENDER_SCALE || 1)));
+canvas.width = CONFIG.GAME_W * RS;
+canvas.height = CONFIG.GAME_H * RS;
+ctx._rs = RS;
 ctx.imageSmoothingEnabled = false; // resizing a canvas resets its context state
+function beginFrame() {
+  ctx.setTransform(RS, 0, 0, RS, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalAlpha = 1;
+}
 
 function resizeCanvas() {
   const stage = document.getElementById('stage');
@@ -879,6 +907,9 @@ document.addEventListener('visibilitychange', () => {
 const Input = {
   keys: {},
   tapX: null, tapY: null, tapped: false,
+  // live pointer state (game coords) for drag-scrolling lists; `tapped`
+  // above stays the press-edge event every other screen uses
+  down: false, curX: null, curY: null, wheelDY: 0,
 };
 window.addEventListener('keydown', e => { Input.keys[e.key] = true; });
 window.addEventListener('keyup', e => { Input.keys[e.key] = false; });
@@ -898,10 +929,18 @@ canvas.addEventListener('touchstart', e => {
   const p = canvasToGameCoords(t.clientX, t.clientY);
   Input.tapX = p.x; Input.tapY = p.y; Input.tapped = true;
   Input.swipeStartX = p.x; Input.swipeStartY = p.y;
+  Input.down = true; Input.curX = p.x; Input.curY = p.y;
 }, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  const t = e.changedTouches[0];
+  const p = canvasToGameCoords(t.clientX, t.clientY);
+  Input.curX = p.x; Input.curY = p.y;
+}, { passive: false });
+canvas.addEventListener('touchcancel', () => { Input.down = false; }, { passive: false });
 canvas.addEventListener('touchend', e => {
   const t = e.changedTouches[0];
   const p = canvasToGameCoords(t.clientX, t.clientY);
+  Input.down = false; Input.curX = p.x; Input.curY = p.y;
   if (Input.swipeStartX !== undefined) {
     const dx = p.x - Input.swipeStartX, dy = p.y - Input.swipeStartY;
     if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 2) {
@@ -913,7 +952,24 @@ canvas.addEventListener('touchend', e => {
 canvas.addEventListener('mousedown', e => {
   const p = canvasToGameCoords(e.clientX, e.clientY);
   Input.tapX = p.x; Input.tapY = p.y; Input.tapped = true;
+  Input.down = true; Input.curX = p.x; Input.curY = p.y;
 });
+window.addEventListener('mousemove', e => {
+  if (!Input.down) return;
+  const p = canvasToGameCoords(e.clientX, e.clientY);
+  Input.curX = p.x; Input.curY = p.y;
+});
+window.addEventListener('mouseup', e => {
+  if (!Input.down) return;
+  const p = canvasToGameCoords(e.clientX, e.clientY);
+  Input.down = false; Input.curX = p.x; Input.curY = p.y;
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  // normalise line/page deltas to roughly pixels
+  const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 200 : 1;
+  Input.wheelDY += e.deltaY * k;
+}, { passive: false });
 
 // =========================================================================
 // Game state machine
@@ -1072,12 +1128,23 @@ const overworld = buildOverworld();
 
 // prerendered offscreen canvas for the overworld (Phase1 scale is small
 // enough for a single canvas; Phase 8 switches to chunked prerendering).
+// Rooms and interiors are baked at RENDER_SCALE (their door/chest/sign
+// sprites get the extra detail). The 3200x2240 overworld would be 6400x4480
+// = 28.7M px at 2x: over iOS Safari's 16.7M px per-canvas cap and ~115MB,
+// and its ground is native 16px tile art that gains nothing from a finer
+// resample, so a map over the cap is baked at 1x and upscaled when drawn.
+const MAX_PRERENDER_PX = 4096 * 4096;
 function prerenderMap(mapData) {
   const off = document.createElement('canvas');
-  off.width = mapData.w * CONFIG.TILE;
-  off.height = mapData.h * CONFIG.TILE;
+  const lw = mapData.w * CONFIG.TILE, lh = mapData.h * CONFIG.TILE;
+  const s = lw * RS * lh * RS <= MAX_PRERENDER_PX ? RS : 1;
+  off.width = lw * s;
+  off.height = lh * s;
+  off._scale = s;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
+  octx.setTransform(s, 0, 0, s, 0, 0);
+  octx._rs = s;
   const rand = mulberry32(99);
   for (let y = 0; y < mapData.h; y++) {
     for (let x = 0; x < mapData.w; x++) {
@@ -2031,9 +2098,9 @@ function chestTapped(cx, cy) {
 }
 
 const ABILITY_BY_DUNGEON = {
-  forest: { id: 'powerBracelet', name: 'Power Bracelet' },
+  forest: { id: 'powerBracelet', name: 'Titan Bracelet' },
   fire: { id: 'fireSword', name: 'Fire Sword' },
-  water: { id: 'pegasusBoots', name: 'Pegasus Boots' },
+  water: { id: 'pegasusBoots', name: 'Swift Boots' },
   shadow: { id: 'bombBag', name: 'Bomb Bag' },
 };
 function openDungeonChest(d) {
@@ -2056,15 +2123,40 @@ function openDungeonChest(d) {
 }
 
 function defeatMiniboss(d, e) {
+  if (d.bossDefeated) return;
   d.bossDefeated = true;
+  e.alive = false; e.hp = Math.min(e.hp, 0);
   musicOnBossDefeated();
   d.hasBossKey = true;
   spawnFloatingText(e.x, e.y - 20, 'BOSS KEY!', '#ffd84a');
-  spawnHeartPiece(e.x, e.y + 14, d);
+  showHint('Got the Boss Key! The sealed door is open.', 2.5);
+  // keep the heart piece on open floor even if the boss died against a wall
+  const room = d.rooms[2], T0 = CONFIG.TILE;
+  const hx = Math.max(T0 * 1.5, Math.min((room.w - 1.5) * T0, e.x));
+  const hy = Math.max(T0 * 1.5, Math.min((room.h - 1.5) * T0, e.y + 14));
+  spawnHeartPiece(hx, hy, d, 2);
   saveGame(); // auto-save on miniboss defeat
 }
-function spawnHeartPiece(x, y, d) {
-  heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null });
+function spawnHeartPiece(x, y, d, roomIndex) {
+  heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null, roomIndex: d ? roomIndex : null });
+}
+// A heart piece only exists where it was dropped: the overworld secret one
+// (dungeonId null) on the overworld, a boss drop in its own dungeon room.
+function heartPieceHere(hp) {
+  if (!hp.dungeonId) return world.mode === 'overworld';
+  return world.mode === 'dungeon' && world.dungeon && world.dungeon.def.id === hp.dungeonId &&
+    (hp.roomIndex == null || world.dungeon.roomIndex === hp.roomIndex);
+}
+function updateHeartPieces(dt) {
+  for (let i = heartPieces.length - 1; i >= 0; i--) {
+    const hp = heartPieces[i];
+    if (!heartPieceHere(hp)) continue;
+    hp.t += dt;
+    if (Math.hypot(hero.x - hp.x, hero.y - hp.y) < 14) {
+      collectHeartPiece(hp);
+      heartPieces.splice(i, 1);
+    }
+  }
 }
 function updateDungeonRoom(dt, room) {
   const d = world.dungeon;
@@ -2074,6 +2166,12 @@ function updateDungeonRoom(dt, room) {
   // miniboss extra attack: periodic dash toward hero (bug #5: this hook
   // must keep working even while the math/revive popup is open elsewhere)
   for (const e of d.enemies[d.roomIndex]) {
+    // Boss defeat MUST be checked before the alive filter below: every
+    // weapon kills through damageEnemy(), which flips alive=false the moment
+    // hp reaches 0, so the old end-of-loop `hp <= 0` check was never reached
+    // and no boss (Grovak/Malrek/Voltuga/Puffling) ever awarded the Boss Key
+    // or unsealed the boss door.
+    if (e.isMiniboss && e.hp <= 0 && !d.bossDefeated) { defeatMiniboss(d, e); continue; }
     if (!e.alive || !e.isMiniboss) continue;
     // Grovak: slow telegraphed charge + club-slam AoE on arrival.
     // Puffling: inflates then slams, leaving a lingering spore-cloud DoT zone.
@@ -2125,7 +2223,6 @@ function updateDungeonRoom(dt, room) {
     moveWithCollision(e, e.hopDx * dt, e.hopDy * dt, room);
     if (!e.alive) continue;
     if (Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) damageHero(e.bossKind === 'grovak' || e.bossKind === 'malrek' ? 2 : 1, e.x, e.y);
-    if (e.hp <= 0 && !d.bossDefeated) defeatMiniboss(d, e);
   }
 
   // room-edge transitions (only when the door there is open floor)
@@ -2149,14 +2246,7 @@ function updateDungeonRoom(dt, room) {
   }
 
   // heart piece pickups
-  for (let i = heartPieces.length - 1; i >= 0; i--) {
-    const hp = heartPieces[i];
-    hp.t += dt;
-    if (Math.hypot(hero.x - hp.x, hero.y - hp.y) < 14) {
-      collectHeartPiece(hp);
-      heartPieces.splice(i, 1);
-    }
-  }
+  updateHeartPieces(dt);
 }
 
 function collectHeartPiece(hp) {
@@ -2436,7 +2526,7 @@ const villagerNPCs = [
 
 const cameoNPCs = [
   makeNPC((overworld.w / 2 - 8) * CONFIG.TILE, (overworld.h / 2 + 2) * CONFIG.TILE, '#e05030',
-    ["Mama mia! I've explored many worlds.", "Those clay pots nearby? They love hiding gold coins!", "Keep an eye out, my friend!"],
+    ["Well, well! I've explored many worlds.", "Those clay pots nearby? They love hiding gold coins!", "Keep an eye out, my friend!"],
     { cameo: true, name: 'Mustachioed Wanderer' }),
   makeNPC((overworld.w / 2 + 10) * CONFIG.TILE, (overworld.h / 2 + 3) * CONFIG.TILE, '#8a6a4a',
     ["*thumps chest* Big rocks... heavy!", "Somewhere past the stacked barrels, a hidden dungeon waits.", "Only the strong may move heavy rocks!"],
@@ -2541,7 +2631,7 @@ const TUNIC_SKINS = {
   red: { name: 'Red', body: '#a83f3f', trim: '#5a2020' },
   blue: { name: 'Blue', body: '#3f5fa8', trim: '#20305a' },
   shadow: { name: 'Shadow', body: '#3a2a4a', trim: '#1a1025' },
-  plumber: { name: 'Plumber Nod', body: '#c03030', trim: '#1a3a6a' },
+  plumber: { name: 'Red Overalls', body: '#c03030', trim: '#1a3a6a' },
   golden: { name: 'Golden Hero', body: '#d8b840', trim: '#8a6a10' },
 };
 function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
@@ -3103,20 +3193,27 @@ const SHOP_ITEMS = [
   { id: 'bow', name: 'Bow & Arrows', price: CONFIG.SHOP.bow, desc: 'Fire arrows at any distance.' },
   { id: 'fireArrow', name: 'Fire Arrows', price: CONFIG.SHOP.fireArrow, desc: 'Burning arrow tips.', prereq: 'bow' },
   { id: 'iceArrow', name: 'Ice Arrows', price: CONFIG.SHOP.iceArrow, desc: 'Slows enemies down.', prereq: 'bow' },
-  { id: 'galeBoomerang', name: 'Gale Boomerang', price: CONFIG.SHOP.galeBoomerang, desc: 'Flies farther, hits twice.', prereq: 'boomerang' },
-  { id: 'heartContainer', name: 'Heart Container', price: CONFIG.SHOP.heartContainer, desc: '+1 max heart, full heal.', maxBuys: 2 },
-  { id: 'superMushroom', name: 'Super Mushroom', price: CONFIG.SHOP.superMushroom, desc: 'Full heal + grow for 10s.', consumable: true },
-  { id: 'fireFlower', name: 'Fire Flower', price: CONFIG.SHOP.fireFlower, desc: '20s fiery sword.', consumable: true },
-  { id: 'dkBarrel', name: 'DK Barrel', price: CONFIG.SHOP.dkBarrel, desc: 'Rolls straight, breaks on hit.', consumable: true },
+  { id: 'galeBoomerang', name: 'Gust Boomerang', price: CONFIG.SHOP.galeBoomerang, desc: 'Flies farther, hits twice.', prereq: 'boomerang' },
+  { id: 'heartContainer', name: 'Heart Vessel', price: CONFIG.SHOP.heartContainer, desc: '+1 max heart, full heal.', maxBuys: 2 },
+  { id: 'superMushroom', name: "Giant's Berry", price: CONFIG.SHOP.superMushroom, desc: 'Full heal + grow for 10s.', consumable: true },
+  { id: 'fireFlower', name: 'Ember Bloom', price: CONFIG.SHOP.fireFlower, desc: '20s fiery sword.', consumable: true },
+  { id: 'dkBarrel', name: 'Rolling Barrel', price: CONFIG.SHOP.dkBarrel, desc: 'Rolls straight, breaks on hit.', consumable: true },
   { id: 'inkBlaster', name: 'Ink Blaster', price: CONFIG.SHOP.inkBlaster, desc: '15s ink blobs slow foes.', consumable: true },
   { id: 'skinRed', name: 'Red Tunic', price: 20, desc: 'A bold red look.', skin: 'red' },
   { id: 'skinBlue', name: 'Blue Tunic', price: 35, desc: 'Cool and calm.', skin: 'blue' },
-  { id: 'skinPlumber', name: 'Plumber Nod', price: 60, desc: 'Mama mia!', skin: 'plumber' },
+  { id: 'skinPlumber', name: 'Red Overalls', price: 60, desc: 'Sturdy work clothes.', skin: 'plumber' },
 ];
+// (ids above are what saves and player.owned use; only display names changed)
 
-const shop = { active: false, scroll: 0 };
-function openShop() { shop.active = true; }
-function closeShop() { shop.active = false; }
+// The list is taller than the screen, so it scrolls inside a clipped
+// viewport: touch/mouse drag, mouse wheel, arrow keys / W,S (moves the
+// keyboard selection, which auto-scrolls), and tappable up/down arrows.
+// scroll = px offset into the list; press = a pending tap/drag that
+// started inside the list (a buy only happens on release without a drag).
+const shop = { active: false, scroll: 0, sel: 0, press: null };
+const SHOP_LAYOUT = { x: 40, y: 58, w: 540, h: 272, rowH: 30, rowGap: 4, barX: 590, barW: 30 };
+function openShop() { shop.active = true; shop.scroll = 0; shop.sel = 0; shop.press = null; }
+function closeShop() { shop.active = false; shop.press = null; }
 
 function canBuy(item) {
   if (item.prereq && !player.owned[item.prereq]) return false;
@@ -3125,9 +3222,20 @@ function canBuy(item) {
   if (item.id === 'heartContainer') return player.heartContainersBought < 2;
   return !player.owned[item.id];
 }
+// 'locked' (needs another item first), 'owned' (can't buy again) or 'buy'
+function shopItemStatus(item) {
+  if (item.prereq && !player.owned[item.prereq]) return 'locked';
+  return canBuy(item) ? 'buy' : 'owned';
+}
 function buyItem(item) {
+  const status = shopItemStatus(item);
+  if (status === 'locked') {
+    const pre = SHOP_ITEMS.find(i => i.id === item.prereq);
+    showHint('Buy the ' + (pre ? pre.name : item.prereq) + ' first!', 1.5);
+    return;
+  }
+  if (status === 'owned') { showHint('You already have that!', 1.2); return; }
   if (hud.gold < item.price) { showHint("That's okay! Come back with more gold.", 1.5); return; }
-  if (!canBuy(item)) return;
   hud.gold -= item.price;
   if (item.skin) {
     player.unlockedSkins[item.skin] = true;
@@ -3149,49 +3257,160 @@ function buyItem(item) {
   spawnFloatingText(hero.x, hero.y - 20, 'Bought!', '#8effc1');
 }
 
+function shopView() { const L = SHOP_LAYOUT; return { x: L.x, y: L.y, w: L.w, h: L.h }; }
+function shopMaxScroll() {
+  const L = SHOP_LAYOUT;
+  return Math.max(0, SHOP_ITEMS.length * L.rowH - L.rowGap - L.h);
+}
+function clampShopScroll() { shop.scroll = Math.max(0, Math.min(shopMaxScroll(), shop.scroll)); }
+function shopArrowRects() {
+  const L = SHOP_LAYOUT;
+  return { up: { x: L.barX, y: L.y, w: L.barW, h: 30 }, down: { x: L.barX, y: L.y + L.h - 30, w: L.barW, h: 30 } };
+}
+function shopScrollToSel() {
+  const L = SHOP_LAYOUT;
+  const top = shop.sel * L.rowH, bot = top + L.rowH - L.rowGap;
+  if (top < shop.scroll) shop.scroll = top;
+  else if (bot > shop.scroll + L.h) shop.scroll = bot - L.h;
+  clampShopScroll();
+}
+// Row rects in screen space with the scroll offset applied; `visible` rows
+// overlap the clipped viewport (only those are drawn / tappable).
+function getShopRows() {
+  const L = SHOP_LAYOUT;
+  return SHOP_ITEMS.map((item, i) => {
+    const rect = { x: L.x, y: L.y + i * L.rowH - shop.scroll, w: L.w, h: L.rowH - L.rowGap };
+    return { item, index: i, rect, visible: rect.y + rect.h > L.y && rect.y < L.y + L.h };
+  });
+}
+function shopRowAt(x, y) {
+  if (!pointInRect(x, y, shopView())) return null;
+  return getShopRows().find(r => r.visible && pointInRect(x, y, r.rect)) || null;
+}
+function shopTapRow(row) {
+  shop.sel = row.index;
+  buyItem(row.item);
+}
+
 function updateShopInput() {
+  const L = SHOP_LAYOUT, n = SHOP_ITEMS.length;
   if (Input.keys['Escape'] || Input.keys['e'] || Input.keys['E']) {
     Input.keys['Escape'] = Input.keys['e'] = Input.keys['E'] = false;
     closeShop();
+    return;
   }
+  // keyboard: move the selection (auto-scrolls), Enter/Space buys it
+  if (Input.keys['ArrowUp'] || Input.keys['w'] || Input.keys['W']) {
+    Input.keys['ArrowUp'] = Input.keys['w'] = Input.keys['W'] = false;
+    shop.sel = Math.max(0, shop.sel - 1); shopScrollToSel();
+  }
+  if (Input.keys['ArrowDown'] || Input.keys['s'] || Input.keys['S']) {
+    Input.keys['ArrowDown'] = Input.keys['s'] = Input.keys['S'] = false;
+    shop.sel = Math.min(n - 1, shop.sel + 1); shopScrollToSel();
+  }
+  if (Input.keys['Enter'] || Input.keys[' ']) {
+    Input.keys['Enter'] = Input.keys[' '] = false;
+    buyItem(SHOP_ITEMS[shop.sel]);
+  }
+  // mouse wheel
+  if (Input.wheelDY) { shop.scroll += Input.wheelDY * 0.5; Input.wheelDY = 0; clampShopScroll(); }
+
   if (Input.tapped) {
-    const wp = { x: Input.tapX, y: Input.tapY };
-    if (pointInRect(wp.x, wp.y, { x: CONFIG.GAME_W - 40, y: 10, w: 30, h: 30 })) { closeShop(); Input.tapped = false; return; }
-    const rows = getShopRows();
-    for (let i = 0; i < rows.length; i++) {
-      if (pointInRect(wp.x, wp.y, rows[i].rect)) { buyItem(rows[i].item); break; }
-    }
     Input.tapped = false;
+    const x = Input.tapX, y = Input.tapY;
+    if (pointInRect(x, y, { x: CONFIG.GAME_W - 40, y: 10, w: 30, h: 30 })) { closeShop(); return; }
+    const ar = shopArrowRects();
+    if (shop.scroll > 0 && pointInRect(x, y, ar.up)) {
+      shop.scroll -= L.rowH * 3; clampShopScroll();
+    } else if (shop.scroll < shopMaxScroll() && pointInRect(x, y, ar.down)) {
+      shop.scroll += L.rowH * 3; clampShopScroll();
+    } else if (pointInRect(x, y, shopView())) {
+      if (Input.down) {
+        // finger/button still held: wait to see if it becomes a drag
+        shop.press = { x, y, scroll0: shop.scroll, dragged: false };
+      } else {
+        // press already released (a quick tap within one frame): plain tap
+        const row = shopRowAt(x, y);
+        if (row) shopTapRow(row);
+      }
+    }
+  }
+  if (shop.press) {
+    const p = shop.press;
+    const dy = (Input.curY == null ? p.y : Input.curY) - p.y;
+    if (!p.dragged && Math.abs(dy) > 6) p.dragged = true;
+    if (p.dragged) { shop.scroll = p.scroll0 - dy; clampShopScroll(); }
+    if (!Input.down) {
+      // released: a tap (no drag) buys the row under the original press,
+      // resolved against the scroll offset at that moment
+      if (!p.dragged) { const row = shopRowAt(p.x, p.y); if (row) shopTapRow(row); }
+      shop.press = null;
+    }
   }
 }
-function getShopRows() {
-  const rowH = 30, startY = 60;
-  return SHOP_ITEMS.map((item, i) => ({ item, rect: { x: 40, y: startY + i * rowH, w: CONFIG.GAME_W - 80, h: rowH - 4 } }));
+
+function drawShopArrow(r, up) {
+  ctx.fillStyle = 'rgba(40,52,80,0.95)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+  ctx.fillStyle = '#ffd84a';
+  ctx.beginPath();
+  if (up) { ctx.moveTo(cx, cy - 6); ctx.lineTo(cx + 8, cy + 5); ctx.lineTo(cx - 8, cy + 5); }
+  else { ctx.moveTo(cx, cy + 6); ctx.lineTo(cx + 8, cy - 5); ctx.lineTo(cx - 8, cy - 5); }
+  ctx.closePath(); ctx.fill();
 }
 function drawShop() {
+  const L = SHOP_LAYOUT;
   ctx.fillStyle = 'rgba(10,10,20,0.92)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('SHOP - Gold: ' + hud.gold, CONFIG.GAME_W / 2, 34);
+  ctx.fillText('SHOP - Gold: ' + hud.gold, CONFIG.GAME_W / 2, 30);
   ctx.fillStyle = '#fff'; ctx.font = '11px monospace';
-  ctx.fillText('Tap an item to buy - E/ESC to close', CONFIG.GAME_W / 2, 50);
+  ctx.fillText('Tap an item to buy - drag or scroll for more - E/ESC to close', CONFIG.GAME_W / 2, 48);
 
-  const rows = getShopRows();
+  // rows, clipped to the list viewport
+  ctx.save();
+  ctx.beginPath(); ctx.rect(L.x - 2, L.y, L.w + 4, L.h); ctx.clip();
   ctx.textAlign = 'left';
-  for (const row of rows) {
+  for (const row of getShopRows()) {
+    if (!row.visible) continue;
     const { item, rect } = row;
-    const owned = !canBuy(item) && !item.consumable;
-    ctx.fillStyle = owned ? '#2a3a2a' : '#25314a';
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.strokeStyle = '#4a5a7a'; ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px monospace';
-    ctx.fillText(item.name, rect.x + 8, rect.y + 18);
+    const status = shopItemStatus(item);
+    const ry = Math.round(rect.y);
+    ctx.fillStyle = status === 'owned' ? '#2a3a2a' : status === 'locked' ? '#2a2a34' : '#25314a';
+    ctx.fillRect(rect.x, ry, rect.w, rect.h);
+    ctx.strokeStyle = '#4a5a7a'; ctx.lineWidth = 1; ctx.strokeRect(rect.x + 0.5, ry + 0.5, rect.w - 1, rect.h - 1);
+    if (row.index === shop.sel) {
+      ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(rect.x + 1, ry + 1, rect.w - 2, rect.h - 2);
+    }
+    ctx.fillStyle = status === 'locked' ? '#9a9aa8' : '#fff'; ctx.font = 'bold 12px monospace';
+    ctx.fillText(item.name, rect.x + 8, ry + 17);
     ctx.fillStyle = '#aaa'; ctx.font = '10px monospace';
-    ctx.fillText(item.desc, rect.x + 140, rect.y + 18);
+    ctx.fillText(item.desc, rect.x + 140, ry + 17);
     ctx.textAlign = 'right';
-    ctx.fillStyle = owned ? '#8effc1' : '#ffd84a';
-    ctx.fillText(owned ? 'SOLD' : (item.price + 'g'), rect.x + rect.w - 8, rect.y + 18);
+    if (status === 'owned') { ctx.fillStyle = '#8effc1'; ctx.fillText('OWNED', rect.x + rect.w - 8, ry + 17); }
+    else if (status === 'locked') {
+      const pre = SHOP_ITEMS.find(i => i.id === item.prereq);
+      ctx.fillStyle = '#9a9aa8'; ctx.fillText('Needs ' + (pre ? pre.name.split(' ')[0] : item.prereq), rect.x + rect.w - 8, ry + 17);
+    } else { ctx.fillStyle = hud.gold >= item.price ? '#ffd84a' : '#b08a4a'; ctx.fillText(item.price + 'g', rect.x + rect.w - 8, ry + 17); }
     ctx.textAlign = 'left';
   }
+  ctx.restore();
+
+  // scroll column: up/down arrows only while there is more above/below,
+  // plus a thumb showing where the viewport sits in the list
+  const max = shopMaxScroll();
+  if (max > 0) {
+    const ar = shopArrowRects();
+    const tx = L.barX + L.barW / 2 - 3, ty0 = L.y + 34, th = L.h - 68;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(tx, ty0, 6, th);
+    const thumbH = Math.max(16, Math.round(th * L.h / (L.h + max)));
+    const thumbY = ty0 + Math.round((th - thumbH) * shop.scroll / max);
+    ctx.fillStyle = '#ffd84a'; ctx.fillRect(tx, thumbY, 6, thumbH);
+    if (shop.scroll > 0) drawShopArrow(ar.up, true);
+    if (shop.scroll < max) drawShopArrow(ar.down, false);
+  }
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('Arrow keys / W S to choose, Enter to buy', CONFIG.GAME_W / 2, L.y + L.h + 16);
   // close X
   ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 16px monospace';
   ctx.fillText('X', CONFIG.GAME_W - 25, 30);
@@ -3233,11 +3452,23 @@ function pickDifficulty(name) {
   CONFIG.DIFFICULTY = name; // selects the tier; New Game/Continue actually starts play
 }
 
-function getDifficultyButtons() {
-  // 4 big buttons stacked, tap targets >=48px tall
-  const btnW = 220, btnH = 48, gap = 10;
-  const startY = 130;
+// Title-screen difficulty column. One layout drives the gold panel frame,
+// the drawn buttons and their tap rects, so they can't drift apart. Sized
+// so all 4 buttons + the frame end above the two help-text lines at the
+// bottom of the 360px screen (they used to run under them: bug report).
+function getDifficultyPanel() {
+  const btnW = 220, btnH = 38, gap = 8, pad = 14;
   const cx = CONFIG.GAME_W / 2 - 110;
+  const y = 112;
+  const h = pad * 2 + DIFFICULTIES.length * btnH + (DIFFICULTIES.length - 1) * gap;
+  return { x: cx - btnW / 2 - 20, y, w: btnW + 40, h, btnW, btnH, gap, pad, cx };
+}
+function getDifficultyButtons() {
+  // 4 stacked buttons, 38 game px tall (~60 CSS px on an iPad)
+  const P = getDifficultyPanel();
+  const btnW = P.btnW, btnH = P.btnH, gap = P.gap;
+  const startY = P.y + P.pad;
+  const cx = P.cx;
   return DIFFICULTIES.map((d, i) => ({
     name: d,
     x: cx - btnW / 2,
@@ -3269,7 +3500,9 @@ function update(dtMs) {
   updateFade(dt);
   updateMusic();
   if (Input.keys['m'] || Input.keys['M']) { Input.keys['m'] = Input.keys['M'] = false; audioSettings.muted = !audioSettings.muted; }
-  if (Input.tapped && tapSpeakerIcon(Input.tapX, Input.tapY)) { Input.tapped = false; }
+  // (the speaker icon sits under the shop's scrolling list, which covers it)
+  if (Input.tapped && !(gameState === STATE.PLAYING && shop.active) && tapSpeakerIcon(Input.tapX, Input.tapY)) { Input.tapped = false; }
+  if (!(gameState === STATE.PLAYING && shop.active)) Input.wheelDY = 0; // only the shop list scrolls
   if (Input.swipe) {
     const slotSize = 48, gap = 6, startX = 10, y = CONFIG.GAME_H - slotSize - 10;
     for (let i = 0; i < 3; i++) {
@@ -3738,6 +3971,7 @@ function drawPixelText(text, x, y, size, color) {
 }
 
 function draw() {
+  beginFrame();
   ctx.clearRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
 
   if (gameState === STATE.TITLE) {
@@ -3760,8 +3994,9 @@ function draw() {
     const bannerW = 420, bannerH = 145;
     drawSprite(ctx, 'main_menu', SRC.menu.banner, CONFIG.GAME_W / 2 - bannerW / 2, 4, bannerW, bannerH);
     // gold-trimmed vertical panel framing the difficulty column
-    const panelX = CONFIG.GAME_W / 2 - 110 - 130, panelY = 118, panelW = 260, panelH = 240;
-    drawSprite(ctx, 'main_menu', SRC.menu.panelFrame, panelX, panelY, panelW, panelH);
+    // (9-sliced so the ornate corners keep their shape at the shorter height)
+    const DP = getDifficultyPanel();
+    drawPanelFrame(ctx, 'main_menu', SRC.menu.panelFrame, DP.x, DP.y, DP.w, DP.h, 40, 14);
     // decorative gold divider above the New Game / Continue buttons
     drawSprite(ctx, 'main_menu', SRC.menu.divider, CONFIG.GAME_W / 2 + 150 - 110, 132, 220, 22);
 
@@ -3799,8 +4034,11 @@ function draw() {
     }
 
     // scroll icon beside the help text
-    drawSprite(ctx, 'main_menu', SRC.menu.scrollIcon, CONFIG.GAME_W / 2 - 150, CONFIG.GAME_H - 34, 18, 24);
-    drawPixelText('Tap a difficulty, then New Game or Continue', CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 12, '#cccccc');
+    const helpText = 'Tap a difficulty, then New Game or Continue';
+    ctx.font = 'bold 12px monospace';
+    const helpW = ctx.measureText(helpText).width;
+    drawSprite(ctx, 'main_menu', SRC.menu.scrollIcon, Math.round(CONFIG.GAME_W / 2 - helpW / 2 - 24), CONFIG.GAME_H - 38, 18, 22);
+    drawPixelText(helpText, CONFIG.GAME_W / 2, CONFIG.GAME_H - 24, 12, '#cccccc');
     drawPixelText('Move: Arrow Keys / WASD / Tap    Attack: Space/J    Math: Q', CONFIG.GAME_W / 2, CONFIG.GAME_H - 10, 10, '#999999');
     return;
   }
@@ -3955,7 +4193,9 @@ function buildingCanvas(p) {
   if (!imgReady('buildings') || !imgReady('overworld_tiles')) return null;
   const TS = CONFIG.TILE, fw = p.w * TS, fh = p.h * TS, ox = p.ox, top = p.top;
   const W = fw + ox * 2, H = fh + top;
-  const c = makeCanvas(W, H), x = c.getContext('2d');
+  const c = makeCanvas(W * RS, H * RS), x = c.getContext('2d');
+  x.setTransform(RS, 0, 0, RS, 0, 0); x.imageSmoothingEnabled = false; x._rs = RS;
+  c._lw = W; c._lh = H; // logical (game-pixel) size to draw it back at
   const hut = p.kind === 'hut';
   const plaster = p.kind === 'desertShop' || hut;
   const roofSrc = p.kind === 'shop' ? SRC.building.roofBlue : SRC.building.roofRed;
@@ -4080,7 +4320,14 @@ function drawPlaying() {
   ctx.save();
   ctx.translate(-world.camX + shx, -world.camY + shy);
 
-  ctx.drawImage(canvasImg, 0, 0);
+  {
+    // blit only the visible part of the prerendered map (baked at 1x or at
+    // RENDER_SCALE; its _scale says which)
+    const ms = canvasImg._scale || 1, lw = canvasImg.width / ms, lh = canvasImg.height / ms;
+    const vx0 = Math.max(0, world.camX - 8), vy0 = Math.max(0, world.camY - 8);
+    const vx1 = Math.min(lw, world.camX + CONFIG.GAME_W + 8), vy1 = Math.min(lh, world.camY + CONFIG.GAME_H + 8);
+    if (vx1 > vx0 && vy1 > vy0) ctx.drawImage(canvasImg, vx0 * ms, vy0 * ms, (vx1 - vx0) * ms, (vy1 - vy0) * ms, vx0, vy0, vx1 - vx0, vy1 - vy0);
+  }
   if (world.mode === 'overworld') drawWaterShimmer(map, now);
 
   // dust puffs + ripple markers sit on the ground
@@ -4117,7 +4364,7 @@ function drawPlaying() {
     for (const p of BUILDING_PROPS) {
       const px = p.x0 * TS - p.ox, py = p.y0 * TS - p.top;
       if (px > world.camX + CONFIG.GAME_W || px + p.w * TS + p.ox * 2 < world.camX || py > world.camY + CONFIG.GAME_H || (p.y0 + p.h) * TS < world.camY) continue;
-      items.push({ y: (p.y0 + p.h) * TS, draw: () => { const c = buildingCanvas(p); if (c) ctx.drawImage(c, px, py); } });
+      items.push({ y: (p.y0 + p.h) * TS, draw: () => { const c = buildingCanvas(p); if (c) ctx.drawImage(c, px, py, c._lw, c._lh); } });
     }
   }
   for (const p of pots) if (p.alive) items.push({ y: p.y + 6, draw: () => { p.isBush ? drawBush(p.x, p.y) : drawPot(p.x, p.y); } });
@@ -4192,7 +4439,7 @@ function drawPlaying() {
   }
   drawFxMarkers();
   if (world.mode === 'dungeon') drawDungeonExtras(world.dungeon);
-  for (const hp of heartPieces) drawHeartPiece(hp.x, hp.y, hp.t);
+  for (const hp of heartPieces) if (heartPieceHere(hp)) drawHeartPiece(hp.x, hp.y, hp.t);
 
   // confetti + floating text (world space)
   for (const c of confettiParticles) {
@@ -4219,9 +4466,8 @@ function drawPlaying() {
   // HUD (screen space)
   drawHUD();
 
-  // weapon slots + XP bar (always visible during play)
+  // weapon slots (the XP bar is part of the HUD panel above)
   drawWeaponSlots();
-  drawXPBar();
   drawSpeakerIcon();
   drawWardrobeButton();
   drawSaveButton();
@@ -4257,11 +4503,14 @@ function drawPlaying() {
 
   // hint text
   if (hud.hintTimer > 0) {
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(CONFIG.GAME_W / 2 - 160, 40, 320, 26);
-    ctx.fillStyle = '#ffe066';
+    // below the HUD panel (it used to sit on top of the medallion row) and
+    // sized to the text so long hints stay inside their box
     ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
-    ctx.fillText(hud.hintText, CONFIG.GAME_W / 2, 58);
+    const hintW = Math.min(CONFIG.GAME_W - 16, Math.max(320, ctx.measureText(hud.hintText).width + 24));
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(Math.round(CONFIG.GAME_W / 2 - hintW / 2), 92, Math.round(hintW), 26);
+    ctx.fillStyle = '#ffe066';
+    ctx.fillText(hud.hintText, CONFIG.GAME_W / 2, 110);
   }
 
   // region weather overlay (Phase 8) - drawn in screen space, cheap and
@@ -4715,86 +4964,109 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawHUD() {
-  const panelX = 2, panelY = 2, panelW = 228, panelH = 66;
-  ctx.fillStyle = '#000'; ctx.globalAlpha = 0.35;
-  ctx.fillRect(panelX, panelY, panelW, panelH); ctx.globalAlpha = 1;
-  // gold-trimmed panel frame from ui_hud.png, drawn on top of the dark
-  // backing so hearts/AP bar/gold text/medallions all sit inside a
-  // consistent framed HUD cluster instead of a plain flat box.
-  drawPanelFrame(ctx, 'ui_hud', SRC.ui.panel, panelX, panelY, panelW, panelH, 75, 16);
+// Top-left HUD: ONE gold-trimmed panel holding four rows, all left-aligned
+// to the same inner margin: hearts, the AP bar, Gold + key icons +
+// medallions, and the XP bar with "Lv N". The AP bar and XP bar share the
+// exact same x/width, and nothing is drawn outside the frame.
+function getHUDLayout() {
+  const x = 4, y = 4, w = 216, h = 82;
+  const pad = 11; // clears the frame's gold + purple border band (~8px)
+  const ix = x + pad, iw = w - pad * 2;
+  return {
+    panel: { x, y, w, h },
+    ix, iw,
+    heartsY: 12,                          // top of the heart row
+    ap: { x: ix, y: 29, w: iw, h: 16 },   // AP bar art (incl. ornament ends)
+    goldY: 58,                            // gold text baseline
+    medY: 54,                             // medallion centre line
+    xp: { x: ix, y: 64, w: iw, h: 10 },   // XP bar
+  };
+}
+// The mana-bar art has ornamental end caps; its fillable channel is this
+// fraction of the art rect (measured from ui_hud.png).
+const AP_BAR_CHANNEL = { x0: 35 / 387, x1: 352 / 387, y0: 20 / 66, y1: 44 / 66 };
 
-  // hearts (real, tracks player.hearts/maxHearts)
+function drawHUD() {
+  const L = getHUDLayout(), P = L.panel;
+  // single dark backing, inset so it sits under the frame's border band
+  ctx.fillStyle = 'rgba(12,12,26,0.72)';
+  ctx.fillRect(P.x + 3, P.y + 3, P.w - 6, P.h - 6);
+  if (!drawPanelFrame(ctx, 'ui_hud', SRC.ui.panel, P.x, P.y, P.w, P.h, 48, 12)) {
+    ctx.strokeStyle = '#c8a040'; ctx.lineWidth = 2; ctx.strokeRect(P.x + 1, P.y + 1, P.w - 2, P.h - 2);
+  }
+
+  // hearts (real, tracks player.hearts/maxHearts); spacing tightens so any
+  // number of hearts stays inside the panel
+  const hw = 14, hh = 13;
+  const step = player.maxHearts > 1 ? Math.min(16, (L.iw - hw) / (player.maxHearts - 1)) : 16;
   for (let i = 0; i < player.maxHearts; i++) {
-    const hx = 16 + i * 18, hy = 14;
+    const hx = Math.round(L.ix + i * step), hy = L.heartsY;
     const filled = i < player.hearts;
     const src = filled ? SRC.ui.heartFull : SRC.ui.heartEmpty;
-    if (drawSprite(ctx, 'ui_hud', src, hx - 8, hy - 2, 16, 14)) continue;
+    if (drawSprite(ctx, 'ui_hud', src, hx, hy, hw, hh)) continue;
+    const cx = hx + hw / 2, cy = hy;
     ctx.fillStyle = filled ? '#d94f4f' : '#4a2020';
     ctx.beginPath();
-    ctx.moveTo(hx, hy + 3);
-    ctx.bezierCurveTo(hx, hy, hx - 6, hy, hx - 6, hy + 4);
-    ctx.bezierCurveTo(hx - 6, hy + 8, hx, hy + 10, hx, hy + 12);
-    ctx.bezierCurveTo(hx, hy + 10, hx + 6, hy + 8, hx + 6, hy + 4);
-    ctx.bezierCurveTo(hx + 6, hy, hx, hy, hx, hy + 3);
+    ctx.moveTo(cx, cy + 3);
+    ctx.bezierCurveTo(cx, cy, cx - 6, cy, cx - 6, cy + 4);
+    ctx.bezierCurveTo(cx - 6, cy + 8, cx, cy + 10, cx, cy + 12);
+    ctx.bezierCurveTo(cx, cy + 10, cx + 6, cy + 8, cx + 6, cy + 4);
+    ctx.bezierCurveTo(cx + 6, cy, cx, cy, cx, cy + 3);
     ctx.fill();
     ctx.strokeStyle = filled ? '#7a1a1a' : '#241010'; ctx.lineWidth = 1; ctx.stroke();
-    if (filled) {
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.beginPath(); ctx.ellipse(hx - 2.6, hy + 3, 1.3, 1.9, -0.5, 0, Math.PI * 2); ctx.fill();
-    }
   }
 
-  // AP bar: reskinned with the ui_hud.png mana-bar asset. The asset is a
-  // single bordered-bar image, so the bar's fraction-filled readability
-  // (how many AP the player has) is kept by drawing the frame art at full
-  // width, then a dark cover clipped over the unfilled portion on the
-  // right, and thin segment ticks on top (same count as maxAp) so the
-  // exact AP count is still readable at a glance, not just "some fill".
-  const apX = 10, apY = 26, apW = 200, apH = 16;
-  const apFrac = player.maxAp > 0 ? player.ap / player.maxAp : 0;
-  if (!drawSprite(ctx, 'ui_hud', SRC.ui.apBar, apX, apY, apW, apH)) {
-    ctx.fillStyle = '#1a2a3a'; ctx.fillRect(apX, apY, apW, apH);
-    ctx.fillStyle = '#4fc3ff'; ctx.fillRect(apX, apY, apW * apFrac, apH);
-    ctx.strokeStyle = '#0a1420'; ctx.lineWidth = 1; ctx.strokeRect(apX, apY, apW, apH);
-  } else {
-    const filledW = apW * apFrac;
-    if (filledW < apW) {
-      ctx.fillStyle = 'rgba(10,14,26,0.78)';
-      ctx.fillRect(apX + filledW, apY + 2, apW - filledW, apH - 4);
-    }
+  // AP bar: the ui_hud.png mana-bar frame art, with the fill drawn into its
+  // channel from player.ap/maxAp (the art's own baked-in partial fill is
+  // covered), plus one tick per AP point so the exact count reads clearly.
+  const A = L.ap;
+  const apFrac = player.maxAp > 0 ? Math.max(0, Math.min(1, player.ap / player.maxAp)) : 0;
+  const hasArt = drawSprite(ctx, 'ui_hud', SRC.ui.apBar, A.x, A.y, A.w, A.h);
+  const ch = hasArt
+    ? { x: A.x + Math.round(A.w * AP_BAR_CHANNEL.x0), y: A.y + Math.round(A.h * AP_BAR_CHANNEL.y0),
+        w: Math.round(A.w * (AP_BAR_CHANNEL.x1 - AP_BAR_CHANNEL.x0)), h: Math.max(3, Math.round(A.h * (AP_BAR_CHANNEL.y1 - AP_BAR_CHANNEL.y0))) }
+    : { x: A.x, y: A.y + 3, w: A.w, h: A.h - 6 };
+  ctx.fillStyle = '#0c1226'; ctx.fillRect(ch.x, ch.y, ch.w, ch.h);
+  const filledW = Math.round(ch.w * apFrac);
+  if (filledW > 0) {
+    ctx.fillStyle = '#3aa8f0'; ctx.fillRect(ch.x, ch.y, filledW, ch.h);
+    ctx.fillStyle = '#9af4ff'; ctx.fillRect(ch.x, ch.y + 1, filledW, 1);
   }
-  // per-point tick marks so the exact AP count reads clearly
-  ctx.strokeStyle = 'rgba(10,14,26,0.6)'; ctx.lineWidth = 1;
+  ctx.fillStyle = 'rgba(10,14,26,0.7)';
   for (let i = 1; i < player.maxAp; i++) {
-    const tx = apX + (apW / player.maxAp) * i;
-    ctx.beginPath(); ctx.moveTo(tx, apY + 2); ctx.lineTo(tx, apY + apH - 2); ctx.stroke();
+    const tx = Math.round(ch.x + (ch.w / player.maxAp) * i);
+    ctx.fillRect(tx, ch.y, 1, ch.h);
   }
 
-  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
-  ctx.fillText('Gold: ' + hud.gold, 10, 52);
-  if (world.mode === 'dungeon' && world.dungeon && world.dungeon.hasSmallKey) {
-    drawSpriteFoot(ctx, 'enemies_objects', SRC.objects.key, 116, 50, 7, { w: 16 });
+  // Gold, key icons, medallions
+  ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'left';
+  ctx.fillText('Gold: ' + hud.gold, L.ix, L.goldY);
+  const d = world.mode === 'dungeon' && world.dungeon;
+  if (d && d.hasSmallKey) {
+    drawSpriteFoot(ctx, 'enemies_objects', SRC.objects.key, L.ix + 96, L.goldY - 1, 7, { w: 16 });
   }
-
-  // medallion icons
+  if (d && d.hasBossKey && !d.chestOpened) {
+    drawSpriteFoot(ctx, 'enemies_objects', SRC.objects.key, L.ix + 116, L.goldY, 9, { w: 18, ops: 'tint:#ff4a4a' });
+  }
   const medOrder = ['forest', 'fire', 'water', 'shadow'];
   const medColors = { forest: '#3fc766', fire: '#e05a2a', water: '#3a8ac9', shadow: '#7a4aa0' };
   medOrder.forEach((k, i) => {
-    const mx = 150 + i * 16, my = 44;
+    const mx = L.ix + L.iw - 7 - (medOrder.length - 1 - i) * 16, my = L.medY;
     ctx.fillStyle = player.medallions[k] ? medColors[k] : '#333';
     ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
   });
-}
 
-function drawXPBar() {
-  const x = 10, y = 62, w = 200, h = 6;
-  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x - 4, y - 4, w + 8, h + 20);
-  ctx.fillStyle = '#1a2a1a'; ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = '#8effc1'; ctx.fillRect(x, y, w * (player.xp / player.xpToNext), h);
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
-  ctx.fillText('Lv ' + player.level, x, y + 18);
+  // XP bar (same x/width as the AP bar) with the level label on it
+  const X = L.xp;
+  const xpFrac = player.xpToNext > 0 ? Math.max(0, Math.min(1, player.xp / player.xpToNext)) : 0;
+  ctx.fillStyle = '#1a2a1a'; ctx.fillRect(X.x, X.y, X.w, X.h);
+  ctx.fillStyle = '#4fbf86'; ctx.fillRect(X.x, X.y, Math.round(X.w * xpFrac), X.h);
+  ctx.strokeStyle = 'rgba(200,160,64,0.8)'; ctx.lineWidth = 1; ctx.strokeRect(X.x + 0.5, X.y + 0.5, X.w - 1, X.h - 1);
+  ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeText('Lv ' + player.level, X.x + 4, X.y + 8);
+  ctx.fillStyle = '#fff'; ctx.fillText('Lv ' + player.level, X.x + 4, X.y + 8);
 }
 
 // =========================================================================
@@ -5113,6 +5385,8 @@ function applySaveData(data) {
         d.hasSmallKey = !!dd.hasSmallKey; d.hasBossKey = !!dd.hasBossKey;
         d.bossDefeated = !!dd.bossDefeated; d.chestOpened = !!dd.chestOpened;
         if (d.chestOpened) player.medallions[d.def.id] = true;
+        // a defeated boss stays defeated after Continue (no respawn to refight)
+        if (d.bossDefeated) for (const e of d.enemies[2]) if (e.isMiniboss) { e.alive = false; e.hp = 0; }
       }
     }
     castle.defeated = !!data.castleDefeated;
@@ -5171,14 +5445,15 @@ function loopBody(now) {
 }
 
 function drawLoadingScreen() {
+  beginFrame();
   ctx.fillStyle = '#0a0a12';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
   ctx.fillStyle = '#ffffff';
   ctx.font = '16px monospace';
   ctx.textAlign = 'center';
   const pct = ATLAS_TOTAL ? Math.floor((atlasLoadedCount / ATLAS_TOTAL) * 100) : 0;
-  ctx.fillText('Loading...', canvas.width / 2, canvas.height / 2 - 8);
-  ctx.fillText(pct + '%', canvas.width / 2, canvas.height / 2 + 14);
+  ctx.fillText('Loading...', CONFIG.GAME_W / 2, CONFIG.GAME_H / 2 - 8);
+  ctx.fillText(pct + '%', CONFIG.GAME_W / 2, CONFIG.GAME_H / 2 + 14);
   ctx.textAlign = 'left';
 }
 

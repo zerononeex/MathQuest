@@ -38,12 +38,40 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const url = await page.evaluate(() => document.getElementById('game').toDataURL('image/png'));
     fs.writeFileSync(path.join(shotDir, 'canvas-' + name + '.png'), Buffer.from(url.split(',')[1], 'base64'));
   }
+  // crop of the canvas in GAME coordinates (the backing store is
+  // RENDER_SCALE x larger, so the crop keeps the full hi-res detail)
+  async function canvasCrop(name, x, y, w, h) {
+    const url = await page.evaluate((x, y, w, h) => {
+      const src = document.getElementById('game'), s = src.width / CONFIG.GAME_W;
+      const c = document.createElement('canvas'); c.width = w * s; c.height = h * s;
+      c.getContext('2d').drawImage(src, x * s, y * s, w * s, h * s, 0, 0, w * s, h * s);
+      return c.toDataURL('image/png');
+    }, x, y, w, h);
+    fs.writeFileSync(path.join(shotDir, 'canvas-' + name + '.png'), Buffer.from(url.split(',')[1], 'base64'));
+  }
+  const SHOP_ITEMS_COUNT_GUESS = 20; // more presses than items; selection clamps at the last row
 
   const file = 'file://' + path.join(__dirname, '..', 'math-quest.html');
   await page.goto(file, { waitUntil: 'load', timeout: 30000 });
   await sleep(700);
   await page.screenshot({ path: path.join(shotDir, '01-title.png') });
   await canvasShot('01-title');
+  // title layout: the 4 difficulty buttons + frame must end above the help
+  // text, and tapping each drawn button selects it (tap rects == drawn rects)
+  {
+    const lay = await page.evaluate(() => {
+      const P = getDifficultyPanel(), btns = getDifficultyButtons();
+      const r = document.getElementById('game').getBoundingClientRect();
+      return { panelBottom: P.y + P.h, lastBtnBottom: btns[3].y + btns[3].h, helpTop: CONFIG.GAME_H - 38,
+        pts: btns.map(b => ({ name: b.name, x: r.left + (b.x + b.w / 2) * r.width / CONFIG.GAME_W, y: r.top + (b.y + b.h / 2) * r.height / CONFIG.GAME_H })) };
+    });
+    const picked = [];
+    for (const p of lay.pts) { await page.mouse.click(p.x, p.y); await sleep(60); picked.push(await page.evaluate(() => CONFIG.DIFFICULTY)); }
+    await page.mouse.click(lay.pts[1].x, lay.pts[1].y); await sleep(60); // back to Adventurer
+    const ok = lay.panelBottom <= lay.helpTop && lay.lastBtnBottom < lay.panelBottom && picked.join() === lay.pts.map(p => p.name).join();
+    console.log((ok ? 'OK' : 'FAIL') + ': title layout ' + JSON.stringify({ panelBottom: lay.panelBottom, helpTop: lay.helpTop, picked }));
+    if (!ok) errors.push('title layout check failed');
+  }
 
   // Click start / difficulty pick via a tap in the middle-ish (Adventurer button area)
   // Try keyboard path first: Enter to start with default difficulty.
@@ -213,6 +241,86 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     });
     await sleep(500);
     await canvasShot('17-interior');
+
+    // HUD close-up (top-left panel), cropped from the hi-res canvas
+    await canvasCrop('24-hud-closeup', 0, 0, 232, 96);
+
+    // shop: open, then scroll to the bottom three ways (wheel, drag, keys)
+    // and check a tap after scrolling buys the row under the finger
+    await page.evaluate(() => {
+      world.mode = 'interior'; world.interior = buildings[1].interior;
+      hero.x = 5 * CONFIG.TILE; hero.y = 5 * CONFIG.TILE; hud.gold = 45;
+      openShop();
+    });
+    await sleep(150);
+    await canvasShot('21-shop-top');
+    const toClient = async (gx, gy) => page.evaluate((x, y) => {
+      const r = document.getElementById('game').getBoundingClientRect();
+      return { x: r.left + x * r.width / CONFIG.GAME_W, y: r.top + y * r.height / CONFIG.GAME_H };
+    }, gx, gy);
+    const mid = await toClient(300, 200);
+    await page.mouse.move(mid.x, mid.y);
+    await page.mouse.wheel({ deltaY: 120 });
+    await sleep(100);
+    const afterWheel = await page.evaluate(() => shop.scroll);
+    // drag the list up by ~100 game px: should scroll, and must NOT buy
+    const goldBeforeDrag = await page.evaluate(() => hud.gold);
+    await page.evaluate(() => { shop.scroll = 0; });
+    const a = await toClient(300, 280), b = await toClient(300, 180);
+    await page.mouse.move(a.x, a.y); await page.mouse.down(); await sleep(50);
+    for (let i = 1; i <= 5; i++) { await page.mouse.move(a.x, a.y + (b.y - a.y) * i / 5); await sleep(30); }
+    await page.mouse.up(); await sleep(80);
+    const drag = await page.evaluate(() => ({ scroll: shop.scroll, gold: hud.gold }));
+    // keyboard: ArrowDown to the last item auto-scrolls to the bottom
+    for (let i = 0; i < SHOP_ITEMS_COUNT_GUESS; i++) { await page.keyboard.press('ArrowDown', { delay: 40 }); await sleep(20); }
+    await sleep(100);
+    const bottom = await page.evaluate(() => ({ scroll: shop.scroll, max: shopMaxScroll(), sel: shop.sel, n: SHOP_ITEMS.length }));
+    await canvasShot('22-shop-scrolled-bottom');
+    // tap the "Red Tunic" row where it now sits on screen (scrolled) -> buys it
+    const tapInfo = await page.evaluate(() => {
+      const row = getShopRows().find(r => r.item.id === 'skinRed');
+      return { y: row.rect.y + row.rect.h / 2, visible: row.visible };
+    });
+    const tp = await toClient(200, tapInfo.y);
+    await page.mouse.click(tp.x, tp.y); await sleep(80);
+    const bought = await page.evaluate(() => ({ red: !!player.unlockedSkins.red, gold: hud.gold, allReachable: getShopRows().every(r => r.rect.y + r.rect.h <= SHOP_LAYOUT.y + SHOP_LAYOUT.h + shopMaxScroll() + 1) }));
+    const shopOk = afterWheel > 0 && drag.scroll > 60 && drag.gold === goldBeforeDrag &&
+      bottom.scroll === bottom.max && bottom.sel === bottom.n - 1 && tapInfo.visible && bought.red && bought.gold === 25;
+    console.log((shopOk ? 'OK' : 'FAIL') + ': shop scroll ' + JSON.stringify({ afterWheel, drag, bottom, tapInfo, bought }));
+    if (!shopOk) errors.push('shop scroll check failed');
+    await page.evaluate(() => { closeShop(); player.skin = 'classic'; });
+
+    // boss key: kill the Shadow Dungeon boss (Puffling) through the normal
+    // damage path, let the room update run, then show the opened boss door
+    // and the Boss Key in the HUD
+    const boss = await page.evaluate(() => {
+      const d = dungeons.find(x => x.def.id === 'shadow');
+      world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 2;
+      d.hasSmallKey = true;
+      const e = d.enemies[2][0];
+      hero.x = 3 * CONFIG.TILE; hero.y = 3 * CONFIG.TILE; player.invincibleT = 999;
+      let guard = 0;
+      while (e.alive && guard++ < 200) damageEnemy(e, 'heroSword');
+      // the boss XP may trigger the (blocking) level-up choice; pick one
+      if (player.levelUpChoicePending) applyLevelUpChoice(0);
+      return { kind: e.bossKind };
+    });
+    await sleep(300);
+    await page.evaluate(() => { // walk up to the boss door so it opens
+      const d = world.dungeon, r = d.rooms[2];
+      hero.x = (r.w - 2) * CONFIG.TILE; hero.y = (Math.floor(r.h / 2) + 0.5) * CONFIG.TILE;
+    });
+    await sleep(400);
+    const bossState = await page.evaluate(() => {
+      const d = world.dungeon, r = d.rooms[2];
+      return { bossDefeated: d.bossDefeated, hasBossKey: d.hasBossKey, roomIndex: d.roomIndex,
+        doorOpen: r.grid[Math.floor(r.h / 2)][r.w - 1] === T.FLOOR };
+    });
+    await canvasShot('23-post-boss-key');
+    const bossOk = bossState.bossDefeated && bossState.hasBossKey && (bossState.doorOpen || bossState.roomIndex === 3);
+    console.log((bossOk ? 'OK' : 'FAIL') + ': boss key after killing ' + boss.kind + ' ' + JSON.stringify(bossState));
+    if (!bossOk) errors.push('boss key check failed');
+    await page.evaluate(() => { player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null; });
   }
 
   // ---- soundtrack: decode all 8 buffers after a gesture, verify state->track mapping ----

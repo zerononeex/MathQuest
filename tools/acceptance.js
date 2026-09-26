@@ -16,7 +16,8 @@ function check(name, ok, detail) {
     headless: 'new',
     args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'],
   });
-  const file = 'file://' + path.join(__dirname, '..', 'math-quest.html');
+  // MQ_FILE lets the suite run against another copy (e.g. an older build)
+  const file = 'file://' + (process.env.MQ_FILE || path.join(__dirname, '..', 'math-quest.html'));
   const errorsAll = [];
 
   // --- 1. Portrait fill ---
@@ -241,6 +242,56 @@ function check(name, ok, detail) {
     const ok = dr.lockedOk && dr.doorOpened && dr.puzzleOk && dr.sealedBeforeDefeat &&
       dr.openAfterDefeat && dr.chestRefusedWithoutKey && dr.chestOpened && dr.medallion;
     check('Dungeon ' + dr.id + ': key/door/puzzle/boss-seal/chest/medallion all correct', ok, JSON.stringify(dr));
+  }
+
+  // --- Every dungeon boss, killed the way the player kills it (repeated
+  // damageEnemy() hits, then the normal per-frame room update) - NOT by
+  // calling defeatMiniboss() directly like the check above, which is how
+  // the "boss dies but no Boss Key / door stays sealed" bug slipped past ---
+  const bossKillResults = await page.evaluate(() => {
+    const out = [];
+    for (const d of dungeons) {
+      try {
+        const room = d.rooms[2], midY = Math.floor(room.h / 2), TS = CONFIG.TILE;
+        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 2;
+        dialogue.active = false; mathPopup.active = false; shop.active = false; fadeAlpha = 0; fadeDir = 0; fadeCallback = null;
+        d.hasBossKey = false; d.bossDefeated = false; d.chestOpened = false;
+        room.grid[midY][room.w - 1] = T.BOSSDOOR; // re-seal (the check above opened it)
+        const tr = d.rooms[3];
+        tr.grid[Math.floor(tr.h / 2)][Math.floor(tr.w / 2)] = T.CHEST;
+        const e = d.enemies[2].find(x => x.isMiniboss);
+        Object.assign(e, { alive: true, hp: e.maxHp, x: (room.w / 2) * TS, y: (room.h / 2) * TS, hopDx: 0, hopDy: 0, dashTimer: 99 });
+        hero.x = 3 * TS; hero.y = 3 * TS; player.invincibleT = 999; player.downed = false;
+        let hits = 0;
+        while (e.alive && hits++ < 500) damageEnemy(e, 'sword');
+        player.levelUpChoicePending = false;
+        for (let i = 0; i < 3; i++) updateDungeonRoom(1 / 60, room);
+        const flagged = d.bossDefeated && d.hasBossKey;
+        const heartPiece = heartPieces.some(h => h.dungeonId === d.def.id);
+        // walk up to the sealed door: it must open now
+        hero.x = (room.w - 2) * TS; hero.y = (midY + 0.5) * TS;
+        updateDungeonRoom(1 / 60, room);
+        const doorOpen = room.grid[midY][room.w - 1] === T.FLOOR;
+        // walk through it into the treasure room
+        hero.x = (room.w - 1.1) * TS;
+        updateDungeonRoom(1 / 60, room); fadeCallback && fadeCallback(); fadeCallback = null; fadeAlpha = 0; fadeDir = 0;
+        const inTreasure = d.roomIndex === 3;
+        // and open the boss treasure with the key
+        hero.x = (Math.floor(tr.w / 2) + 0.5) * TS; hero.y = (Math.floor(tr.h / 2) + 0.5) * TS;
+        Input.keys['e'] = true;
+        handleDungeonDoors(d, tr, 1 / 60);
+        out.push({ id: d.def.id, boss: d.def.bossKind, hits, flagged, heartPiece, doorOpen, inTreasure, chestOpened: d.chestOpened });
+      } catch (err) {
+        out.push({ id: d.def.id, exception: err.message });
+      }
+    }
+    player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null;
+    return out;
+  });
+  for (const br of bossKillResults) {
+    if (br.exception) { check('Boss ' + br.id + ' kill -> Boss Key', false, br.exception); continue; }
+    check('Dungeon ' + br.id + ' (' + br.boss + '): killing the boss by hits gives the Boss Key, unseals the door, treasure opens',
+      br.flagged && br.heartPiece && br.doorOpen && br.inTreasure && br.chestOpened, JSON.stringify(br));
   }
 
   // --- Bow slot, arrow cycling, arrows clink off walls ---
