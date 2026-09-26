@@ -206,7 +206,15 @@ function check(name, ok, detail) {
         dungeonGoRoom(d, 1, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
         d.puzzle.solved = true;
         solvePuzzle(d, d.rooms[1]);
-        const puzzleOk = d.rooms[1].grid[Math.floor(d.rooms[1].h / 2)][d.rooms[1].w - 1] === 4;
+        // solving the puzzle raises a math-sealed boss door; walking up to it
+        // asks a question and the right answer opens it
+        const p1 = d.rooms[1], p1y = Math.floor(p1.h / 2);
+        const sealRaised = p1.grid[p1y][p1.w - 1] === T.BOSSDOOR;
+        d.doorHintShown.seal = false;
+        hero.x = (p1.w - 1) * 16 - 4; hero.y = p1y * 16 + 8;
+        handleDungeonDoors(d, p1, 0.016);
+        const sealAsked = (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true));
+        const puzzleOk = sealRaised && sealAsked && p1.grid[p1y][p1.w - 1] === 4;
         dungeonGoRoom(d, 2, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
         const miniboss = d.enemies[2][0];
         // boss-sealed exit before defeat
@@ -229,7 +237,10 @@ function check(name, ok, detail) {
         d.hasBossKey = true;
         Input.keys['e'] = true;
         updatePlaying(1 / 60);
+        const chestLockClosedUntilAnswer = !d.chestOpened;
+        const chestAsked = (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true));
         out.push({
+          chestLockClosedUntilAnswer, chestAsked,
           id: d.def.id, lockedOk, doorOpened, puzzleOk, sealedBeforeDefeat, openAfterDefeat,
           chestRefusedWithoutKey, chestOpened: d.chestOpened, medallion: player.medallions[d.def.id],
           heartPiece: !!heartPieces.find(hp => hp.dungeonId === d.def.id) || player.maxHearts > 3,
@@ -242,9 +253,9 @@ function check(name, ok, detail) {
   });
   for (const dr of dungeonResults) {
     if (dr.exception) { check('Dungeon ' + dr.id + ' end-to-end', false, dr.exception); continue; }
-    const ok = dr.lockedOk && dr.doorOpened && dr.puzzleOk && dr.sealedBeforeDefeat &&
+    const ok = dr.lockedOk && dr.doorOpened && dr.puzzleOk && dr.sealedBeforeDefeat && dr.chestLockClosedUntilAnswer && dr.chestAsked &&
       dr.openAfterDefeat && dr.chestRefusedWithoutKey && dr.chestOpened && dr.medallion;
-    check('Dungeon ' + dr.id + ': key/door/puzzle/boss-seal/chest/medallion all correct', ok, JSON.stringify(dr));
+    check('Dungeon ' + dr.id + ': key/door/puzzle/math-sealed boss door/boss-seal/math-locked chest/medallion all correct', ok, JSON.stringify(dr));
   }
 
   // --- Every dungeon boss, killed the way the player kills it (repeated
@@ -284,6 +295,7 @@ function check(name, ok, detail) {
         player.levelUpChoicePending = false;
         Input.keys['e'] = true;
         updatePlaying(1 / 60);
+        (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true));
         out.push({ id: d.def.id, boss: d.def.bossKind, hits, flagged, heartPiece, doorOpen, inTreasure, chestOpened: d.chestOpened });
       } catch (err) {
         out.push({ id: d.def.id, exception: err.message });
@@ -331,6 +343,7 @@ function check(name, ok, detail) {
         hero.x = (cx - 0.5) * TS; hero.y = (cy + 0.5) * TS; hero.facing = 'right';
         step(2);
         Input.keys['e'] = true; step(1);
+        (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true));
         out.chestE.push({ id, opened: d.chestOpened, medallion: !!player.medallions[id] });
         // (b) from the room entrance, tap the chest: walk there, then open
         enterTreasure(d);
@@ -338,7 +351,7 @@ function check(name, ok, detail) {
         step(2);
         Input.tapX = (cx + 0.5) * TS - world.camX; Input.tapY = (cy + 0.5) * TS - world.camY; Input.tapped = true;
         let frames = 0;
-        while (!d.chestOpened && frames++ < 600) step(1);
+        while (!d.chestOpened && frames++ < 600) { (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true)); step(1); }
         out.chestTap.push({ id, opened: d.chestOpened, medallion: !!player.medallions[id], frames });
       }
       // (c) Fire Dungeon torches: stand on each in order, press E

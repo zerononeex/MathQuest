@@ -1914,7 +1914,8 @@ function buildDungeon(def) {
     chestOpened: false,
     entranceZone: null,
     overworldSpawn: null,
-    doorHintShown: { locked: false, boss: false, chest: false },
+    doorHintShown: { locked: false, boss: false, chest: false, seal: false },
+    bossSealOpen: false, // math seal on the boss door answered (this visit)
   };
   entrance.canvas = prerenderMap(entrance);
   puzzleRoom.canvas = prerenderMap(puzzleRoom);
@@ -2232,10 +2233,30 @@ function updateDungeonPuzzle(d, dt) {
 function solvePuzzle(d, room) {
   d.puzzle.solved = true;
   const midY = Math.floor(room.h / 2);
+  // the way to the boss is a sealed boss door: one math answer breaks the
+  // seal (skipped if the boss is already beaten, e.g. after Continue)
+  const sealed = !d.bossDefeated && !d.bossSealOpen;
+  room.grid[midY][room.w - 1] = sealed ? T.BOSSDOOR : T.FLOOR;
+  room.canvas = prerenderMap(room);
+  showHint(sealed ? 'The boss door appears! Answer to break its seal.' : 'The way opens!', 2);
+  SFX.door();
+}
+// Math locks on key milestones (boss door seal, big chest): a correct answer
+// runs onSolve; a wrong one lets the player retry; ESC closes it (no penalty).
+function openMathLock(title, onSolve) {
+  if (mathPopup.active) return;
+  openMathPopup('lock');
+  mathPopup.title = title; mathPopup.onSolve = onSolve;
+  showHint('', 0); // the hint banner would sit on the popup's title
+}
+function breakBossSeal(d) {
+  const room = d.rooms[1], midY = Math.floor(room.h / 2);
+  d.bossSealOpen = true;
   room.grid[midY][room.w - 1] = T.FLOOR;
   room.canvas = prerenderMap(room);
-  showHint('The way opens!', 1.5);
   SFX.door();
+  spawnConfetti((room.w - 1.5) * CONFIG.TILE, (midY + 0.5) * CONFIG.TILE, 16);
+  showHint('The seal breaks! The boss awaits...', 2);
 }
 
 // door interactions: locked / boss-sealed / boss-treasure (bug registry #1 #4)
@@ -2256,6 +2277,16 @@ function handleDungeonDoors(d, room, dt) {
       }
     } else {
       d.doorHintShown.locked = false;
+    }
+  }
+  // math-sealed boss door (puzzle room, east): walking up to it asks once
+  // per approach; E / tap on it asks again (worldInteractables)
+  if (d.roomIndex === 1 && room.grid[midY][room.w - 1] === T.BOSSDOOR) {
+    const doorX = (room.w - 1) * CONFIG.TILE, doorY = (midY + 0.5) * CONFIG.TILE;
+    if (Math.hypot(hero.x - doorX, hero.y - doorY) < 20) {
+      if (!d.doorHintShown.seal) { d.doorHintShown.seal = true; openMathLock('Break the Seal!', () => breakBossSeal(d)); }
+    } else {
+      d.doorHintShown.seal = false;
     }
   }
   // boss-sealed exit (boss room, east) - never freezes, just blocks + hints
@@ -2299,7 +2330,14 @@ function worldInteractables() {
       const cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
       if (room.grid[cy][cx] === T.CHEST) {
         list.push({ kind: 'chest', key: 'chest:' + d.def.id, x: (cx + 0.5) * TS, y: (cy + 0.5) * TS, range: 24,
-          act: () => { if (d.hasBossKey) openDungeonChest(d); else showHint('Needs the Boss Key!', 1.8); } });
+          act: () => { if (d.hasBossKey) openMathLock('Unlock the Treasure!', () => openDungeonChest(d)); else showHint('Needs the Boss Key!', 1.8); } });
+      }
+    }
+    if (d.roomIndex === 1) {
+      const my = Math.floor(room.h / 2);
+      if (room.grid[my][room.w - 1] === T.BOSSDOOR) {
+        list.push({ kind: 'seal', key: 'seal:' + d.def.id, x: (room.w - 1) * TS, y: (my + 0.5) * TS, range: 28,
+          act: () => openMathLock('Break the Seal!', () => breakBossSeal(d)) });
       }
     }
     const p = d.puzzle;
@@ -3363,7 +3401,8 @@ function openMathPopup(purpose) {
   mathPopup.active = true;
   mathPopup.question = generateMathQuestion(CONFIG.DIFFICULTY);
   mathPopup.wrongIdx = -1;
-  mathPopup.purpose = purpose || 'ap'; // 'ap' or 'revive'
+  mathPopup.purpose = purpose || 'ap'; // 'ap', 'revive' or 'lock' (see openMathLock)
+  mathPopup.title = null; mathPopup.onSolve = null;
 }
 function closeMathPopup() {
   mathPopup.active = false; mathPopup.question = null;
@@ -3377,6 +3416,11 @@ function answerMathPopup(idx) {
     if (mathPopup.purpose === 'revive') {
       closeMathPopup();
       doRevive();
+    } else if (mathPopup.purpose === 'lock') {
+      const fn = mathPopup.onSolve;
+      closeMathPopup();
+      spawnConfetti(hero.x, hero.y, 14);
+      if (fn) fn();
     } else {
       const reward = tierAPReward();
       gainAP(reward);
@@ -4023,7 +4067,7 @@ function updateMathPopupInput() {
   if (Input.keys['1']) { Input.keys['1'] = false; answerMathPopup(0); }
   if (Input.keys['2']) { Input.keys['2'] = false; answerMathPopup(1); }
   if (Input.keys['3']) { Input.keys['3'] = false; answerMathPopup(2); }
-  if (mathPopup.purpose === 'ap' && (Input.keys['Escape'] || Input.keys['x'] || Input.keys['X'])) {
+  if (mathPopup.purpose !== 'revive' && (Input.keys['Escape'] || Input.keys['x'] || Input.keys['X'])) {
     Input.keys['Escape'] = Input.keys['x'] = Input.keys['X'] = false;
     closeMathPopup(); // ESC/X: no reward, no penalty
   }
@@ -5692,7 +5736,7 @@ function drawMathPopup() {
     roundRect(bx, by, bw, bh, 14); ctx.stroke();
   }
 
-  const tierLabel = mathPopup.purpose === 'revive' ? 'Revive!' : 'Earn Action Points!';
+  const tierLabel = mathPopup.purpose === 'revive' ? 'Revive!' : mathPopup.purpose === 'lock' ? (mathPopup.title || 'Unlock!') : 'Earn Action Points!';
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
   ctx.fillText(tierLabel + ' - ' + QUESTION_TIERS[CONFIG.DIFFICULTY].label, CONFIG.GAME_W / 2, by + 34);
 
@@ -5716,7 +5760,7 @@ function drawMathPopup() {
   if (mathPopup.wrongIdx >= 0) {
     ctx.fillStyle = '#ffb3b3';
     ctx.fillText('Good try! Have another go!', CONFIG.GAME_W / 2, by + bh - 14);
-  } else if (mathPopup.purpose === 'ap') {
+  } else if (mathPopup.purpose !== 'revive') {
     ctx.fillText('Tap an answer, or press 1/2/3    (ESC/X to close)', CONFIG.GAME_W / 2, by + bh - 14);
   } else {
     ctx.fillText('Answer to revive your hero!', CONFIG.GAME_W / 2, by + bh - 14);

@@ -52,7 +52,7 @@
     state: 'IDLE', goal: '', target: null, pathForOverlay: null,
     inputs: new Ring(40), crumbs: new Ring(30), agentIssues: new Ring(120),
     bugs: new Map(), info: [], expects: [],
-    stats: { swings: 0, rangedShots: 0, kills: 0, pots: 0, mathSolved: 0, mathMisses: 0, revives: 0, levelUps: 0,
+    stats: { swings: 0, rangedShots: 0, kills: 0, pots: 0, mathSolved: 0, mathMisses: 0, mathLocks: 0, revives: 0, levelUps: 0,
       bought: [], frames: 0, frameMsAvg: 0, frameMsMax: 0, updates: 0 },
     dungeon: {}, layout: {}, metrics: { cardinal: { n: 0, sum: 0 }, diagonal: { n: 0, sum: 0 } },
     bossDeadAt: {}, bossReported: {}, lastUpdateWall: 0, stepHooked: false,
@@ -548,6 +548,8 @@
       if (M.purpose === 'ap') {
         const want = Math.min(M.maxAp, M.ap0 + tierReward());
         if (player.ap !== want) report('CRITICAL', 'math', 'AP reward mismatch after correct answer: AP ' + M.ap0 + ' -> ' + player.ap + ', expected ' + want + ' (+' + tierReward() + ', cap ' + M.maxAp + ')');
+      } else if (M.purpose === 'lock') {
+        QA.stats.mathLocks++; // boss-door seal / big-chest math lock
       } else {
         QA.stats.revives++;
         if (player.downed) report('CRITICAL', 'math', 'Hero still downed after answering the revive question correctly');
@@ -1922,7 +1924,7 @@
       L.push('- Weapon slots: ' + p.slots.map(x => x || '(empty)').join(', ') + ' | owned gear: ' + Object.keys(p.owned).filter(k => p.owned[k] === true || p.owned[k] > 0).join(', '));
     }
     L.push('- Bought: ' + (j.stats.bought.length ? j.stats.bought.map(b => b.name + ' (' + b.price + 'g @' + b.gameT + 's)').join(', ') : 'nothing'));
-    L.push('- Kills ' + j.stats.kills + ', pots/bushes ' + j.stats.pots + ', sword swings ' + j.stats.swings + ', ranged shots ' + j.stats.rangedShots + ', math solved ' + j.stats.mathSolved + ', revives ' + j.stats.revives + ', level-ups ' + j.stats.levelUps);
+    L.push('- Kills ' + j.stats.kills + ', pots/bushes ' + j.stats.pots + ', sword swings ' + j.stats.swings + ', ranged shots ' + j.stats.rangedShots + ', math solved ' + j.stats.mathSolved + ' (locks ' + (j.stats.mathLocks || 0) + '), revives ' + j.stats.revives + ', level-ups ' + j.stats.levelUps);
     if (j.metrics.cardinalSpeed !== undefined) L.push('- Walk speed: cardinal ' + j.metrics.cardinalSpeed + ' px/s, diagonal ' + j.metrics.diagonalSpeed + ' px/s');
     L.push('');
     const ds = Object.keys(j.dungeons);
