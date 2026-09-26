@@ -1,3 +1,6 @@
 tools/node_modules/
 tools/screenshots/*.png
 *.log
+tools/qa-screens/
+tools/qa-report.json
+tools/math-quest-qa.html
