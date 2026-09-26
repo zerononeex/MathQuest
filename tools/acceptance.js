@@ -578,6 +578,143 @@ function check(name, ok, detail) {
       (moved.ArrowLeft > 4 || moved.ArrowUp > 4),
     JSON.stringify({ fireResult, fireIn, fireOut, moved }));
 
+  // --- Cindermaw is the Fire Dungeon boss (Malrek only in the castle); its
+  // stunned window takes double damage; killing it by hits gives the key ---
+  const fireBoss = bossKillResults.find(b => b.id === 'fire') || {};
+  const cmResult = await page.evaluate(() => {
+    try {
+      const d = dungeons.find(x => x.def.id === 'fire'), e = d.enemies[2].find(x => x.isMiniboss);
+      const others = dungeons.filter(x => x.def.id !== 'fire').map(x => x.enemies[2][0].maxHp);
+      const out = { bossKind: d.def.bossKind, enemyKind: e.bossKind, maxHp: e.maxHp, others,
+        malrekInDungeons: dungeons.some(x => x.def.bossKind === 'malrek'), name: NEW_BOSS_DEFS.cindermaw && NEW_BOSS_DEFS.cindermaw.name };
+      // double damage while stunned (crouched)
+      world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = 2;
+      Object.assign(e, { alive: true, hp: e.maxHp, cmState: 'idle', cmT: 99 });
+      damageEnemy(e, 'sword'); out.normalHit = e.maxHp - e.hp;
+      e.hp = e.maxHp; e.cmState = 'stun'; damageEnemy(e, 'sword'); out.stunHit = e.maxHp - e.hp;
+      // the attack cycle runs idle -> rear -> lunge (spits lava) -> stun -> idle
+      Object.assign(e, { hp: e.maxHp, cmState: 'idle', cmT: 0.01, x: 8 * 16, y: 5 * 16 });
+      hero.x = 3 * 16; hero.y = 5 * 16; player.invincibleT = 999; d.bossDefeated = true; // keep the kill hook out of this
+      const seen = [], shots0 = enemyShots.length;
+      for (let i = 0; i < 400; i++) { updateDungeonRoom(1 / 60, d.rooms[2]); updateEnemyShots(1 / 60, d.rooms[2]); if (seen[seen.length - 1] !== e.cmState) seen.push(e.cmState); }
+      out.cycle = seen.join('>'); out.spat = enemyShots.length > shots0 || seen.includes('lunge');
+      d.bossDefeated = false; player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null;
+      return out;
+    } catch (err) { return { exception: err.message }; }
+  });
+  check('Fire Dungeon boss is Cindermaw (Malrek only in the castle), dungeon-boss HP, and killing it gives the Boss Key',
+    cmResult.bossKind === 'cindermaw' && cmResult.enemyKind === 'cindermaw' && !cmResult.malrekInDungeons &&
+      cmResult.maxHp <= Math.max(...cmResult.others) + 4 && fireBoss.boss === 'cindermaw' && fireBoss.flagged && fireBoss.doorOpen && fireBoss.chestOpened,
+    JSON.stringify({ cmResult, fireBoss }));
+  check('Cindermaw: rear-up -> lunge/spit -> stunned cycle, double damage while stunned',
+    /rear>lunge>stun>idle>rear/.test(cmResult.cycle) && cmResult.stunHit === cmResult.normalHit * 2, JSON.stringify(cmResult));
+
+  // --- Interiors: three distinct rooms; BFS over the collision grid from the
+  // exit rug reaches talking distance of every NPC; talking to the
+  // shopkeeper behind her counter works by E and by tap ---
+  const interiorResult = await page.evaluate(() => {
+    const out = { rooms: [] };
+    try {
+      const TS = CONFIG.TILE;
+      const rooms = [[houseInterior, houseNPCs], [shopInterior, shopNPCs], [desertShopInterior, desertShopNPCs]];
+      for (const [m, npcs] of rooms) {
+        const sx = Math.floor(m.exit.x), sy = Math.floor(m.exit.y), seen = new Set([sy * 1000 + sx]), q = [[sx, sy]];
+        while (q.length) {
+          const [x, y] = q.shift();
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = x + dx, ny = y + dy, k = ny * 1000 + nx;
+            if (nx < 0 || ny < 0 || nx >= m.w || ny >= m.h || seen.has(k) || SOLID_TILES.has(m.grid[ny][nx])) continue;
+            seen.add(k); q.push([nx, ny]);
+          }
+        }
+        const reach = n => [...seen].some(k => Math.hypot(((k % 1000) + 0.5) * TS - n.x, (Math.floor(k / 1000) + 0.5) * TS - n.y) < CONFIG.NPC_TALK_RANGE + 12);
+        const spawnTile = Math.floor((m.exit.y - 1.2) * TS / TS) * 1000 + Math.floor(m.exit.x * TS / TS);
+        out.rooms.push({ label: m.label, size: m.w + 'x' + m.h, solids: m.grid.flat().filter(t => t === T.FURN).length, pieces: m.furniture.length,
+          lights: m.lights.length, reachable: seen.size, npcsReachable: npcs.every(reach), spawnFree: seen.has(spawnTile) });
+      }
+      // E and tap to the shopkeeper through the real update loop
+      const talk = (m, b, how) => {
+        dialogue.active = false; shop.active = false; mathPopup.active = false; player.levelUpChoicePending = false; fadeCallback = null; fadeAlpha = 0; fadeDir = 0;
+        world.mode = 'interior'; world.interior = m; world.returnSpot = { x: 100 * TS, y: 72 * TS };
+        hero.x = m.exit.x * TS; hero.y = (m.exit.y - 1.2) * TS; hero.walkTargetX = null; hero.pendingTalkTarget = null;
+        for (const k of Object.keys(Input.keys)) Input.keys[k] = false;
+        const sk = allNPCs().find(n => n.isShopkeeper);
+        if (how === 'E') {
+          Input.keys['ArrowUp'] = true;
+          for (let i = 0; i < 90; i++) updatePlaying(1 / 60);
+          Input.keys['ArrowUp'] = false;
+          Input.keys['e'] = true; updatePlaying(1 / 60);
+        } else {
+          updateCamera(1 / 60);
+          Input.tapX = sk.x - world.camX; Input.tapY = sk.y - world.camY; Input.tapped = true;
+          for (let i = 0; i < 240 && !shop.active; i++) { updatePlaying(1 / 60); updateCamera(1 / 60); }
+        }
+        const ok = shop.active, blocked = hero.y > sk.y + 16; // the counter kept the hero on the customer side
+        shop.active = false;
+        return { ok, blocked, heroY: Math.round(hero.y), skY: sk.y };
+      };
+      out.talk = {
+        shopE: talk(shopInterior, null, 'E'), shopTap: talk(shopInterior, null, 'tap'),
+        desertE: talk(desertShopInterior, null, 'E'), desertTap: talk(desertShopInterior, null, 'tap'),
+      };
+      world.mode = 'overworld'; world.interior = null; hero.x = (overworld.w / 2) * TS; hero.y = (overworld.h / 2 + 2) * TS;
+    } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+    return out;
+  });
+  const ir = interiorResult.rooms || [];
+  check('Interiors: 3 distinct furnished rooms (shop / house / outpost) with solid furniture and lights',
+    ir.length === 3 && new Set(ir.map(r => r.size + ':' + r.pieces)).size === 3 && ir.every(r => r.solids > 4 && r.lights > 0 && r.spawnFree),
+    JSON.stringify(interiorResult));
+  check('Interiors: clear path (BFS on collision) from the exit rug to talking distance of every NPC',
+    ir.length === 3 && ir.every(r => r.npcsReachable), JSON.stringify(ir));
+  const tk = interiorResult.talk || {};
+  check('Shopkeepers behind their counters: E and tap both open the shop across the counter',
+    ['shopE', 'shopTap', 'desertE', 'desertTap'].every(k => tk[k] && tk[k].ok && tk[k].blocked), JSON.stringify(tk));
+
+  // --- New enemies: all four archetypes spawn (overworld + dungeons), never
+  // inside a solid tile; beetle shield blocks a frontal hit but not a side hit ---
+  {
+    const sp = await browser.newPage();
+    sp.on('pageerror', e => errorsAll.push('new enemies: ' + e.message));
+    await sp.goto(file, { waitUntil: 'load' });
+    const ne = await sp.evaluate(() => {
+      const out = { counts: {}, inSolid: [] };
+      try {
+        const hits = (map, e) => boxHitsSolid(map, e.x, e.y, e.w, e.h);
+        const groups = [{ map: overworld, list: wildsEnemies, where: 'overworld' }];
+        for (const d of dungeons) d.rooms.forEach((r, i) => groups.push({ map: r, list: d.enemies[i], where: d.def.id + ':' + i }));
+        for (const g of groups) for (const e of g.list) if (NEW_ENEMY_TYPES.has(e.type)) {
+          out.counts[e.type + '@' + (g.where === 'overworld' ? 'ow' : 'dg')] = (out.counts[e.type + '@' + (g.where === 'overworld' ? 'ow' : 'dg')] || 0) + 1;
+          if (hits(g.map, e)) out.inSolid.push(e.type + ' ' + g.where);
+        }
+        // beetle shield: frontal sword blocked, side sword lands, boomerang lowers the shield
+        startNewGame();
+        const d = dungeons.find(x => x.def.id === 'forest'); world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = 0;
+        const b = d.enemies[0].find(e => e.type === 'beetle');
+        const reset = () => Object.assign(b, { alive: true, hp: b.maxHp, x: 8 * 16, y: 5 * 16, faceAng: 0, shieldDownT: 0, blockLock: 5 });
+        const swing = (hx, hy, facing) => { hero.x = hx; hero.y = hy; hero.facing = facing; player.ap = 9; player.attackCooldown = 0; dialogue.active = false; const hp = b.hp; trySwingSword(); return hp - b.hp; };
+        reset(); out.front = swing(b.x + 14, b.y, 'left');
+        reset(); out.side = swing(b.x, b.y - 14, 'down');
+        reset(); out.behind = swing(b.x - 14, b.y, 'right');
+        reset(); damageEnemy(b, 'boomerang', { x: b.x + 40, y: b.y }); out.boomShieldDown = b.shieldDownT > 0; out.frontAfterBoom = swing(b.x + 14, b.y, 'left');
+        // wisp: faded = invulnerable except to fire arrows; mole: hidden = untargetable
+        const w = makeDungeonEnemy('wisp', 0, 0); w.faded = true;
+        out.wispFadedSword = damageEnemy(w, 'sword'); out.wispFadedFire = damageEnemy(w, 'bow', { x: 0, y: 0, fire: true });
+        const m = makeDungeonEnemy('mole', 0, 0); out.moleHiddenTargetable = enemyTargetable(m);
+        world.mode = 'overworld'; world.dungeon = null;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    const types = ['beetle', 'spitter', 'wisp', 'mole'];
+    check('New enemies (beetle/spitter/wisp/mole) spawn in the overworld and dungeons, none inside a solid tile',
+      types.every(t => ne.counts[t + '@ow'] > 0 && ne.counts[t + '@dg'] > 0) && ne.inSolid.length === 0, JSON.stringify(ne));
+    check('Bulwark Beetle blocks a frontal sword hit, takes side/back hits; boomerang lowers its shield',
+      ne.front === 0 && ne.side > 0 && ne.behind > 0 && ne.boomShieldDown && ne.frontAfterBoom > 0, JSON.stringify(ne));
+    check('Glimmer Wisp is invulnerable while faded except to fire arrows; a burrowed mole cannot be targeted',
+      ne.wispFadedSword === false && ne.wispFadedFire === true && ne.moleHiddenTargetable === false, JSON.stringify(ne));
+    await sp.close();
+  }
+
   check('Zero uncaught console errors across the whole acceptance run', consoleErrors.length === 0 && errorsAll.length === 0,
     JSON.stringify(consoleErrors.concat(errorsAll)).slice(0, 500));
 
