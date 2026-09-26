@@ -79,10 +79,13 @@ const CONFIG = {
   NPC_TALK_RANGE: 22,       // px distance to allow E-to-talk
 
   // --- Combat / AP ---
-  STARTING_AP: 5,           // Action Points the hero starts with
-  MAX_AP: 10,                // AP bar cap
-  SWORD_AP_COST: 1,          // AP spent per sword swing
-  BOOMERANG_AP_COST: 2,      // AP spent per boomerang throw
+  // AP economy: math should feel like a power-up, not a toll. One correct
+  // answer (8-12 AP) covers a few fights, the bar holds two answers' worth,
+  // and a sword swing only costs AP when it actually hits an enemy.
+  STARTING_AP: 12,          // Action Points the hero starts with
+  MAX_AP: 20,                // AP bar cap
+  SWORD_AP_COST: 1,          // AP spent per sword swing that hits an enemy (misses/pots are free)
+  BOOMERANG_AP_COST: 1,      // AP spent per boomerang throw
   SWORD_COOLDOWN: 0.35,      // seconds between sword swings
   SWORD_RANGE: 28,           // px - sword only works this close
   ENEMY_TAP_HITBOX_MULT: 1.5, // forgiving tap hitbox multiplier for enemies
@@ -94,7 +97,7 @@ const CONFIG = {
 
   // --- Math popup tiers ---
   // grade band, AP reward per correct answer
-  AP_PER_CORRECT: { LITTLE_HERO: 3, ADVENTURER: 4, MASTER: 5, LEGEND: 6 },
+  AP_PER_CORRECT: { LITTLE_HERO: 8, ADVENTURER: 8, MASTER: 10, LEGEND: 12 },
   // chance (0-1) a defeated enemy drops a healing heart, per tier
   HEART_DROP_CHANCE: { LITTLE_HERO: 0.35, ADVENTURER: 0.25, MASTER: 0.18, LEGEND: 0.12 },
 
@@ -2559,11 +2562,23 @@ function updateDungeonRoom(dt, room) {
   updateHeartPieces(dt);
 }
 
+// Each heart piece is collectable exactly once per save: the overworld secret
+// one sets player.secretHeartTaken, a boss drop sets its dungeon's
+// heartPieceGiven. Both are saved right away, so reloading can neither
+// respawn a taken piece (farming) nor drop one that was never picked up.
 function collectHeartPiece(hp) {
+  if (!hp.dungeonId) {
+    if (player.secretHeartTaken) return;
+    player.secretHeartTaken = true;
+  } else {
+    const d = dungeons.find(x => x.def.id === hp.dungeonId);
+    if (d) { if (d.heartPieceGiven) return; d.heartPieceGiven = true; }
+  }
   player.maxHearts++;
   player.hearts = player.maxHearts;
   spawnFloatingText(hp.x, hp.y - 16, 'HEART PIECE!', '#ff8fa8');
   SFX.revive();
+  saveGame();
 }
 
 // =========================================================================
@@ -2927,6 +2942,7 @@ function wrapTextLines(text, maxW) {
 // =========================================================================
 const player = {
   hearts: 3, maxHearts: 3,
+  secretHeartTaken: false, // overworld secret heart piece collected (saved)
   ap: CONFIG.STARTING_AP, maxAp: CONFIG.MAX_AP,
   invincibleT: 0,
   attackCooldown: 0,
@@ -3136,7 +3152,7 @@ function hurtEnemy(e, dmg, color) {
 function trySwingSword() {
   if (player.attackCooldown > 0 || dialogue.active || player.downed) return;
   const range = swordReachPx();
-  if (!spendAP(CONFIG.SWORD_AP_COST)) {
+  if (player.ap < CONFIG.SWORD_AP_COST) {
     showHint('Not enough AP! Press Q to earn more!', 2);
     player.zeroApAttackTimer = 0.0001; // start the auto-popup countdown
     return;
@@ -3152,6 +3168,7 @@ function trySwingSword() {
   // hit anything within range + facing arc (~120deg)
   const kind = equippedSwordKind();
   const facingAngle = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 }[hero.facing];
+  let struck = false;
   for (const e of currentEnemies()) {
     if (!enemyTargetable(e)) continue;
     const d = Math.hypot(e.x - hero.x, e.y - hero.y);
@@ -3159,8 +3176,11 @@ function trySwingSword() {
     const ang = Math.atan2(e.y - hero.y, e.x - hero.x);
     let diff = Math.abs(ang - facingAngle);
     if (diff > Math.PI) diff = Math.PI * 2 - diff;
-    if (diff < Math.PI * 0.65) damageEnemy(e, kind, { x: hero.x, y: hero.y });
+    if (diff < Math.PI * 0.65) { damageEnemy(e, kind, { x: hero.x, y: hero.y }); struck = true; }
   }
+  // AP is only spent when the blade meets an enemy (blocked hits count too):
+  // swinging at air, grass or pots is free
+  if (struck) spendAP(CONFIG.SWORD_AP_COST);
   deflectEnemyShots(range, facingAngle);
   for (const p of currentPots()) {
     if (!p.alive) continue;
@@ -4487,6 +4507,8 @@ function updatePlaying(dt) {
   } else if (world.mode === 'castle') {
     updateCastleRoom(dt, map);
   }
+  // the secret overworld heart piece (dungeon ones update in updateDungeonRoom)
+  if (world.mode === 'overworld') updateHeartPieces(dt);
 
   // dust puffs decay
   for (let i = dustPuffs.length - 1; i >= 0; i--) {
@@ -6069,9 +6091,10 @@ function buildSaveData() {
     unlockedSkins: player.unlockedSkins,
     questionsAnswered: player.questionsAnswered,
     revivesUsed: player.revivesUsed,
+    secretHeartTaken: player.secretHeartTaken,
     dungeons: dungeons.map(d => ({
       id: d.def.id, hasSmallKey: d.hasSmallKey, hasBossKey: d.hasBossKey,
-      bossDefeated: d.bossDefeated, chestOpened: d.chestOpened,
+      bossDefeated: d.bossDefeated, chestOpened: d.chestOpened, heartPieceGiven: d.heartPieceGiven,
     })),
     castleDefeated: castle.defeated,
   };
@@ -6108,7 +6131,8 @@ function applySaveData(data) {
     player.hearts = clampNum(data.hearts, 1, 20, 3);
     player.maxHearts = clampNum(data.maxHearts, player.hearts, 20, 3);
     player.ap = clampNum(data.ap, 0, 999, CONFIG.STARTING_AP);
-    player.maxAp = clampNum(data.maxAp, player.ap, 999, CONFIG.MAX_AP);
+    // older saves stored the old 10-AP cap: never keep a cap below today's
+    player.maxAp = Math.max(CONFIG.MAX_AP, clampNum(data.maxAp, player.ap, 999, CONFIG.MAX_AP));
     hud.gold = clampNum(data.gold, 0, 999999, 0);
     player.attack = clampNum(data.attack, 1, 999, 1);
     player.level = clampNum(data.level, 1, 999, 1);
@@ -6131,12 +6155,23 @@ function applySaveData(data) {
         if (!d) continue;
         d.hasSmallKey = !!dd.hasSmallKey; d.hasBossKey = !!dd.hasBossKey;
         d.bossDefeated = !!dd.bossDefeated; d.chestOpened = !!dd.chestOpened;
+        // saves from before this flag existed: a beaten boss's piece counts as taken
+        d.heartPieceGiven = 'heartPieceGiven' in dd ? !!dd.heartPieceGiven : d.bossDefeated;
+        // beaten but the piece was never picked up: put it back in the boss room
+        if (d.bossDefeated && !d.heartPieceGiven && !heartPieces.some(hp => hp.dungeonId === d.def.id)) {
+          const br = d.rooms[2];
+          spawnHeartPiece(br.w / 2 * CONFIG.TILE, br.h / 2 * CONFIG.TILE, d, 2);
+        }
         if (d.chestOpened) player.medallions[d.def.id] = true;
         // a defeated boss stays defeated after Continue (no respawn to refight)
         if (d.bossDefeated) for (const e of d.enemies[2]) if (e.isMiniboss) { e.alive = false; e.hp = 0; }
       }
     }
     castle.defeated = !!data.castleDefeated;
+    player.secretHeartTaken = !!data.secretHeartTaken;
+    if (player.secretHeartTaken) {
+      for (let i = heartPieces.length - 1; i >= 0; i--) if (!heartPieces[i].dungeonId) heartPieces.splice(i, 1);
+    }
     // position: only overworld position/area is restored (bug registry-safe
     // simplification - dropping the hero at the dungeon/castle entrance
     // instead of mid-room avoids resurrecting half-solved puzzle state)

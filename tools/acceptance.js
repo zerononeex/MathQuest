@@ -715,6 +715,97 @@ function check(name, ok, detail) {
     await sp.close();
   }
 
+  // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
+  // answer (Adventurer) refills 8 AP of a 20 AP bar ---
+  {
+    const ap = await browser.newPage();
+    ap.on('pageerror', e => errorsAll.push('ap: ' + e.message));
+    await ap.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await ap.evaluate(() => {
+      const out = {};
+      try {
+        CONFIG.DIFFICULTY = 'ADVENTURER'; startNewGame();
+        out.start = player.ap; out.max = player.maxAp; out.reward = tierAPReward();
+        player.invincibleT = 999; dialogue.active = false;
+        const target = currentEnemies().find(e => e.alive && !e.hidden);
+        // miss: stand far away from every enemy and swing
+        hero.x = target.x; hero.y = target.y + 200; hero.facing = 'down';
+        for (const e of currentEnemies()) if (Math.hypot(e.x - hero.x, e.y - hero.y) < 60) e.alive = false;
+        player.ap = 5; player.attackCooldown = 0; trySwingSword(); out.afterMiss = player.ap;
+        // hit: stand right next to the target
+        target.alive = true; target.hp = 99; target.hidden = false;
+        hero.x = target.x - 8; hero.y = target.y; hero.facing = 'right';
+        player.ap = 5; player.attackCooldown = 0; trySwingSword(); out.afterHit = player.ap;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('AP economy: 12/20 AP start, 8 AP per correct answer (Adventurer), missed swings free, hits cost 1',
+      !r.exception && r.start === 12 && r.max === 20 && r.reward === 8 && r.afterMiss === 5 && r.afterHit === 4, JSON.stringify(r));
+    await ap.close();
+  }
+
+  // --- Secret overworld heart piece: reachable on foot, collectable once,
+  // +1 max heart, persisted so a reload neither respawns nor loses it ---
+  {
+    const hp = await browser.newPage();
+    hp.on('pageerror', e => errorsAll.push('heartpiece: ' + e.message));
+    await hp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const a = await hp.evaluate(() => {
+      const out = {};
+      try {
+        localStorage.removeItem(SAVE_KEY);
+        startNewGame();
+        const TS = CONFIG.TILE, g = overworld.grid;
+        const piece = heartPieces.find(p => !p.dungeonId);
+        out.exists = !!piece;
+        if (!piece) return out;
+        const goal = [Math.floor(piece.x / TS), Math.floor(piece.y / TS)];
+        const start = [Math.floor(hero.x / TS), Math.floor(hero.y / TS)];
+        const seen = new Set([start.join()]), q = [start];
+        while (q.length) {
+          const [x, y] = q.shift();
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = x + dx, ny = y + dy, k = nx + ',' + ny;
+            if (nx < 0 || ny < 0 || nx >= overworld.w || ny >= overworld.h || seen.has(k) || SOLID_TILES.has(g[ny][nx])) continue;
+            seen.add(k); q.push([nx, ny]);
+          }
+        }
+        out.reachable = seen.has(goal.join());
+        out.before = player.maxHearts;
+        player.invincibleT = 999;
+        hero.x = piece.x; hero.y = piece.y; hero.walkTargetX = null; hero.walkTargetY = null;
+        updatePlaying(1 / 60);
+        out.after = player.maxHearts;
+        out.flag = player.secretHeartTaken;
+        out.gone = !heartPieces.some(p => !p.dungeonId);
+        out.saved = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}').secretHeartTaken === true;
+        out.px = piece.x; out.py = piece.y;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    await hp.reload({ waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const b = await hp.evaluate((px, py) => {
+      const out = {};
+      try {
+        continueSavedGame();
+        out.maxHearts = player.maxHearts;
+        out.pieceBack = heartPieces.some(p => !p.dungeonId);
+        hero.x = px; hero.y = py; player.invincibleT = 999;
+        updatePlaying(1 / 60);
+        out.maxAfterStanding = player.maxHearts;
+        localStorage.removeItem(SAVE_KEY);
+      } catch (err) { out.exception = err.message; }
+      return out;
+    }, a.px, a.py);
+    check('Secret heart piece is reachable, gives +1 max heart once, and stays collected after a reload',
+      a.exists && a.reachable && a.after === a.before + 1 && a.flag && a.gone && a.saved &&
+      !b.exception && b.maxHearts === a.after && !b.pieceBack && b.maxAfterStanding === a.after, JSON.stringify({ a, b }));
+    await hp.close();
+  }
+
   check('Zero uncaught console errors across the whole acceptance run', consoleErrors.length === 0 && errorsAll.length === 0,
     JSON.stringify(consoleErrors.concat(errorsAll)).slice(0, 500));
 
