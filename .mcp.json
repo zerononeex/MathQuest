@@ -4,9 +4,8 @@
       "command": "npx",
       "args": ["-y", "@creating-cat/gemini-image-mcp-server"],
       "env": {
-        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+        "GEMINI_API_KEY": "AIzaSyYOUR_NEW_KEY_HERE"
       }
     }
   }
 }
-
