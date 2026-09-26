@@ -1783,13 +1783,45 @@ const wildsEnemies = [];
 
 overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon/castle entrances carved in
 
+// Where the hero reappears on the overworld after leaving a dungeon, castle
+// or building. The naive "one tile below where they entered" can land inside
+// solid terrain: the Fire Dungeon stairs on the far east sit in a one-tile
+// mountain road with cliffs directly below, so entering from the bottom of
+// the trigger zone put the hero's box half inside a cliff on exit and every
+// move was rejected (the reported "freeze"). Search outward for the nearest
+// spot whose whole hitbox is clear and that isn't itself an entrance trigger.
+function overworldReturnSpot(x, y) {
+  const hw = hero.w / 2, hh = hero.h / 2;
+  const inZone = (px, py, z) => z && px >= z.minX && px <= z.maxX && py >= z.minY && py <= z.maxY;
+  const ok = (px, py) => {
+    const corners = [[px - hw, py - hh], [px + hw, py - hh], [px - hw, py + hh - 1], [px + hw, py + hh - 1]];
+    if (corners.some(c => tileSolidAt(overworld, c[0], c[1]))) return false;
+    if (dungeons.some(d => inZone(px, py, d.entranceZone))) return false;
+    if (buildings.some(b => inZone(px, py, b.activation))) return false;
+    return !inZone(px, py, castleGate.zone);
+  };
+  if (ok(x, y)) return { x, y };
+  const T0 = CONFIG.TILE;
+  for (let r = 1; r <= 6; r++) {
+    let best = null, bestD = Infinity;
+    for (let oy = -r; oy <= r; oy++) for (let ox = -r; ox <= r; ox++) {
+      if (Math.max(Math.abs(ox), Math.abs(oy)) !== r) continue;
+      // snap candidates to tile centres so the hitbox sits cleanly in a tile
+      const px = (Math.floor(x / T0) + ox + 0.5) * T0, py = (Math.floor(y / T0) + oy + 0.5) * T0;
+      const dd = Math.hypot(px - x, py - y);
+      if (dd < bestD && ok(px, py)) { best = { x: px, y: py }; bestD = dd; }
+    }
+    if (best) return best;
+  }
+  return { x, y };
+}
 function enterDungeon(d) {
   if (world.mode !== 'overworld') return;
   fadeTo(() => {
     world.mode = 'dungeon';
     world.dungeon = d;
     d.roomIndex = 0;
-    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    world.returnSpot = overworldReturnSpot(hero.x, hero.y + CONFIG.TILE);
     hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(d.rooms[0].h / 2) * CONFIG.TILE;
     saveGame(); // auto-save on entering a dungeon
   });
@@ -2117,7 +2149,7 @@ function enterCastle() {
   fadeTo(() => {
     world.mode = 'castle';
     castle.roomIndex = 0;
-    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    world.returnSpot = overworldReturnSpot(hero.x, hero.y + CONFIG.TILE);
     hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[0].map.h / 2) * CONFIG.TILE;
     SFX.door();
     saveGame(); // auto-save on entering the castle
@@ -3436,8 +3468,7 @@ function updatePlaying(dt) {
       if (d > CONFIG.SWORD_RANGE - 4) {
         const ux = (tgt.x - hero.x) / d, uy = (tgt.y - hero.y) / d;
         moveWithCollision(hero, ux * CONFIG.HERO_SPEED * dt, uy * CONFIG.HERO_SPEED * dt, map);
-        if (Math.abs(ux) > Math.abs(uy)) hero.facing = ux < 0 ? 'left' : 'right';
-        else hero.facing = uy < 0 ? 'up' : 'down';
+        faceToward(hero, ux, uy);
         moving = true;
       } else {
         const ang = Math.atan2(tgt.y - hero.y, tgt.x - hero.x);
@@ -3485,8 +3516,7 @@ function updatePlaying(dt) {
     } else {
       const ux = tdx / dist, uy = tdy / dist;
       moveWithCollision(hero, ux * CONFIG.HERO_SPEED * dt, uy * CONFIG.HERO_SPEED * dt, map);
-      if (Math.abs(ux) > Math.abs(uy)) hero.facing = ux < 0 ? 'left' : 'right';
-      else hero.facing = uy < 0 ? 'up' : 'down';
+      faceToward(hero, ux, uy);
       moving = true;
     }
   }
@@ -3617,7 +3647,7 @@ function enterBuilding(b) {
   fadeTo(() => {
     world.mode = 'interior';
     world.interior = b.interior;
-    world.returnSpot = { x: hero.x, y: hero.y + CONFIG.TILE };
+    world.returnSpot = overworldReturnSpot(hero.x, hero.y + CONFIG.TILE);
     world.currentBuildingRef = b;
     hero.x = b.interior.exit.x * CONFIG.TILE;
     hero.y = (b.interior.exit.y - 1.2) * CONFIG.TILE;
@@ -3744,14 +3774,29 @@ function drawVictoryScreen() {
 // cycle advances by distance walked (HERO_STRIDE_PX per frame), not by time,
 // so feet never skate; standing still shows the idle pose immediately.
 // ---------------------------------------------------------------------------
-const HERO_DRAW_H = 25;          // on-screen height: ~1 tile wide, ~1.5 tiles tall
+const HERO_DRAW_H = 25;
+// torso centroid x offset (source px from crop centre) for the side strides,
+// so every frame is anchored on the body, not the crop box (no sideways jitter)
+const HERO_ANCHOR_DX = { 3: -0.7, 7: -2.0, 9: -3.4, 11: -4.4 };          // on-screen height: ~1 tile wide, ~1.5 tiles tall
 const HERO_STRIDE_PX = 11;       // px walked per animation frame (~9 fps at walk speed)
 const HERO_ANIM = {
   down: { idle: [0, ''], walk: [[0, 'legL'], [1, ''], [0, 'legR'], [2, '']] },
   up: { idle: [5, ''], walk: [[5, 'legL'], [5, ''], [5, 'legR'], [5, '']] },
-  right: { idle: [6, ''], walk: [[7, ''], [6, ''], [3, ''], [6, '']] },
-  left: { idle: [6, ''], walk: [[7, ''], [6, ''], [3, ''], [6, '']], flip: true },
+  // side views use only the true side-on strides (3,7,9,11); pose 6 is a
+  // front 3/4 stance and mixing it in made the hero turn back and forth.
+  right: { idle: [7, ''], walk: [[3, ''], [7, ''], [9, ''], [11, '']] },
+  left: { idle: [7, ''], walk: [[3, ''], [7, ''], [9, ''], [11, '']], flip: true },
 };
+// Pick a facing from a movement vector with hysteresis: near-diagonal
+// vectors keep the current axis so tap-to-move micro-corrections can't flip
+// the sprite between side and front/back views every tick.
+function faceToward(e, ux, uy) {
+  const ax = Math.abs(ux), ay = Math.abs(uy);
+  const horiz = e.facing === 'left' || e.facing === 'right';
+  const useX = horiz ? ax * 1.4 >= ay : ax > ay * 1.4;
+  if (useX) { if (ax > 0.01) e.facing = ux < 0 ? 'left' : 'right'; }
+  else if (ay > 0.01) e.facing = uy < 0 ? 'up' : 'down';
+}
 function heroWalkFrame() {
   return hero.moving ? Math.floor((hero.walkDist || 0) / HERO_STRIDE_PX) % 4 : -1;
 }
@@ -3767,7 +3812,9 @@ function drawHeroSprite(x, y, facing, frame) {
     ctx.fillRect(fx - 5, fy - 1, 10, 2); ctx.fillRect(fx - 4, fy - 2, 8, 1); ctx.fillRect(fx - 4, fy + 1, 8, 1);
     let ops = legOp;
     if (player.skin && player.skin !== 'classic') ops = 'skin:' + tunic.body + (ops ? '+' + ops : '');
-    drawSpriteFoot(ctx, 'hero_sprites', HERO_FRAMES[idx], fx, fy + bob, HERO_DRAW_H, { flip: !!anim.flip, ops });
+    const src = HERO_FRAMES[idx];
+    const adx = (HERO_ANCHOR_DX[idx] || 0) * HERO_DRAW_H / src[3];
+    drawSpriteFoot(ctx, 'hero_sprites', src, x - (anim.flip ? -adx : adx), fy + bob, HERO_DRAW_H, { flip: !!anim.flip, ops });
     return;
   }
   // 16x16-ish code-drawn hero: tunic + head, simple 2-frame walk cycle
@@ -5010,7 +5057,7 @@ function applySaveData(data) {
     // instead of mid-room avoids resurrecting half-solved puzzle state)
     if (typeof data.heroX === 'number' && typeof data.heroY === 'number' &&
         data.heroX >= 0 && data.heroY >= 0 && data.heroX < overworld.w * CONFIG.TILE && data.heroY < overworld.h * CONFIG.TILE) {
-      hero.x = data.heroX; hero.y = data.heroY;
+      const sp = overworldReturnSpot(data.heroX, data.heroY); hero.x = sp.x; hero.y = sp.y; // un-sticks saves made inside terrain
     }
     return true;
   } catch (e) {
@@ -5036,7 +5083,16 @@ function startNewGame() {
 let lastTime = performance.now();
 let accumulator = 0;
 
+let loopErrorLogged = false;
 function loop(now) {
+  // keep scheduling even if a frame throws, so one bug can't hard-freeze
+  // the game (errors are still logged, once)
+  requestAnimationFrame(loop);
+  try { loopBody(now); } catch (e) {
+    if (!loopErrorLogged) { loopErrorLogged = true; console.error('Game loop error:', e); }
+  }
+}
+function loopBody(now) {
   let frameTime = now - lastTime;
   lastTime = now;
   if (frameTime > 250) frameTime = 250; // avoid spiral of death on tab-away
@@ -5048,7 +5104,6 @@ function loop(now) {
   }
 
   draw();
-  requestAnimationFrame(loop);
 }
 
 function drawLoadingScreen() {

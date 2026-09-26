@@ -377,6 +377,38 @@ function check(name, ok, detail) {
   check('Slashable bushes can be cut', mapResult.bushCut);
   check('All 5 regions + town are reachable/present on the map', mapResult.regionsSeen && mapResult.regionsSeen.length === 6, JSON.stringify(mapResult.regionsSeen));
 
+  // Enter -> exit the far-east Fire Dungeon (entering from the bottom edge of
+  // its trigger, which used to drop the hero inside the cliff on exit), then
+  // confirm the live rAF loop still runs and the hero responds to input.
+  const fireResult = await page.evaluate(() => {
+    try {
+      world.mode = 'overworld'; world.dungeon = null; world.interior = null;
+      dialogue.active = false; mathPopup.active = false; player.downed = false; player.invincibleT = 999;
+      const d = dungeons.find(x => x.def.id === 'fire');
+      const east = dungeons.every(o => o.entranceZone.maxX <= d.entranceZone.maxX);
+      hero.x = (d.entranceZone.minX + d.entranceZone.maxX) / 2; hero.y = d.entranceZone.maxY;
+      return { east };
+    } catch (e) { return { exception: e.message }; }
+  });
+  await new Promise(r => setTimeout(r, 1200));
+  const fireIn = await page.evaluate(() => world.mode);
+  await page.evaluate(() => { hero.x = 18; hero.y = Math.floor(world.dungeon.rooms[0].h / 2) * CONFIG.TILE; });
+  await new Promise(r => setTimeout(r, 1200));
+  const fireOut = await page.evaluate(() => ({ mode: world.mode, x: hero.x, y: hero.y, t: lastTime }));
+  const moved = {};
+  for (const k of ['ArrowLeft', 'ArrowUp']) {
+    const before = await page.evaluate(() => [hero.x, hero.y]);
+    await page.keyboard.down(k); await new Promise(r => setTimeout(r, 300)); await page.keyboard.up(k);
+    const after = await page.evaluate(() => [hero.x, hero.y]);
+    moved[k] = Math.hypot(after[0] - before[0], after[1] - before[1]);
+  }
+  const tAfter = await page.evaluate(() => lastTime);
+  await page.evaluate(() => { player.invincibleT = 0; });
+  check('Fire Dungeon (far east) enter -> exit leaves the game responsive',
+    fireResult.east && fireIn === 'dungeon' && fireOut.mode === 'overworld' && tAfter > fireOut.t &&
+      (moved.ArrowLeft > 4 || moved.ArrowUp > 4),
+    JSON.stringify({ fireResult, fireIn, fireOut, moved }));
+
   check('Zero uncaught console errors across the whole acceptance run', consoleErrors.length === 0 && errorsAll.length === 0,
     JSON.stringify(consoleErrors.concat(errorsAll)).slice(0, 500));
 
