@@ -2256,7 +2256,7 @@ function ganonDefeated(g) {
   victoryStats.questionsAnswered = player.questionsAnswered;
   victoryStats.revivesUsed = player.revivesUsed;
   victoryStats.level = player.level;
-  saveGame(); // auto-save on defeating Ganondorf
+  saveGame(); // auto-save on defeating the final boss
   setTimeout(() => { gameState = STATE.VICTORY; }, 1400);
 }
 
@@ -2857,7 +2857,7 @@ function screenShake(mag, dur) { shakeMag = mag; shakeT = dur; }
 
 function updateEnemies(dt, map) {
   for (const e of currentEnemies()) {
-    if (!e.alive || e.isMiniboss || e.isBoss) continue; // minibosses/Ganondorf handled by their own update fns
+    if (!e.alive || e.isMiniboss || e.isBoss) continue; // minibosses/final boss handled by their own update fns
     if (e.hitFlash > 0) e.hitFlash -= dt;
     const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
 
@@ -3723,7 +3723,7 @@ function draw() {
 function drawVictoryScreen() {
   ctx.fillStyle = '#1a2f4a';
   ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
-  drawPixelText('GANONDORF DEFEATED!', CONFIG.GAME_W / 2, 70, 30, '#ffd84a');
+  drawPixelText('MALREK DEFEATED!', CONFIG.GAME_W / 2, 70, 30, '#ffd84a');
   const secs = Math.floor(victoryStats.timeMs / 1000);
   const mins = Math.floor(secs / 60), rem = secs % 60;
   const lines = [
@@ -4413,7 +4413,7 @@ function drawBossHPBar(g) {
   const w = 320, h = 14, x = 244, y = 24;
   ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 4, y - 20, w + 8, h + 26);
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('GANONDORF - Phase ' + g.phase, x + w / 2, y - 6);
+  ctx.fillText('MALREK - Phase ' + g.phase, x + w / 2, y - 6);
   ctx.fillStyle = '#3a0a0a'; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = g.phase === 3 ? '#ff8020' : g.phase === 2 ? '#c020c0' : '#e02020';
   ctx.fillRect(x, y, w * Math.max(0, g.hp / g.maxHp), h);
