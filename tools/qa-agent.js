@@ -1004,16 +1004,23 @@
     // dialogue box: on-canvas + every NPC line fits
     if (dialogue.active && dialogue.npc) {
       const line = dialogue.npc.lines[dialogue.lineIndex];
-      const tx = scr.find(t => t.t === line);
+      const wrapOf = l => (typeof dialogueWrap === 'function' ? dialogueWrap(l) : [l]);
+      const maxLines = typeof DIALOGUE_MAX_LINES === 'number' ? DIALOGUE_MAX_LINES : 1;
+      const tx = scr.find(t => t.t === wrapOf(line)[0]);
       if (tx && tx.box && !QA.layout.dialogChecked) {
         QA.layout.dialogChecked = true;
         const b = tx.box; QA.layout.dialogBox = fmtR(b);
         if (b.x < 0 || b.y < 0 || b.x + b.w > W || b.y + b.h > H) report('WARNING', 'dialog', 'NPC dialogue box (' + fmtR(b) + ') is partly outside the canvas');
         const all = [];
         try { for (const n of villagerNPCs.concat(cameoNPCs, houseNPCs, shopNPCs, desertShopNPCs)) for (const l of n.lines) all.push({ n: n.name, l }); } catch (e) {}
+        try { for (const sg of owSigns) for (const l of sg.lines) all.push({ n: sg.statue ? 'Owl Statue' : 'Signpost', l }); } catch (e) {}
         for (const it of all) {
-          const w = measureWith(tx.font, it.l);
-          if (tx.l + w > b.x + b.w - 2) report('WARNING', 'dialog', 'Dialogue line by ' + it.n + ' overflows the dialogue box: "' + it.l + '" needs ' + w.toFixed(0) + 'px from x=' + tx.l.toFixed(0) + ', box ends at x=' + (b.x + b.w).toFixed(0), null, 'dlgline|' + it.l);
+          const parts = wrapOf(it.l);
+          if (parts.length > maxLines) report('WARNING', 'dialog', 'Dialogue line by ' + it.n + ' needs ' + parts.length + ' lines (box fits ' + maxLines + '): "' + it.l + '"', null, 'dlgrows|' + it.l);
+          for (const part of parts) {
+            const w = measureWith(tx.font, part);
+            if (tx.l + w > b.x + b.w - 2) report('WARNING', 'dialog', 'Dialogue line by ' + it.n + ' overflows the dialogue box: "' + part + '" needs ' + w.toFixed(0) + 'px from x=' + tx.l.toFixed(0) + ', box ends at x=' + (b.x + b.w).toFixed(0), null, 'dlgline|' + it.l);
+          }
         }
       }
     }

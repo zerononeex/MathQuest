@@ -1162,14 +1162,14 @@ const OW_LAYOUT = {
     { w: 2, pts: [[121, 104], [124, 120], [118, 136]] },
     { w: 2, pts: [[104, 89], [82, 85], [58, 88]] },
     // branches to the landmarks
-    { w: 2, pts: [[58, 88], [44, 81], [32, 72], [23, 64]] },            // Forest Dungeon
+    { w: 2, pts: [[58, 88], [44, 81], [32, 72], [22, 70], [22, 63]] },  // Forest Dungeon (from the south)
     { w: 1, pts: [[62, 70], [50, 54], [40, 44]] },                      // ridge stairs
     { w: 2, pts: [[120, 42], [121, 30], [120, 18]] },                   // castle hill
     { w: 2, pts: [[120, 15], [120, 10]] },
-    { w: 2, pts: [[96, 45], [80, 34], [62, 22], [55, 19]] },            // Shadow Dungeon
+    { w: 2, pts: [[96, 45], [80, 34], [62, 24], [54, 24], [54, 19]] },  // Shadow Dungeon (from the south)
     { w: 2, pts: [[180, 74], [184, 73]] },                              // mountain stairs
     { w: 2, pts: [[184, 70], [186, 60], [198, 52], [212, 47], [222, 43]] }, // switchback on the massif
-    { w: 2, pts: [[222, 40], [220, 32], [214, 25]] },                   // Fire Dungeon on the peak
+    { w: 2, pts: [[222, 40], [220, 32], [214, 30], [214, 25]] },        // Fire Dungeon on the peak
     { w: 1, pts: [[178, 104], [204, 94], [226, 79]] },                  // east stairs loop
     { w: 2, pts: [[164, 122], [172, 134], [180, 140]] },                // desert outpost
     { w: 1, pts: [[180, 140], [192, 136], [200, 131]] },                // mesa stairs
@@ -3686,14 +3686,14 @@ const villagerNPCs = [
 
 const cameoNPCs = [
   makeNPC((overworld.w / 2 - 8) * CONFIG.TILE, (overworld.h / 2 + 2) * CONFIG.TILE, '#e05030',
-    ["Well, well! I've explored many worlds.", "Those clay pots nearby? They love hiding gold coins!", "Keep an eye out, my friend!"],
-    { cameo: true, name: 'Mustachioed Wanderer' }),
+    ["I've charted every road around Willowbrook!", "The road ring loops through every land, so you're never far from home.", "Caves in the cliffs can carry you right across the map!"],
+    { cameo: true, name: 'Wandering Mapmaker' }),
   makeNPC((overworld.w / 2 + 10) * CONFIG.TILE, (overworld.h / 2 + 3) * CONFIG.TILE, '#8a6a4a',
-    ["*thumps chest* Big rocks... heavy!", "Somewhere past the stacked barrels, a hidden dungeon waits.", "Only the strong may move heavy rocks!"],
-    { cameo: true, name: 'Barrel-Loving Ape' }),
+    ["Big boulders block a few nooks out in the wilds.", "They say the Forest Dungeon hides a Titan Bracelet...", "With that, even the heaviest rock will budge!"],
+    { cameo: true, name: 'Old Stonemason' }),
   makeNPC((overworld.w / 2 + 2) * CONFIG.TILE, (overworld.h / 2 - 6) * CONFIG.TILE, '#5030a0',
-    ["Splat! I love ink so much.", "The shop sells something inky, I bet...", "Squid-tastic!"],
-    { cameo: true, name: 'Ink-Splatting Kid' }),
+    ["Did you see the big lake down south?", "A lever on the shore lowers a bridge to the island!", "You have to answer a question to pull it."],
+    { cameo: true, name: 'Curious Kid' }),
 ];
 
 const houseNPCs = [
@@ -3810,7 +3810,7 @@ const TUNIC_SKINS = {
   red: { name: 'Red', body: '#a83f3f', trim: '#5a2020' },
   blue: { name: 'Blue', body: '#3f5fa8', trim: '#20305a' },
   shadow: { name: 'Shadow', body: '#3a2a4a', trim: '#1a1025' },
-  plumber: { name: 'Red Overalls', body: '#c03030', trim: '#1a3a6a' },
+  plumber: { name: 'Crimson Knight', body: '#b8323a', trim: '#e0b040' }, // (key kept for saves)
   golden: { name: 'Golden Hero', body: '#d8b840', trim: '#8a6a10' },
 };
 function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
@@ -3996,7 +3996,11 @@ function trySwingSword() {
   // lunge
   const lunge = 6;
   const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
-  moveWithCollision(hero, dirVec[0] * lunge, dirVec[1] * lunge, currentMap());
+  // never lunge onto a doorway / dungeon stairs: a swing next to an entrance
+  // must not carry the hero inside
+  if (!(world.mode === 'overworld' && overworldTriggerAt(hero.x + dirVec[0] * lunge, hero.y + dirVec[1] * lunge))) {
+    moveWithCollision(hero, dirVec[0] * lunge, dirVec[1] * lunge, currentMap());
+  }
 
   // hit anything within range + facing arc (~120deg)
   const kind = equippedSwordKind();
@@ -4628,7 +4632,7 @@ const SHOP_ITEMS = [
   { id: 'inkBlaster', name: 'Ink Blaster', price: CONFIG.SHOP.inkBlaster, desc: '15s ink blobs slow foes.', consumable: true },
   { id: 'skinRed', name: 'Red Tunic', price: 20, desc: 'A bold red look.', skin: 'red' },
   { id: 'skinBlue', name: 'Blue Tunic', price: 35, desc: 'Cool and calm.', skin: 'blue' },
-  { id: 'skinPlumber', name: 'Red Overalls', price: 60, desc: 'Sturdy work clothes.', skin: 'plumber' },
+  { id: 'skinPlumber', name: 'Crimson Knight', price: 60, desc: 'Knightly red and gold.', skin: 'plumber' },
 ];
 // (ids above are what saves and player.owned use; only display names changed)
 
@@ -6894,6 +6898,14 @@ function drawWeaponSlots() {
   }
 }
 
+// dialogue text wraps inside the box (2 lines fit above the continue hint)
+const DIALOGUE_TEXT_W = CONFIG.GAME_W - 40 - 30, DIALOGUE_MAX_LINES = 2;
+function dialogueWrap(text) {
+  ctx.save(); ctx.font = '14px monospace';
+  const out = wrapTextLines(text, DIALOGUE_TEXT_W);
+  ctx.restore();
+  return out;
+}
 function drawDialogueBox() {
   const boxH = 90;
   ctx.fillStyle = 'rgba(15,15,30,0.92)';
@@ -6905,8 +6917,8 @@ function drawDialogueBox() {
   ctx.fillText(dialogue.npc.name, 34, CONFIG.GAME_H - boxH + 4);
 
   ctx.fillStyle = '#ffffff'; ctx.font = '14px monospace';
-  const line = dialogue.npc.lines[dialogue.lineIndex] || '';
-  ctx.fillText(line, 34, CONFIG.GAME_H - boxH + 32);
+  const lines = dialogueWrap(dialogue.npc.lines[dialogue.lineIndex] || '');
+  lines.slice(0, DIALOGUE_MAX_LINES).forEach((l, i) => ctx.fillText(l, 34, CONFIG.GAME_H - boxH + 32 + i * 18));
 
   ctx.fillStyle = '#aaaaaa'; ctx.font = '11px monospace'; ctx.textAlign = 'right';
   ctx.fillText('E / Enter / tap to continue', CONFIG.GAME_W - 34, CONFIG.GAME_H - 24);
