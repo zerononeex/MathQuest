@@ -1498,6 +1498,9 @@ function mapKind(mapData) {
 // what the ground looks like under props (trees, signs, buildings, stairs)
 function overworldGroundKind(gx, gy) {
   const r = regionAt(gx, gy);
+  // the mountain massif and peak: rocky ground in patches over the grass
+  if (r === 'mountain' && overworld.hgt && overworld.hgt[gy] && overworld.hgt[gy][gx] >= 1 &&
+      fbm(gx / 6, gy / 6, 77) + overworld.hgt[gy][gx] * 0.12 > 0.62) return 'rock';
   if (r === 'darkness') return 'dark';
   if (r === 'desert') return 'sand';
   return 'grass';
@@ -1554,7 +1557,17 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
     case T.PROP: case T.BOULDER: case T.CRACKED: // ground only; the object is a y-sorted prop (owPropItems)
       drawGroundKind(octx, kind === 'overworld' ? overworldGroundKind(gx, gy) : 'grass', px, py, gx, gy);
       break;
-    case T.GRASS: drawGroundKind(octx, 'grass', px, py, gx, gy); break;
+    case T.GRASS: {
+      const gk = kind === 'overworld' ? overworldGroundKind(gx, gy) : 'grass';
+      drawGroundKind(octx, gk, px, py, gx, gy);
+      if (gk === 'rock') { // mountain rock patch: grass fringe spills over its edges, like a path
+        for (const [dx, dy, rot] of _SIDES) {
+          const n = neighborTile(mapData, gx, gy, dx, dy);
+          if ((n === T.GRASS || n === T.TREE) && overworldGroundKind(gx + dx, gy + dy) === 'grass') drawTileImg(octx, 'edgeGrassN', px, py, rot);
+        }
+      }
+      break;
+    }
     case T.DARKGRASS: drawGroundKind(octx, 'dark', px, py, gx, gy); break;
     case T.SNOW: drawGroundKind(octx, 'snow', px, py, gx, gy); break;
     case T.TREE: {
