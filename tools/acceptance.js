@@ -6,6 +6,10 @@ const fs = require('fs');
 const puppeteer = require('puppeteer');
 
 const results = [];
+function buildings_ok(r) {
+  const names = Object.keys(r).filter(k => k !== 'exception');
+  return names.length >= 3 && names.every(n => r[n].entered >= 0 && r[n].flips === 1 && r[n].stillInside);
+}
 function check(name, ok, detail) {
   results.push({ name, ok, detail });
   console.log((ok ? 'PASS' : 'FAIL') + ' - ' + name + (detail ? ' (' + detail + ')' : ''));
@@ -847,6 +851,41 @@ function check(name, ok, detail) {
     check('Overworld: a cave carries the hero to its twin; ledges hop south and block north', r.caveOk && r.hopped && r.ledgeBlocksNorth, J(r));
     check('Overworld: bridge / boulder / rock / chests stay changed after save + reload', back.bridge && back.boulder && back.rock && back.chests >= 2, J(back));
     await ow.close();
+  }
+
+  // --- Tapping a building's door (iPad) enters it and STAYS inside: the tap's
+  // walk target used to survive the fade, walking the hero straight back out ---
+  {
+    const tp = await browser.newPage();
+    tp.on('pageerror', e => errorsAll.push('tapdoor: ' + e.message));
+    await tp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await tp.evaluate(() => {
+      const out = {};
+      try {
+        startNewGame(); player.invincibleT = 999;
+        for (const e of wildsEnemies.concat(overworldEnemies)) e.alive = false;
+        const TS = CONFIG.TILE;
+        for (const b of buildings) {
+          world.mode = 'overworld'; world.interior = null; dialogue.active = false; shop.active = false;
+          hero.x = (b.doorTileX + 0.5) * TS; hero.y = (b.doorTileY + 4.5) * TS; hero.walkTargetX = null;
+          for (let k = 0; k < 30; k++) updateCamera(1);
+          Input.tapX = (b.doorTileX + 0.5) * TS - world.camX; Input.tapY = (b.doorTileY + 0.5) * TS - world.camY; Input.tapped = true;
+          let entered = -1, flips = 0, last = world.mode;
+          for (let i = 0; i < 240; i++) {
+            updatePlaying(1 / 60); updateCamera(1 / 60);
+            if (fadeCallback) { const f = fadeCallback; fadeCallback = null; f(); fadeAlpha = 0; fadeDir = 0; }
+            if (world.mode !== last) { flips++; last = world.mode; }
+            if (world.mode === 'interior' && entered < 0) entered = i;
+          }
+          out[b.name] = { entered, flips, stillInside: world.mode === 'interior' && world.interior === b.interior };
+        }
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Tapping each building door enters it and stays inside (no in/out loop)',
+      !r.exception && buildings_ok(r), JSON.stringify(r));
+    await tp.close();
   }
 
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct

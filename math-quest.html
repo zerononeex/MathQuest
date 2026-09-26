@@ -5523,8 +5523,18 @@ function updatePlaying(dt) {
 }
 
 let fadeAlpha = 0, fadeDir = 0, fadeCallback = null;
+// Every map change (door, dungeon, room, cave, castle) goes through here.
+// A pending tap-walk / tap-attack / tap-interact is in the OLD map's
+// coordinates, so it is dropped both when the fade starts and when the new
+// map appears - otherwise tapping a door walked the hero straight back out
+// over the interior's exit rug, in and out forever.
+function clearHeroIntent() {
+  hero.walkTargetX = null; hero.walkTargetY = null;
+  hero.pendingAttackTarget = null; hero.pendingTalkTarget = null; hero.pendingInteract = null;
+}
 function fadeTo(callback) {
-  fadeDir = 1; fadeCallback = callback;
+  clearHeroIntent();
+  fadeDir = 1; fadeCallback = () => { callback(); clearHeroIntent(); };
 }
 function updateFade(dt) {
   if (fadeDir !== 0) {
