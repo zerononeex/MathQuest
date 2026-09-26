@@ -149,14 +149,18 @@ function shuffle3(correct, wrongA, wrongB) {
   }
   return { answers: arr.map(a => String(a.v)), correctIndex: arr.findIndex(a => a.correct) };
 }
+// Two wrong answers within +-spread of the correct one: never negative, never
+// equal to the correct answer or to each other (a duplicate "7" among the
+// choices made a right answer count as wrong when the other copy was tapped).
 function plausibleWrongs(correct, spread) {
-  let a = correct + (Math.floor(Math.random() * spread) + 1) * (Math.random() < 0.5 ? -1 : 1);
-  let b = correct + (Math.floor(Math.random() * spread) + 1) * (Math.random() < 0.5 ? -1 : 1);
-  if (a < 0) a = correct + Math.abs(a) + 1;
-  if (b < 0) b = correct + Math.abs(b) + 1;
-  if (a === correct) a += 1;
-  if (b === correct || b === a) b = a + 1;
-  return [a, b];
+  const out = [];
+  const ok = v => v >= 0 && v !== correct && !out.includes(v);
+  for (let tries = 0; out.length < 2 && tries < 40; tries++) {
+    const v = correct + (Math.floor(Math.random() * spread) + 1) * (Math.random() < 0.5 ? -1 : 1);
+    if (ok(v)) out.push(v);
+  }
+  for (let v = correct + 1; out.length < 2; v++) if (ok(v)) out.push(v);
+  return out;
 }
 
 const QUESTION_BANK = {
