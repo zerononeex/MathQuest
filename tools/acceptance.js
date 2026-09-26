@@ -218,14 +218,17 @@ function check(name, ok, detail) {
         const openAfterDefeat = d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1] === 4;
         dungeonGoRoom(d, 3, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
         hero.x = (Math.floor(d.rooms[3].w / 2) + 0.5) * 16; hero.y = (Math.floor(d.rooms[3].h / 2) + 0.5) * 16;
-        // chest without boss key -> hint, no freeze
+        // chest without boss key -> hint, no freeze. E goes through the real
+        // per-frame update (updatePlaying), not a direct handler call: that
+        // is how "E on the chest does nothing" slipped past this check.
+        player.levelUpChoicePending = false; dialogue.active = false; mathPopup.active = false;
         d.hasBossKey = false;
         Input.keys['e'] = true;
-        handleDungeonDoors(d, d.rooms[3], 0.016);
+        updatePlaying(1 / 60);
         const chestRefusedWithoutKey = !d.chestOpened;
         d.hasBossKey = true;
         Input.keys['e'] = true;
-        handleDungeonDoors(d, d.rooms[3], 0.016);
+        updatePlaying(1 / 60);
         out.push({
           id: d.def.id, lockedOk, doorOpened, puzzleOk, sealedBeforeDefeat, openAfterDefeat,
           chestRefusedWithoutKey, chestOpened: d.chestOpened, medallion: player.medallions[d.def.id],
@@ -278,8 +281,9 @@ function check(name, ok, detail) {
         const inTreasure = d.roomIndex === 3;
         // and open the boss treasure with the key
         hero.x = (Math.floor(tr.w / 2) + 0.5) * TS; hero.y = (Math.floor(tr.h / 2) + 0.5) * TS;
+        player.levelUpChoicePending = false;
         Input.keys['e'] = true;
-        handleDungeonDoors(d, tr, 1 / 60);
+        updatePlaying(1 / 60);
         out.push({ id: d.def.id, boss: d.def.bossKind, hits, flagged, heartPiece, doorOpen, inTreasure, chestOpened: d.chestOpened });
       } catch (err) {
         out.push({ id: d.def.id, exception: err.message });
@@ -292,6 +296,116 @@ function check(name, ok, detail) {
     if (br.exception) { check('Boss ' + br.id + ' kill -> Boss Key', false, br.exception); continue; }
     check('Dungeon ' + br.id + ' (' + br.boss + '): killing the boss by hits gives the Boss Key, unseals the door, treasure opens',
       br.flagged && br.heartPiece && br.doorOpen && br.inTreasure && br.chestOpened, JSON.stringify(br));
+  }
+
+  // --- Interactions through the real per-frame update (one dispatcher for
+  // E and taps): dungeon chests by E and by tap, Fire Dungeon torches ---
+  const interactResults = await page.evaluate(() => {
+    const out = { chestE: [], chestTap: [] };
+    try {
+      const TS = CONFIG.TILE;
+      const clearModals = () => {
+        dialogue.active = false; mathPopup.active = false; shop.active = false; pauseMenu.active = false;
+        wardrobe.active = false; player.levelUpChoicePending = false; player.downed = false; player.invincibleT = 999;
+        fadeAlpha = 0; fadeDir = 0; fadeCallback = null; Input.tapped = false;
+        for (const k of Object.keys(Input.keys)) Input.keys[k] = false;
+        hero.walkTargetX = null; hero.walkTargetY = null; hero.pendingAttackTarget = null; hero.pendingTalkTarget = null; hero.pendingInteract = null;
+      };
+      const step = n => {
+        for (let i = 0; i < n; i++) {
+          updatePlaying(1 / 60);
+          if (fadeCallback) { const f = fadeCallback; fadeCallback = null; f(); fadeAlpha = 0; fadeDir = 0; }
+        }
+      };
+      const enterTreasure = d => {
+        clearModals();
+        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 3; d.hasBossKey = true;
+        const tr = d.rooms[3];
+        tr.grid[Math.floor(tr.h / 2)][Math.floor(tr.w / 2)] = T.CHEST; tr.canvas = prerenderMap(tr);
+        d.chestOpened = false; player.medallions[d.def.id] = false;
+      };
+      for (const d of dungeons) {
+        const id = d.def.id, tr = d.rooms[3], cx = Math.floor(tr.w / 2), cy = Math.floor(tr.h / 2);
+        // (a) stand on the tile west of the chest, face it, press E
+        enterTreasure(d);
+        hero.x = (cx - 0.5) * TS; hero.y = (cy + 0.5) * TS; hero.facing = 'right';
+        step(2);
+        Input.keys['e'] = true; step(1);
+        out.chestE.push({ id, opened: d.chestOpened, medallion: !!player.medallions[id] });
+        // (b) from the room entrance, tap the chest: walk there, then open
+        enterTreasure(d);
+        hero.x = 2 * TS; hero.y = cy * TS;
+        step(2);
+        Input.tapX = (cx + 0.5) * TS - world.camX; Input.tapY = (cy + 0.5) * TS - world.camY; Input.tapped = true;
+        let frames = 0;
+        while (!d.chestOpened && frames++ < 600) step(1);
+        out.chestTap.push({ id, opened: d.chestOpened, medallion: !!player.medallions[id], frames });
+      }
+      // (c) Fire Dungeon torches: stand on each in order, press E
+      const fire = dungeons.find(d => d.def.id === 'fire'), pz = fire.puzzle, pr = fire.rooms[1], midY = Math.floor(pr.h / 2);
+      const resetTorches = () => {
+        clearModals();
+        world.mode = 'dungeon'; world.dungeon = fire; world.interior = null; fire.roomIndex = 1;
+        pz.solved = false; pz.lit = []; pr.grid[midY][pr.w - 1] = T.WALL; pr.canvas = prerenderMap(pr);
+      };
+      resetTorches();
+      const litAfter = [];
+      for (const i of pz.order) {
+        const t = pz.torches[i];
+        hero.x = (t.x + 0.5) * TS; hero.y = (t.y + 0.5) * TS;
+        step(1);
+        Input.keys['e'] = true; step(1);
+        litAfter.push(pz.lit.length);
+      }
+      out.torchesE = { litAfter, solved: pz.solved, doorOpen: pr.grid[midY][pr.w - 1] === T.FLOOR };
+      // and by tap: tap torch 0 from across the room, the hero walks over and lights it
+      resetTorches();
+      hero.x = 2 * TS; hero.y = midY * TS; step(2);
+      const t0 = pz.torches[pz.order[0]];
+      Input.tapX = (t0.x + 0.5) * TS - world.camX; Input.tapY = (t0.y + 0.5) * TS - world.camY; Input.tapped = true;
+      let tf = 0;
+      while (!pz.lit.length && tf++ < 600) step(1);
+      out.torchTap = { lit: pz.lit.slice(), frames: tf };
+      pz.solved = true; pr.grid[midY][pr.w - 1] = T.FLOOR; pr.canvas = prerenderMap(pr);
+    } catch (e) { out.exception = e.message + ' ' + (e.stack || '').split('\n')[1]; }
+    player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null;
+    hero.x = (overworld.w / 2) * CONFIG.TILE; hero.y = (overworld.h / 2 + 2) * CONFIG.TILE;
+    return out;
+  });
+  if (interactResults.exception) check('Interaction dispatcher checks ran', false, interactResults.exception);
+  check('E beside a dungeon chest (with Boss Key) opens it and grants the medallion, all 4 dungeons',
+    interactResults.chestE.length === 4 && interactResults.chestE.every(c => c.opened && c.medallion), JSON.stringify(interactResults.chestE));
+  check('Tapping a dungeon chest walks to it, opens it and grants the medallion, all 4 dungeons',
+    interactResults.chestTap.length === 4 && interactResults.chestTap.every(c => c.opened && c.medallion), JSON.stringify(interactResults.chestTap));
+  check('Fire Dungeon: E on each torch in order lights it and opens the way east',
+    !!interactResults.torchesE && interactResults.torchesE.litAfter.join() === '1,2,3' && interactResults.torchesE.solved && interactResults.torchesE.doorOpen,
+    JSON.stringify(interactResults.torchesE) + ' tap:' + JSON.stringify(interactResults.torchTap));
+  check('Fire Dungeon: tapping a torch walks to it and lights it',
+    !!interactResults.torchTap && interactResults.torchTap.lit.length === 1, JSON.stringify(interactResults.torchTap));
+
+  // --- (d) Nothing spawns inside solid terrain: fresh page, every enemy /
+  // pot / NPC hitbox (moveWithCollision's corner test) must be clear ---
+  {
+    const sp = await browser.newPage();
+    sp.on('pageerror', e => errorsAll.push('spawns: ' + e.message));
+    await sp.goto(file, { waitUntil: 'load' });
+    const bad = await sp.evaluate(() => {
+      const out = [];
+      const hits = (map, e) => {
+        const hw = (e.w || 12) / 2, hh = (e.h || 12) / 2;
+        return [[e.x - hw, e.y - hh], [e.x + hw, e.y - hh], [e.x - hw, e.y + hh - 1], [e.x + hw, e.y + hh - 1]].some(c => tileSolidAt(map, c[0], c[1]));
+      };
+      const chk = (map, list, where) => { for (const e of list) if (hits(map, e)) out.push(where + ' ' + (e.type || (e.isBush ? 'bush' : e.name || 'pot')) + ' @' + Math.round(e.x) + ',' + Math.round(e.y)); };
+      chk(overworld, overworldEnemies.concat(wildsEnemies), 'overworld enemy');
+      chk(overworld, overworldPots.concat(wildsPots, wildsBushes), 'overworld');
+      chk(overworld, villagerNPCs.concat(cameoNPCs), 'overworld NPC');
+      chk(houseInterior, houseNPCs, 'house NPC'); chk(shopInterior, shopNPCs, 'shop NPC'); chk(desertShopInterior, desertShopNPCs, 'desert shop NPC');
+      for (const d of dungeons) d.rooms.forEach((r, i) => chk(r, d.enemies[i].concat(d.pots[i]), d.def.id + ':' + i));
+      castle.rooms.forEach((r, i) => chk(r.map, r.enemies.concat(r.pots), 'castle:' + i));
+      return out;
+    });
+    check('No enemy / pot / NPC spawns with its hitbox inside a solid tile', bad.length === 0, bad.slice(0, 10).join('; '));
+    await sp.close();
   }
 
   // --- Bow slot, arrow cycling, arrows clink off walls ---

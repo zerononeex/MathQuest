@@ -1922,22 +1922,33 @@ overworldCanvas = prerenderMap(overworld); // re-render with buildings + dungeon
 // move was rejected (the reported "freeze"). Search outward for the nearest
 // spot whose whole hitbox is clear and that isn't itself an entrance trigger.
 function overworldReturnSpot(x, y) {
-  const hw = hero.w / 2, hh = hero.h / 2;
-  const inZone = (px, py, z) => z && px >= z.minX && px <= z.maxX && py >= z.minY && py <= z.maxY;
-  const ok = (px, py) => {
-    const corners = [[px - hw, py - hh], [px + hw, py - hh], [px - hw, py + hh - 1], [px + hw, py + hh - 1]];
-    if (corners.some(c => tileSolidAt(overworld, c[0], c[1]))) return false;
-    if (dungeons.some(d => inZone(px, py, d.entranceZone))) return false;
-    if (buildings.some(b => inZone(px, py, b.activation))) return false;
-    return !inZone(px, py, castleGate.zone);
-  };
+  return findClearSpot(overworld, x, y, hero.w, hero.h, overworldTriggerAt, 6);
+}
+function inZoneRect(px, py, z) { return !!z && px >= z.minX && px <= z.maxX && py >= z.minY && py <= z.maxY; }
+// true if (px, py) is inside a building / dungeon / castle entrance trigger
+function overworldTriggerAt(px, py) {
+  return dungeons.some(d => inZoneRect(px, py, d.entranceZone)) ||
+    buildings.some(b => inZoneRect(px, py, b.activation)) || inZoneRect(px, py, castleGate.zone);
+}
+// true if a w x h box centred on (px, py) touches a solid tile (the same
+// corner test moveWithCollision uses)
+function boxHitsSolid(map, px, py, w, h) {
+  const hw = w / 2, hh = h / 2;
+  return tileSolidAt(map, px - hw, py - hh) || tileSolidAt(map, px + hw, py - hh) ||
+    tileSolidAt(map, px - hw, py + hh - 1) || tileSolidAt(map, px + hw, py + hh - 1);
+}
+// Nearest spot to (x, y) where a w x h box is clear of solid tiles (and not
+// rejected by `reject(px, py)`), searching outward ring by ring over tile
+// centres so the box sits cleanly in a tile. Returns (x, y) itself when it is
+// already fine, or unchanged if nothing within maxR tiles fits.
+function findClearSpot(map, x, y, w, h, reject, maxR) {
+  const ok = (px, py) => !boxHitsSolid(map, px, py, w, h) && !(reject && reject(px, py));
   if (ok(x, y)) return { x, y };
   const T0 = CONFIG.TILE;
-  for (let r = 1; r <= 6; r++) {
+  for (let r = 0; r <= (maxR || 8); r++) {
     let best = null, bestD = Infinity;
     for (let oy = -r; oy <= r; oy++) for (let ox = -r; ox <= r; ox++) {
       if (Math.max(Math.abs(ox), Math.abs(oy)) !== r) continue;
-      // snap candidates to tile centres so the hitbox sits cleanly in a tile
       const px = (Math.floor(x / T0) + ox + 0.5) * T0, py = (Math.floor(y / T0) + oy + 0.5) * T0;
       const dd = Math.hypot(px - x, py - y);
       if (dd < bestD && ok(px, py)) { best = { x: px, y: py }; bestD = dd; }
@@ -1945,6 +1956,18 @@ function overworldReturnSpot(x, y) {
     if (best) return best;
   }
   return { x, y };
+}
+// Move a spawned entity (enemy / pot / NPC) out of solid terrain onto the
+// nearest walkable tile. Bats hover around baseX/baseY, so those move too.
+function settleSpawn(ent, map, reject) {
+  const TS = CONFIG.TILE;
+  const cx = Math.max(TS * 1.5, Math.min((map.w - 1.5) * TS, ent.x)), cy = Math.max(TS * 1.5, Math.min((map.h - 1.5) * TS, ent.y));
+  const sp = findClearSpot(map, cx, cy, ent.w || 12, ent.h || 12, reject, 8);
+  if (sp.x === ent.x && sp.y === ent.y) return false;
+  if (ent.baseX !== undefined) ent.baseX += sp.x - ent.x;
+  if (ent.baseY !== undefined) ent.baseY += sp.y - ent.y;
+  ent.x = sp.x; ent.y = sp.y;
+  return true;
 }
 function enterDungeon(d) {
   if (world.mode !== 'overworld') return;
@@ -1973,7 +1996,7 @@ function dungeonGoRoom(d, newIndex, fromEdge) {
     hero.y = Math.floor(room.h / 2) * CONFIG.TILE;
     if (newIndex === 2 && !d.bossDefeated) {
       const bk = d.def.bossKind;
-      if (bk && NEW_BOSS_DEFS[bk]) showHint(NEW_BOSS_DEFS[bk].name + ' - ' + NEW_BOSS_DEFS[bk].flavor, 2.5);
+      if (bk && NEW_BOSS_DEFS[bk]) showHint(NEW_BOSS_DEFS[bk].name + '\n' + NEW_BOSS_DEFS[bk].flavor, 3);
     }
     saveGame(); // auto-save on entering a new dungeon room
   });
@@ -1998,18 +2021,7 @@ function updateDungeonPuzzle(d, dt) {
     const sx = (p.switchX + 0.5) * CONFIG.TILE, sy = (p.switchY + 0.5) * CONFIG.TILE;
     if (Math.hypot(p.block.x - sx, p.block.y - sy) < 10) solvePuzzle(d, room);
   } else if (p.type === 'torches') {
-    for (let i = 0; i < p.torches.length; i++) {
-      const t = p.torches[i];
-      const wx = (t.x + 0.5) * CONFIG.TILE, wy = (t.y + 0.5) * CONFIG.TILE;
-      if (Math.hypot(hero.x - wx, hero.y - wy) < 16 && (Input.keys['e'] || Input.keys['E'])) {
-        Input.keys['e'] = Input.keys['E'] = false;
-        if (!p.lit.includes(i)) {
-          const expectedNext = p.order[p.lit.length];
-          if (i === expectedNext) { p.lit.push(i); if (p.lit.length === p.order.length) solvePuzzle(d, room); }
-          else { p.lit = []; showHint('The torches went dark... try again!', 1.5); }
-        }
-      }
-    }
+    // lit via the interaction dispatcher (E / tap), see lightTorch()
   } else if (p.type === 'switches') {
     for (let i = 0; i < p.switches.length; i++) {
       const s = p.switches[i];
@@ -2075,26 +2087,101 @@ function handleDungeonDoors(d, room, dt) {
       d.doorHintShown.boss = false;
     }
   }
-  // boss-treasure chest
-  if (d.roomIndex === 3 && !d.chestOpened) {
-    const cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
-    if (room.grid[cy][cx] === T.CHEST) {
-      const chestX = (cx + 0.5) * CONFIG.TILE, chestY = (cy + 0.5) * CONFIG.TILE;
-      const nearChest = Math.hypot(hero.x - chestX, hero.y - chestY) < 18 &&
-        (Input.keys['e'] || Input.keys['E'] || hero.pendingAttackTarget === null && chestTapped(chestX, chestY));
-      if (nearChest) {
-        Input.keys['e'] = Input.keys['E'] = false;
-        if (d.hasBossKey) openDungeonChest(d);
-        else if (!d.doorHintShown.chest) { showHint('Needs the Boss Key!', 1.8); d.doorHintShown.chest = true; }
+  // the boss-treasure chest is opened through the interaction dispatcher
+  // (E / tap), see worldInteractables() - never by reading input here.
+}
+
+// =========================================================================
+// Interactions: ONE dispatcher for the E key and taps on world objects.
+// updatePlaying() reads each input once per step and resolves it in a fixed
+// priority order, so no handler can swallow input another one needs (the
+// old per-feature E/tap reads ran in sequence and the first consumed it,
+// which left dungeon chests and Fire Dungeon torches unusable):
+//   modal UI (earlier in updatePlaying) > chest / torch > pot > NPC talk
+//   and, for taps, > enemy > pot > NPC > plain tap-to-move.
+// An interactable is { kind, key, x, y, range, act }; the hero must be
+// within `range` of (x, y); a tap within INTERACT_TAP_R of it targets it
+// (the hero walks there first, then acts).
+// =========================================================================
+const INTERACT_TAP_R = 18;
+function worldInteractables() {
+  const list = [], TS = CONFIG.TILE;
+  if (world.mode === 'dungeon' && world.dungeon) {
+    const d = world.dungeon, room = d.rooms[d.roomIndex];
+    if (d.roomIndex === 3 && !d.chestOpened) {
+      const cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
+      if (room.grid[cy][cx] === T.CHEST) {
+        list.push({ kind: 'chest', key: 'chest:' + d.def.id, x: (cx + 0.5) * TS, y: (cy + 0.5) * TS, range: 24,
+          act: () => { if (d.hasBossKey) openDungeonChest(d); else showHint('Needs the Boss Key!', 1.8); } });
       }
     }
+    const p = d.puzzle;
+    if (d.roomIndex === 1 && p && !p.solved && p.type === 'torches') {
+      p.torches.forEach((t, i) => {
+        if (p.lit.includes(i)) return;
+        list.push({ kind: 'torch', key: 'torch:' + d.def.id + ':' + i, x: (t.x + 0.5) * TS, y: (t.y + 0.5) * TS, range: 24,
+          act: () => lightTorch(d, room, i) });
+      });
+    }
+  }
+  return list;
+}
+function lightTorch(d, room, i) {
+  const p = d.puzzle;
+  if (!p || p.solved || p.lit.includes(i)) return;
+  if (i === p.order[p.lit.length]) {
+    p.lit.push(i);
+    SFX.fireWhoosh();
+    if (p.lit.length === p.order.length) solvePuzzle(d, room);
+  } else {
+    p.lit = [];
+    showHint('The torches went dark... try again!', 1.5);
   }
 }
-function chestTapped(cx, cy) {
-  if (!Input.tapped) return false;
-  const wp = worldPointFromScreen(Input.tapX, Input.tapY);
-  if (Math.hypot(wp.x - cx, wp.y - cy) < 18) { Input.tapped = false; return true; }
+function nearestWithin(list, x, y, rangeOf) {
+  let best = null, bestD = Infinity;
+  for (const o of list) {
+    const dd = Math.hypot(o.x - x, o.y - y);
+    if (dd < rangeOf(o) && dd < bestD) { best = o; bestD = dd; }
+  }
+  return best;
+}
+// E pressed: act on the highest-priority thing within reach. True if handled.
+function interactFromKey() {
+  const obj = nearestWithin(worldInteractables(), hero.x, hero.y, o => o.range);
+  if (obj) { obj.act(); return true; }
+  const pot = nearestWithin(currentPots().filter(p => p.alive), hero.x, hero.y, () => CONFIG.SWORD_RANGE);
+  if (pot) { smashPot(pot); return true; }
+  const npc = nearestWithin(allNPCs(), hero.x, hero.y, () => CONFIG.NPC_TALK_RANGE + 20);
+  if (npc) { openDialogue(npc); return true; }
   return false;
+}
+// Tap on an interactable: act now if in reach, else walk to it and act on
+// arrival (updatePendingInteract). True if the tap was an interaction.
+function interactFromTap(wp) {
+  const obj = nearestWithin(worldInteractables(), wp.x, wp.y, () => INTERACT_TAP_R);
+  if (!obj) return false;
+  hero.pendingAttackTarget = null; hero.pendingTalkTarget = null;
+  if (Math.hypot(obj.x - hero.x, obj.y - hero.y) < obj.range) {
+    hero.pendingInteract = null; hero.walkTargetX = null; hero.walkTargetY = null;
+    obj.act();
+  } else {
+    hero.pendingInteract = { key: obj.key, map: currentMap() };
+    hero.walkTargetX = obj.x; hero.walkTargetY = obj.y;
+  }
+  return true;
+}
+function updatePendingInteract() {
+  const pi = hero.pendingInteract;
+  if (!pi) return;
+  const obj = pi.map === currentMap() ? worldInteractables().find(o => o.key === pi.key) : null;
+  if (!obj) { hero.pendingInteract = null; return; }
+  if (Math.hypot(obj.x - hero.x, obj.y - hero.y) < obj.range) {
+    hero.pendingInteract = null; hero.walkTargetX = null; hero.walkTargetY = null;
+    obj.act();
+  } else if (hero.walkTargetX === null) {
+    hero.pendingInteract = null; // walk ended (blocked or cancelled) out of reach
+  }
 }
 
 const ABILITY_BY_DUNGEON = {
@@ -2220,7 +2307,8 @@ function updateDungeonRoom(dt, room) {
       }
     }
     e.hopDx *= 0.92; e.hopDy *= 0.92;
-    moveWithCollision(e, e.hopDx * dt, e.hopDy * dt, room);
+    const sf = enemySlowFactor(e);
+    moveWithCollision(e, e.hopDx * dt * sf, e.hopDy * dt * sf, room);
     if (!e.alive) continue;
     if (Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) damageHero(e.bossKind === 'grovak' || e.bossKind === 'malrek' ? 2 : 1, e.x, e.y);
   }
@@ -2291,8 +2379,8 @@ const castle = buildCastle();
 function castleEntranceCheck() {
   const n = medallionCount();
   if (n < 4) {
-    const missing = missingMedallionNames().join(', ');
-    showHint('The castle door needs all 4 medallions (' + n + '/4). Missing: ' + missing, 2.5);
+    const missing = missingMedallionNames().map(m => m.replace(' Medallion', '')).join(', ');
+    showHint('The castle needs 4 medallions (' + n + '/4). Missing: ' + missing, 3);
     return false;
   }
   return true;
@@ -2356,7 +2444,7 @@ function updateGanon(dt, map) {
     g.telegraph -= dt;
     if (g.telegraph <= 0) ganonUnleashAttack(g);
   } else {
-    g.attackTimer -= dt;
+    g.attackTimer -= dt * enemySlowFactor(g);
     if (g.attackTimer <= 0) {
       g.attackTimer = CONFIG.GANON_ATTACK_INTERVAL * speedMult;
       g.telegraph = 0.5; // flash/wind-up before the attack lands
@@ -2364,7 +2452,7 @@ function updateGanon(dt, map) {
   }
 
   if (g.phase >= 2) {
-    g.teleportCooldown -= dt;
+    g.teleportCooldown -= dt * enemySlowFactor(g);
     if (g.teleportCooldown <= 0) {
       g.teleportCooldown = 3.5 * speedMult;
       const ang = Math.random() * Math.PI * 2;
@@ -2549,7 +2637,9 @@ const shopNPCs = [shopkeeper];
 
 // desert outpost town NPCs (map tiles/building were carved earlier at
 // map-build time; the NPC objects need makeNPC/villagerNPCs to exist first)
-const desertShopkeeper = makeNPC((desertTownSpot.x + 0) * CONFIG.TILE, (desertTownSpot.y - 2) * CONFIG.TILE, '#c8a030',
+// interior coordinates (same spot as the town shopkeeper): this used to use
+// overworld coordinates, which put him outside the shop room entirely
+const desertShopkeeper = makeNPC(4 * CONFIG.TILE, 3 * CONFIG.TILE, '#c8a030',
   ['Welcome to the Desert Outpost!'], { home: 'desertShop', sprite: 'shopkeeper' });
 desertShopkeeper.isShopkeeper = true;
 const desertShopNPCs = [desertShopkeeper];
@@ -2590,6 +2680,21 @@ function advanceDialogue() {
 const hud = { gold: 0, hintText: '', hintTimer: 0 };
 function showHint(text, seconds) {
   hud.hintText = text; hud.hintTimer = seconds || 2;
+}
+const HINT_MAX_W = 600; // hint banner max width (game px), text wraps inside
+// Greedy word wrap with the current ctx.font; a single over-long word is
+// kept on its own line rather than split.
+function wrapTextLines(text, maxW) {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (const w of para.split(' ')) {
+      const t = line ? line + ' ' + w : w;
+      if (line && ctx.measureText(t).width > maxW) { out.push(line); line = w; } else line = t;
+    }
+    out.push(line);
+  }
+  return out;
 }
 
 // =========================================================================
@@ -2733,6 +2838,26 @@ function spawnEnemies() {
 }
 const overworldEnemies = spawnEnemies();
 
+// Every spawn goes through settleSpawn() once the maps are final (map
+// carving - buildings, dungeon entrances, the tree-walled secret clearing -
+// happens after some spawn spots were picked, and a few hand-placed spots sit
+// on cliffs): nothing may start with its hitbox inside a solid tile.
+function allSpawnGroups() {
+  const groups = [
+    { map: overworld, list: overworldEnemies.concat(wildsEnemies, overworldPots, wildsPots, wildsBushes, villagerNPCs, cameoNPCs), reject: overworldTriggerAt },
+    { map: houseInterior, list: houseNPCs }, { map: shopInterior, list: shopNPCs }, { map: desertShopInterior, list: desertShopNPCs },
+  ];
+  for (const d of dungeons) d.rooms.forEach((room, i) => groups.push({ map: room, list: d.enemies[i].concat(d.pots[i]) }));
+  castle.rooms.forEach(r => groups.push({ map: r.map, list: r.enemies.concat(r.pots) }));
+  return groups;
+}
+function settleAllSpawns() {
+  let moved = 0;
+  for (const g of allSpawnGroups()) for (const ent of g.list) if (settleSpawn(ent, g.map, g.reject)) moved++;
+  return moved;
+}
+settleAllSpawns();
+
 let cachedOverworldPots = null;
 function currentPots() {
   if (world.mode === 'dungeon') return world.dungeon.pots[world.dungeon.roomIndex];
@@ -2755,9 +2880,11 @@ function tierHeartChance() { return CONFIG.HEART_DROP_CHANCE[CONFIG.DIFFICULTY];
 
 function damageEnemy(e, weaponKind) {
   if (e.isBoss) { damageGanon(e, weaponKind); return; }
-  const dmg = computeDamage(weaponKind, e.defense);
+  hurtEnemy(e, computeDamage(weaponKind, e.defense), '#ffffff');
+}
+function hurtEnemy(e, dmg, color) {
   e.hp -= dmg; e.hitFlash = 0.1;
-  spawnFloatingText(e.x, e.y - 10, '-' + dmg, '#ffffff');
+  spawnFloatingText(e.x, e.y - 10, '-' + dmg, color || '#ffffff');
   if (e.hp <= 0 && e.alive) {
     e.alive = false;
     SFX.defeat();
@@ -2851,11 +2978,6 @@ function updateBoomerangs(dt, map) {
   }
 }
 
-function faceToward(x, y) {
-  const dx = x - hero.x, dy = y - hero.y;
-  if (Math.abs(dx) > Math.abs(dy)) hero.facing = dx < 0 ? 'left' : 'right';
-  else hero.facing = dy < 0 ? 'up' : 'down';
-}
 function fireActiveWeapon() {
   const w = player.slots[player.activeSlot];
   if (w === 'boomerang' || w === 'galeBoomerang') throwBoomerang();
@@ -3042,11 +3164,50 @@ function damageHero(amount, fromX, fromY) {
 let shakeT = 0, shakeMag = 0;
 function screenShake(mag, dur) { shakeMag = mag; shakeT = dur; }
 
+// --- Fire / Ice arrow status effects (burnT / slowT are set in updateArrows) ---
+// Burn: 1 damage per BURN_TICK_S while burnT lasts (bosses included).
+// Slow: movement x0.5 (x0.75 for bosses) while slowT lasts.
+const BURN_TICK_S = 1;
+function enemySlowFactor(e) {
+  return e.slowT > 0 ? (e.isMiniboss || e.isBoss ? 0.75 : 0.5) : 1;
+}
+function updateEnemyStatus(dt) {
+  for (const e of currentEnemies()) {
+    if (!e.alive) { e.burnT = 0; e.slowT = 0; continue; }
+    if (e.slowT > 0) e.slowT = Math.max(0, e.slowT - dt);
+    if (e.burnT > 0) {
+      e.burnTick = (e.burnTick || 0) + dt;
+      if (e.burnTick >= BURN_TICK_S - 1e-3) {
+        e.burnTick = 0;
+        if (e.isBoss) {
+          e.hp -= 1; e.hitFlash = 0.1;
+          spawnFloatingText(e.x, e.y - 24, '-1', '#ff9a3a');
+          if (e.hp <= 0 && e.alive) ganonDefeated(e);
+        } else hurtEnemy(e, 1, '#ff9a3a');
+      }
+      e.burnT = Math.max(0, e.burnT - dt);
+      if (e.burnT === 0) e.burnTick = 0;
+    }
+  }
+}
+// sprite op for a slowed enemy: a cold blue tint over its usual colours
+function statusOps(e, ops) {
+  return e.slowT > 0 ? (ops ? ops + '+' : '') + 'tint:#86c8ff' : ops;
+}
+// small flickering flame over a burning enemy (attack_fx fireball art)
+function drawStatusFx(e, x, topY) {
+  if (!(e.burnT > 0)) return;
+  const f = Math.floor(performance.now() / 90) % 3;
+  drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, x - 5 + (f === 2 ? 1 : 0), topY - 9 - (f === 1 ? 1 : 0), 8, 9);
+  if (f !== 1) drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, x + 1, topY - 5, 5, 6);
+}
+
 function updateEnemies(dt, map) {
   for (const e of currentEnemies()) {
     if (!e.alive || e.isMiniboss || e.isBoss) continue; // minibosses/final boss handled by their own update fns
     if (e.hitFlash > 0) e.hitFlash -= dt;
     const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
+    const sdt = dt * enemySlowFactor(e); // movement step (ice arrows slow it)
 
     if (e.type === 'slime' || e.type === 'wolf' || e.type === 'fireImp' || e.type === 'wraith' ||
         e.type === 'thornling' || e.type === 'ironclamp') {
@@ -3063,13 +3224,13 @@ function updateEnemies(dt, map) {
       } else if (e.hopTimer <= 0) {
         e.hopTimer = 1.5; e.hopDx = 0; e.hopDy = 0;
       }
-      moveWithCollision(e, e.hopDx * dt, e.hopDy * dt, map);
+      moveWithCollision(e, e.hopDx * sdt, e.hopDy * sdt, map);
       e.hopDx *= 0.9; e.hopDy *= 0.9;
     } else if (e.type === 'bat') {
-      e.t += dt;
+      e.t += sdt;
       if (dist < e.range) {
         const ux = (hero.x - e.x) / (dist || 1);
-        e.x += ux * 35 * dt;
+        e.x += ux * 35 * sdt;
         e.y = e.baseY + Math.sin(e.t * 4) * 14;
       } else {
         e.y = e.baseY + Math.sin(e.t * 2) * 6;
@@ -3077,14 +3238,14 @@ function updateEnemies(dt, map) {
     } else if (e.type === 'grimshade') {
       // erratic floater: drifts on a noisy path, drawing closer when the
       // hero is within range rather than beelining straight at them.
-      e.t += dt;
+      e.t += sdt;
       const wobbleX = Math.sin(e.t * 1.7) * 20, wobbleY = Math.cos(e.t * 2.3) * 20;
       if (dist < e.range) {
         const ux = (hero.x - e.x) / (dist || 1), uy = (hero.y - e.y) / (dist || 1);
-        e.x += (ux * 25 + wobbleX * 0.3) * dt;
-        e.y += (uy * 25 + wobbleY * 0.3) * dt;
+        e.x += (ux * 25 + wobbleX * 0.3) * sdt;
+        e.y += (uy * 25 + wobbleY * 0.3) * sdt;
       } else {
-        e.x += wobbleX * 0.15 * dt; e.y += wobbleY * 0.15 * dt;
+        e.x += wobbleX * 0.15 * sdt; e.y += wobbleY * 0.15 * sdt;
       }
     }
 
@@ -3210,9 +3371,14 @@ const SHOP_ITEMS = [
 // keyboard selection, which auto-scrolls), and tappable up/down arrows.
 // scroll = px offset into the list; press = a pending tap/drag that
 // started inside the list (a buy only happens on release without a drag).
-const shop = { active: false, scroll: 0, sel: 0, press: null };
+const shop = { active: false, scroll: 0, sel: 0, press: null, msg: '', msgColor: '#ffe066', msgUntil: 0 };
+// Shop feedback goes on the shop's own footer line (drawShop), never in the
+// world hint banner, which would sit on top of the item rows.
+function shopNotice(text, color) {
+  shop.msg = text; shop.msgColor = color || '#ffe066'; shop.msgUntil = performance.now() + 1800;
+}
 const SHOP_LAYOUT = { x: 40, y: 58, w: 540, h: 272, rowH: 30, rowGap: 4, barX: 590, barW: 30 };
-function openShop() { shop.active = true; shop.scroll = 0; shop.sel = 0; shop.press = null; }
+function openShop() { shop.active = true; shop.scroll = 0; shop.sel = 0; shop.press = null; shop.msg = ''; }
 function closeShop() { shop.active = false; shop.press = null; }
 
 function canBuy(item) {
@@ -3231,11 +3397,11 @@ function buyItem(item) {
   const status = shopItemStatus(item);
   if (status === 'locked') {
     const pre = SHOP_ITEMS.find(i => i.id === item.prereq);
-    showHint('Buy the ' + (pre ? pre.name : item.prereq) + ' first!', 1.5);
+    shopNotice('Buy the ' + (pre ? pre.name : item.prereq) + ' first!');
     return;
   }
-  if (status === 'owned') { showHint('You already have that!', 1.2); return; }
-  if (hud.gold < item.price) { showHint("That's okay! Come back with more gold.", 1.5); return; }
+  if (status === 'owned') { shopNotice('You already have that!'); return; }
+  if (hud.gold < item.price) { shopNotice("That's okay! Come back with more gold.", '#ffb070'); return; }
   hud.gold -= item.price;
   if (item.skin) {
     player.unlockedSkins[item.skin] = true;
@@ -3255,6 +3421,7 @@ function buyItem(item) {
   }
   SFX.coin(0);
   spawnFloatingText(hero.x, hero.y - 20, 'Bought!', '#8effc1');
+  shopNotice('Bought the ' + item.name + '!', '#8effc1');
 }
 
 function shopView() { const L = SHOP_LAYOUT; return { x: L.x, y: L.y, w: L.w, h: L.h }; }
@@ -3409,8 +3576,17 @@ function drawShop() {
     if (shop.scroll > 0) drawShopArrow(ar.up, true);
     if (shop.scroll < max) drawShopArrow(ar.down, false);
   }
-  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('Arrow keys / W S to choose, Enter to buy', CONFIG.GAME_W / 2, L.y + L.h + 16);
+  // footer line below the list: shop feedback while it is fresh, else help
+  ctx.textAlign = 'center';
+  if (shop.msg && performance.now() < shop.msgUntil) {
+    ctx.font = 'bold 12px monospace';
+    const mw = Math.min(L.w, ctx.measureText(shop.msg).width + 20);
+    ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(Math.round(CONFIG.GAME_W / 2 - mw / 2), L.y + L.h + 4, Math.round(mw), 18);
+    ctx.fillStyle = shop.msgColor; ctx.fillText(shop.msg, CONFIG.GAME_W / 2, L.y + L.h + 17);
+  } else {
+    ctx.fillStyle = '#888'; ctx.font = '10px monospace';
+    ctx.fillText('Arrow keys / W S to choose, Enter to buy', CONFIG.GAME_W / 2, L.y + L.h + 16);
+  }
   // close X
   ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 16px monospace';
   ctx.fillText('X', CONFIG.GAME_W - 25, 30);
@@ -3700,7 +3876,7 @@ function updatePlaying(dt) {
   let moving = false;
 
   if (dx !== 0 || dy !== 0) {
-    hero.walkTargetX = null; hero.walkTargetY = null; // keyboard cancels tap-move
+    hero.walkTargetX = null; hero.walkTargetY = null; hero.pendingInteract = null; // keyboard cancels tap-move
     const len = Math.hypot(dx, dy) || 1;
     moveWithCollision(hero, (dx / len) * CONFIG.HERO_SPEED * dt, (dy / len) * CONFIG.HERO_SPEED * dt, map);
     if (dx < 0) hero.facing = 'left';
@@ -3716,7 +3892,11 @@ function updatePlaying(dt) {
   }
 
   // --- tap-to-move / tap-to-attack / tap-to-interact ---
+  if (Input.tapped && interactFromTap(worldPointFromScreen(Input.tapX, Input.tapY))) {
+    Input.tapped = false;
+  }
   if (Input.tapped) {
+    hero.pendingInteract = null;
     const wp = worldPointFromScreen(Input.tapX, Input.tapY);
     const tappedNpc = allNPCs().find(n => Math.hypot(n.x - wp.x, n.y - wp.y) < 14);
     const tappedEnemy = currentEnemies().find(e => e.alive &&
@@ -3727,7 +3907,7 @@ function updatePlaying(dt) {
       const slotWeapon = player.slots[player.activeSlot];
       const isRanged = slotWeapon === 'boomerang' || slotWeapon === 'galeBoomerang' || slotWeapon === 'bow';
       if (isRanged) {
-        faceToward(tappedEnemy.x, tappedEnemy.y);
+        faceToward(hero, tappedEnemy.x - hero.x, tappedEnemy.y - hero.y, true);
         fireActiveWeapon();
         hero.pendingAttackTarget = null;
       } else {
@@ -3795,10 +3975,10 @@ function updatePlaying(dt) {
     const key = String(s + 1);
     if (Input.keys[key] && player.slots[s]) { Input.keys[key] = false; player.activeSlot = s; }
   }
+  // --- E: the single interaction dispatcher (chest/torch > pot > NPC) ---
   if (Input.keys['e'] || Input.keys['E']) {
-    // E on a pot in range smashes it too
-    const nearPot = currentPots().find(p => p.alive && Math.hypot(p.x - hero.x, p.y - hero.y) < CONFIG.SWORD_RANGE);
-    if (nearPot) { smashPot(nearPot); Input.keys['e'] = Input.keys['E'] = false; }
+    Input.keys['e'] = Input.keys['E'] = false;
+    interactFromKey();
   }
 
   if (!moving && hero.walkTargetX !== null) {
@@ -3837,12 +4017,8 @@ function updatePlaying(dt) {
   hero.x = Math.max(CONFIG.TILE, Math.min(map.w * CONFIG.TILE - CONFIG.TILE, hero.x));
   hero.y = Math.max(CONFIG.TILE, Math.min(map.h * CONFIG.TILE - CONFIG.TILE, hero.y));
 
-  // --- talk via E key when adjacent ---
-  if (Input.keys['e'] || Input.keys['E']) {
-    Input.keys['e'] = Input.keys['E'] = false;
-    const near = allNPCs().find(n => Math.hypot(n.x - hero.x, n.y - hero.y) < CONFIG.NPC_TALK_RANGE + 20);
-    if (near) openDialogue(near);
-  }
+  // tapped chest/torch: act once the walk brings the hero within reach
+  updatePendingInteract();
 
   // --- NPC wander AI ---
   for (const n of allNPCs()) {
@@ -3911,7 +4087,10 @@ function updatePlaying(dt) {
     if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
   }
 
-  if (world.mode === 'overworld' || world.mode === 'dungeon' || world.mode === 'castle') updateEnemies(dt, map);
+  if (world.mode === 'overworld' || world.mode === 'dungeon' || world.mode === 'castle') {
+    updateEnemyStatus(dt);
+    updateEnemies(dt, map);
+  }
   updateBoomerangs(dt, map);
   updateArrows(dt, map);
   updateBombs(dt);
@@ -4089,13 +4268,15 @@ const HERO_ANIM = {
   right: { idle: [7, ''], walk: [[3, ''], [7, ''], [9, ''], [11, '']] },
   left: { idle: [7, ''], walk: [[3, ''], [7, ''], [9, ''], [11, '']], flip: true },
 };
-// Pick a facing from a movement vector with hysteresis: near-diagonal
-// vectors keep the current axis so tap-to-move micro-corrections can't flip
-// the sprite between side and front/back views every tick.
-function faceToward(e, ux, uy) {
+// Pick a facing for `e` from a direction vector (need not be unit length).
+// Default: hysteresis - near-diagonal vectors keep the current axis so
+// tap-to-move micro-corrections can't flip the sprite between side and
+// front/back views every tick. snap=true: face the dominant axis right away
+// (aiming a shot at a tapped enemy must turn the hero immediately).
+function faceToward(e, ux, uy, snap) {
   const ax = Math.abs(ux), ay = Math.abs(uy);
   const horiz = e.facing === 'left' || e.facing === 'right';
-  const useX = horiz ? ax * 1.4 >= ay : ax > ay * 1.4;
+  const useX = snap ? ax > ay : horiz ? ax * 1.4 >= ay : ax > ay * 1.4;
   if (useX) { if (ax > 0.01) e.facing = ux < 0 ? 'left' : 'right'; }
   else if (ay > 0.01) e.facing = uy < 0 ? 'up' : 'down';
 }
@@ -4502,15 +4683,18 @@ function drawPlaying() {
   if (mathPopup.active) drawMathPopup();
 
   // hint text
-  if (hud.hintTimer > 0) {
-    // below the HUD panel (it used to sit on top of the medallion row) and
-    // sized to the text so long hints stay inside their box
+  if (hud.hintTimer > 0 && hud.hintText && !shop.active) {
+    // below the HUD panel (it used to sit on top of the medallion row);
+    // word-wrapped to HINT_MAX_W and the box sized to the wrapped lines, so
+    // long hints (castle gate, boss name + flavor) never leave the screen
     ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
-    const hintW = Math.min(CONFIG.GAME_W - 16, Math.max(320, ctx.measureText(hud.hintText).width + 24));
+    const lines = wrapTextLines(hud.hintText, HINT_MAX_W - 24);
+    const textW = Math.max(...lines.map(l => ctx.measureText(l).width));
+    const hintW = Math.min(HINT_MAX_W, Math.max(320, textW + 24)), lineH = 16;
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(Math.round(CONFIG.GAME_W / 2 - hintW / 2), 92, Math.round(hintW), 26);
+    ctx.fillRect(Math.round(CONFIG.GAME_W / 2 - hintW / 2), 92, Math.round(hintW), 10 + lines.length * lineH);
     ctx.fillStyle = '#ffe066';
-    ctx.fillText(hud.hintText, CONFIG.GAME_W / 2, 110);
+    lines.forEach((l, i) => ctx.fillText(l, CONFIG.GAME_W / 2, 110 + i * lineH));
   }
 
   // region weather overlay (Phase 8) - drawn in screen space, cheap and
@@ -4648,7 +4832,7 @@ function drawEnemy(e) {
   }
   const src = art.src();
   let h = art.h * scale, sx = 1, sy = 1, lift = 0, flip = false;
-  const opsBase = art.ops || '';
+  const opsBase = statusOps(e, art.ops || '');
   if (art.hop) {
     // squash & stretch from the hop impulse the AI applies (hopDx/hopDy):
     // norm 1 = just launched, decays to 0 as it lands
@@ -4674,6 +4858,7 @@ function drawEnemy(e) {
   if (hs.flash && opsBase) ops = opsBase + '+white';
   drawSpriteFoot(ctx, art.key, src, x, foot - lift, h, { sx, sy, flip, ops });
   ctx.globalAlpha = 1;
+  drawStatusFx(e, x, foot - lift - Math.round(h * sy));
   if (art.flame) {
     const f = Math.floor(now * 10) % 2;
     drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, x - 3, foot - lift - Math.round(h * sy) - 6 - f, 6, 7);
@@ -4696,11 +4881,12 @@ function drawGanon(g, hs) {
   const x = Math.round(g.x) + hs.kx, foot = Math.round(g.y + g.h / 2) + hs.ky;
   const bob = Math.round(Math.sin(now * 2.2) * 1.5);
   ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 20, foot - 2, 40, 4);
-  const ops = hs.flash || telegraph ? 'white' : '';
+  const ops = hs.flash || telegraph ? 'white' : statusOps(g, '');
   if (!drawSpriteFoot(ctx, 'final_boss', SRC.boss.malrek, x, foot + bob, 66, { flip: hero.x < g.x, ops })) {
     ctx.fillStyle = telegraph ? '#ffffff' : '#2a1a2a';
     ctx.fillRect(g.x - 18, g.y - 22, 36, 40);
   }
+  drawStatusFx(g, x, foot + bob - 66);
   for (const p of g.projectiles) {
     ctx.save(); ctx.translate(Math.round(p.x), Math.round(p.y)); ctx.rotate(Math.floor(now * 12) * Math.PI / 2);
     if (!drawSpriteFoot(ctx, 'attack_fx', SRC.fx.fireballSwirl, 0, 6, 12, { ops: 'tint:#b060ff' })) {
@@ -4733,11 +4919,12 @@ function drawNewBoss(e, hs, x, foot) {
   const h = BOSS_DRAW_H[e.bossKind] || 44;
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath(); ctx.ellipse(x, foot, h * 0.45, 4, 0, 0, Math.PI * 2); ctx.fill();
-  const ops = hs.flash || (e.zapTelegraph > 0 && Math.floor(now * 20) % 2 === 0) ? 'white' : '';
+  const ops = hs.flash || (e.zapTelegraph > 0 && Math.floor(now * 20) % 2 === 0) ? 'white' : statusOps(e, '');
   if (!drawSpriteFoot(ctx, def.atlas || 'bosses', def.src, x, foot + Math.min(0, bob), h,
     { sy: breathe * (1 - dash * 0.08), sx: 1 + dash * 0.08, flip: hero.x < e.x && e.bossKind !== 'grovak', ops })) {
     ctx.fillStyle = '#888'; ctx.fillRect(e.x - e.w / 2, e.y - e.h, e.w, e.h);
   }
+  drawStatusFx(e, x, foot - h);
   // spore cloud DoT zone under Puffling
   if (e.bossKind === 'puffling' && e.sporeZone) {
     ctx.fillStyle = 'rgba(160,80,200,0.35)';
