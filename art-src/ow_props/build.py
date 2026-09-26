@@ -33,7 +33,7 @@ PIECES = [  # name, crop box in the raw sheet, downscale factor
     ('spring', (17, 30, 167, 132), 4), ('leverUp', (239, 34, 90, 116), 4), ('leverDown', (439, 38, 99, 116), 4),
     ('cactus', (682, 13, 120, 158), 4), ('barrel', (892, 64, 81, 98), 4), ('pillar', (34, 230, 124, 304), 5),
     ('rocks', (204, 217, 154, 129), 4), ('sandstone', (674, 222, 133, 120), 4), ('pillarStump', (205, 401, 141, 133), 4),
-    ('campfire', (418, 401, 137, 128), 4), ('stump', (666, 410, 149, 124), 4), ('flowers', (866, 414, 128, 107), 4),
+    ('campfire', (418, 401, 137, 128), 4), ('stump', (666, 410, 149, 124), 8), ('flowers', (866, 414, 128, 107), 7.5),  # small next to a 32px tree
 ]
 LUM = 0.3 * C[:, 0] + 0.59 * C[:, 1] + 0.11 * C[:, 2]
 DARK = set(int(k) for k in np.where(LUM < 45)[0])
