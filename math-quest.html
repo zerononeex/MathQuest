@@ -1281,6 +1281,18 @@ function buildOverworld() {
   L.lakes.forEach(([cx, cy, rx, ry], i) => paintEllipse(grid, cx, cy, rx, ry, T.WATER, 60 + i, w, h));
   for (const [cx, cy, rx, ry] of L.islands) paintEllipse(grid, cx, cy, rx, ry, REGION_BASE[regionAt(cx, cy)], 80, w, h);
   for (const r of L.rivers) stampPolyline(r.pts, r.w, (x, y) => { if (inb(x, y) && hgt[y][x] === 0) grid[y][x] = T.WATER; });
+  // smooth every water body: drop 1-tile spurs, fill 1-tile notches (two
+  // cellular passes on the lowland), so shores curve instead of zig-zagging
+  for (let pass = 0; pass < 2; pass++) {
+    const wet = grid.map(row => row.map(t => t === T.WATER));
+    for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) {
+      if (hgt[y][x]) continue;
+      let n = 0;
+      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) if ((ox || oy) && wet[y + oy][x + ox]) n++;
+      if (wet[y][x] && n <= 2) grid[y][x] = REGION_BASE[regionAt(x, y)];
+      else if (!wet[y][x] && n >= 5) grid[y][x] = T.WATER;
+    }
+  }
   // a sandy beach where lowland meets the sea in the south-west and desert
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     if (grid[y][x] === T.WATER || hgt[y][x]) continue;
@@ -1553,6 +1565,8 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
   if (isBuildingTile(mapData, gx, gy)) { drawGroundKind(octx, overworldGroundKind(gx, gy), px, py, gx, gy); return; }
   // overworld cliffs / stairs / caves / ledges (roles from the height map)
   if (kind === 'overworld' && mapData.role && mapData.role[gy][gx]) { drawElevTile(octx, mapData.role[gy][gx], px, py, gx, gy); return; }
+  // curved shorelines: any water tile or plain-ground tile touching water
+  if (kind === 'overworld' && drawSmoothShore(octx, mapData, t, px, py, gx, gy)) return;
   switch (t) {
     case T.BRIDGE: drawBridgeTile(octx, mapData, px, py, gx, gy); break;
     case T.PROP: case T.BOULDER: case T.CRACKED: // ground only; the object is a y-sorted prop (owPropItems)
@@ -1673,6 +1687,86 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
     default:
       drawTileFallback(octx, t, px, py, rand, mapData, gx, gy);
   }
+}
+// ---------------------------------------------------------------------------
+// Smooth shorelines. The land/water grid is box-blurred (radius SHORE_R px)
+// and the blur is thresholded per pixel, with a little noise: straight
+// shores stay straight, every corner - water poking into land or land into
+// water - becomes a curve, and a wet-sand band plus a foam line follow it.
+// Only tiles whose 3x3 block mixes water and land are drawn this way.
+// ---------------------------------------------------------------------------
+const SHORE_R = 10;
+const SHORE_LAND = new Set([T.GRASS, T.SAND, T.DARKGRASS, T.SNOW, T.TREE, T.DIRT]);
+const _shoreW = []; // per pixel column/row: weights of the 3 tiles under a box of +-SHORE_R
+for (let i = 0; i < CONFIG.TILE; i++) {
+  const a = i + 0.5 - SHORE_R, b = i + 0.5 + SHORE_R, TS = CONFIG.TILE;
+  _shoreW.push([-1, 0, 1].map(k => Math.max(0, Math.min(b, (k + 1) * TS) - Math.max(a, k * TS)) / (2 * SHORE_R)));
+}
+// edge noise, precomputed once (256px tile; wraps every 16 tiles)
+const _shoreNoise = new Float32Array(256 * 256);
+(function () { // periodic value noise: 32 lattice cells of 8px, wrapped, so the table tiles seamlessly
+  const L = i => ((i % 32) + 32) % 32, sm = t => t * t * (3 - 2 * t);
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+    const xi = Math.floor(x / 8), yi = Math.floor(y / 8), fx = sm(x / 8 - xi), fy = sm(y / 8 - yi);
+    const a = tileHash(L(xi), L(yi), 91), b = tileHash(L(xi + 1), L(yi), 91), c = tileHash(L(xi), L(yi + 1), 91), d = tileHash(L(xi + 1), L(yi + 1), 91);
+    _shoreNoise[y * 256 + x] = ((a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy - 0.5) * 0.16;
+  }
+})();
+let _shoreTmp = null;
+const _groundPxCache = new Map();
+function _groundPixels(kind, gx, gy) {
+  if (!_shoreTmp) { _shoreTmp = makeCanvas(CONFIG.TILE, CONFIG.TILE); _shoreTmp._x = _shoreTmp.getContext('2d'); }
+  // drawGroundKind picks its variant from tileHash with 0.01-step thresholds
+  const ck = kind + '|' + Math.floor(tileHash(gx, gy) * 100);
+  const hit = _groundPxCache.get(ck);
+  if (hit) return hit;
+  const x = _shoreTmp._x;
+  x.clearRect(0, 0, CONFIG.TILE, CONFIG.TILE);
+  drawGroundKind(x, kind, 0, 0, gx, gy);
+  const px = x.getImageData(0, 0, CONFIG.TILE, CONFIG.TILE).data;
+  _groundPxCache.set(ck, px);
+  return px;
+}
+function drawSmoothShore(octx, mapData, t, px, py, gx, gy) {
+  const isWet = (x, y) => { const n = x < 0 || y < 0 || x >= mapData.w || y >= mapData.h ? T.WATER : mapData.grid[y][x]; return n === T.WATER || n === T.BRIDGE; };
+  const selfWet = t === T.WATER;
+  if (!selfWet && (!SHORE_LAND.has(t) || isBuildingTile(mapData, gx, gy))) return false;
+  const W = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  let wetN = 0;
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) { W[j][i] = isWet(gx + i - 1, gy + j - 1) ? 1 : 0; wetN += W[j][i]; }
+  if (wetN === 9 || wetN === 0 || (selfWet && wetN === 9)) return false;
+  if (!imgReady('overworld_tiles')) return false;
+  // the land look: this tile's own ground, or (for water) its nearest land neighbour's
+  const landKindAt = (x, y) => {
+    const n = mapData.grid[y] && mapData.grid[y][x];
+    if (n === T.DIRT) return 'dirt';
+    if (n === T.SAND) return 'sand';
+    return SHORE_LAND.has(n) ? overworldGroundKind(x, y) : null;
+  };
+  let lk = selfWet ? null : landKindAt(gx, gy);
+  if (!lk) for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]) { lk = landKindAt(gx + dx, gy + dy); if (lk) break; }
+  lk = lk || 'sand';
+  const land = _groundPixels(lk, gx, gy), water = _groundPixels('water', gx, gy);
+  const TS = CONFIG.TILE, img = _shoreTmp._x.createImageData(TS, TS), d = img.data;
+  for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+    const wy = _shoreW[y], wx = _shoreW[x];
+    let f = 0;
+    for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) if (W[j][i]) f += wx[i] * wy[j];
+    f += _shoreNoise[((gy * TS + y) & 255) * 256 + ((gx * TS + x) & 255)]; // a lively, uneven edge
+    const k = (y * TS + x) * 4;
+    let r, g, b;
+    if (f >= 0.5) {
+      if (f < 0.545) { r = 232; g = 244; b = 250; }        // foam
+      else if (f < 0.6) { r = 150; g = 202; b = 232; }     // shallows
+      else { r = water[k]; g = water[k + 1]; b = water[k + 2]; }
+    } else if (f > 0.43) { r = 196; g = 184; b = 138; }    // wet sand
+    else if (f > 0.33 && lk !== 'sand') { r = 226; g = 216; b = 168; } // dry sand band
+    else { r = land[k]; g = land[k + 1]; b = land[k + 2]; }
+    d[k] = r; d[k + 1] = g; d[k + 2] = b; d[k + 3] = 255;
+  }
+  _shoreTmp._x.putImageData(img, 0, 0);
+  octx.drawImage(_shoreTmp, px, py);
+  return true;
 }
 // just the hanging board of the shop sign art (no iron bracket) for signposts
 const SIGN_BOARD_SRC = [838, 392, 128, 80];
@@ -6055,7 +6149,7 @@ function drawPlaying() {
 function treeKind(tx, ty) {
   const region = regionAt(tx, ty), v = tileHash(tx, ty, 9);
   if (region === 'desert') return ['cactus', 'barrel', 'rocks', 'sandstone'][Math.floor(v * 4)];
-  if ((region === 'forest' || region === 'lakes' || region === 'mountain') && v < 0.05) return 'stump';
+  if ((region === 'forest' || region === 'lakes' || region === 'mountain') && v < 0.025) return 'stump';
   return region !== 'darkness' && tileHash(tx, ty, 5) < 0.1 ? 'bigtree' : 'tree';
 }
 function drawTreeProp(tx, ty, dctx) {
