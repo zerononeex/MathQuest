@@ -354,9 +354,24 @@ const SRC = {
     gearIcon: [828, 380, 136, 140],
   },
 };
+// hero_sprites.png is a 4x6 grid of 256x95.33 cells, but each character
+// sprite only occupies a small centered region of its cell (lots of
+// transparent padding around it). Using the raw grid cell as the source
+// rect made the hero render as a tiny speck at draw size. These are
+// pre-computed tight alpha-channel bounding boxes (+3px padding) for each
+// cell, in atlas pixel coordinates, so heroCellSrc() crops just the
+// character instead of mostly empty space.
+const HERO_CELL_RECTS = [
+  [[112,24,75,71], [300,20,78,75], [635,20,76,75], [820,20,75,75]],
+  [[103,95,92,85], [291,95,96,81], [626,95,94,81], [808,95,95,81]],
+  [[112,200,79,86], [304,200,83,86], [633,204,78,82], [820,204,79,82]],
+  [[108,286,87,70], [300,286,91,70], [628,286,88,74], [816,286,87,74]],
+  [[112,383,79,94], [304,383,83,94], [628,383,83,94], [820,383,79,94]],
+  [[108,477,87,75], [300,477,91,71], [628,477,88,75], [816,477,87,75]],
+];
 function heroCellSrc(col, row) {
-  const c = SRC.hero;
-  return [col * c.cellW, row * c.cellH, c.cellW, c.cellH];
+  const r = (HERO_CELL_RECTS[row] && HERO_CELL_RECTS[row][col]) || [0, 0, SRC.hero.cellW, SRC.hero.cellH];
+  return r;
 }
 const ATLAS = {};
 let atlasLoadedCount = 0;
@@ -381,6 +396,36 @@ function imgReady(key) {
 function drawSprite(dctx, key, src, dx, dy, dw, dh) {
   if (!imgReady(key)) return false;
   dctx.drawImage(ATLAS[key], src[0], src[1], src[2], src[3], dx, dy, dw, dh);
+  return true;
+}
+
+// Draws a gold-trimmed panel-frame sprite [sx,sy,sw,sh] as a 9-slice into
+// dest rect [dx,dy,dw,dh], so its ornate corners aren't squashed by a
+// naive stretched drawImage. `srcCorner` is the corner size in source
+// pixels; `destCorner` is how big to render corners at dest scale (capped
+// to half the dest box so tiny panels don't overlap corners). Returns
+// false (draws nothing) if the atlas isn't loaded yet, so callers can
+// fall back to a plain procedural panel.
+function drawPanelFrame(dctx, key, src, dx, dy, dw, dh, srcCorner, destCorner) {
+  if (!imgReady(key)) return false;
+  const img = ATLAS[key];
+  const [sx, sy, sw, sh] = src;
+  const c = Math.min(srcCorner, sw / 2, sh / 2);
+  const dc = Math.min(destCorner, dw / 2, dh / 2);
+  // corners
+  dctx.drawImage(img, sx, sy, c, c, dx, dy, dc, dc);
+  dctx.drawImage(img, sx + sw - c, sy, c, c, dx + dw - dc, dy, dc, dc);
+  dctx.drawImage(img, sx, sy + sh - c, c, c, dx, dy + dh - dc, dc, dc);
+  dctx.drawImage(img, sx + sw - c, sy + sh - c, c, c, dx + dw - dc, dy + dh - dc, dc, dc);
+  // edges (stretched along their long axis only)
+  if (dw - 2 * dc > 0) {
+    dctx.drawImage(img, sx + c, sy, sw - 2 * c, c, dx + dc, dy, dw - 2 * dc, dc);
+    dctx.drawImage(img, sx + c, sy + sh - c, sw - 2 * c, c, dx + dc, dy + dh - dc, dw - 2 * dc, dc);
+  }
+  if (dh - 2 * dc > 0) {
+    dctx.drawImage(img, sx, sy + c, c, sh - 2 * c, dx, dy + dc, dc, dh - 2 * dc);
+    dctx.drawImage(img, sx + sw - c, sy + c, c, sh - 2 * c, dx + dw - dc, dy + dc, dc, dh - 2 * dc);
+  }
   return true;
 }
 
@@ -2636,7 +2681,12 @@ function updateMathPopupInput() {
 }
 
 function getMathButtons() {
-  const btnW = 180, btnH = 50, gap = 14;
+  // Must stay fully inside the math-popup panel (bw=460, centered on
+  // GAME_W/2, see drawMathPopup). 3 buttons + 2 gaps previously totalled
+  // 568px vs the panel's 460px width, so they overflowed the frame on
+  // both sides. Keep a consistent margin from the panel edges instead.
+  const panelW = 460, margin = 20, gap = 12;
+  const btnW = (panelW - margin * 2 - gap * 2) / 3, btnH = 50;
   const totalW = btnW * 3 + gap * 2;
   const startX = CONFIG.GAME_W / 2 - totalW / 2;
   const y = 220;
@@ -3853,8 +3903,13 @@ function drawMathPopup() {
   const bw = 460, bh = 240;
   const bx = CONFIG.GAME_W / 2 - bw / 2, by = 60;
   ctx.fillStyle = '#20304a';
-  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 3;
-  roundRect(bx, by, bw, bh, 14); ctx.fill(); ctx.stroke();
+  roundRect(bx, by, bw, bh, 14); ctx.fill();
+  // gold-trimmed panel frame (same asset family as the HUD) instead of a
+  // plain dark-blue rounded rectangle border.
+  if (!drawPanelFrame(ctx, 'ui_hud', SRC.ui.panel, bx, by, bw, bh, 75, 28)) {
+    ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 3;
+    roundRect(bx, by, bw, bh, 14); ctx.stroke();
+  }
 
   const tierLabel = mathPopup.purpose === 'revive' ? 'Revive!' : 'Earn Action Points!';
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
@@ -3898,8 +3953,13 @@ function roundRect(x, y, w, h, r) {
 }
 
 function drawHUD() {
+  const panelX = 2, panelY = 2, panelW = 228, panelH = 66;
   ctx.fillStyle = '#000'; ctx.globalAlpha = 0.35;
-  ctx.fillRect(4, 4, 220, 56); ctx.globalAlpha = 1;
+  ctx.fillRect(panelX, panelY, panelW, panelH); ctx.globalAlpha = 1;
+  // gold-trimmed panel frame from ui_hud.png, drawn on top of the dark
+  // backing so hearts/AP bar/gold text/medallions all sit inside a
+  // consistent framed HUD cluster instead of a plain flat box.
+  drawPanelFrame(ctx, 'ui_hud', SRC.ui.panel, panelX, panelY, panelW, panelH, 75, 16);
 
   // hearts (real, tracks player.hearts/maxHearts)
   for (let i = 0; i < player.maxHearts; i++) {
@@ -3922,19 +3982,30 @@ function drawHUD() {
     }
   }
 
-  // AP bar: 10 segments under hearts
-  const apX = 10, apY = 28, segW = 18, segH = 10, segGap = 2;
-  for (let i = 0; i < player.maxAp; i++) {
-    const filled = i < player.ap;
-    const sx = apX + i * (segW + segGap);
-    ctx.fillStyle = filled ? '#2a86c9' : '#1a2a3a';
-    ctx.fillRect(sx, apY, segW, segH);
-    if (filled) {
-      ctx.fillStyle = '#4fc3ff'; ctx.fillRect(sx, apY, segW, segH - 3);
-      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(sx + 1, apY + 1, segW - 2, 1);
+  // AP bar: reskinned with the ui_hud.png mana-bar asset. The asset is a
+  // single bordered-bar image, so the bar's fraction-filled readability
+  // (how many AP the player has) is kept by drawing the frame art at full
+  // width, then a dark cover clipped over the unfilled portion on the
+  // right, and thin segment ticks on top (same count as maxAp) so the
+  // exact AP count is still readable at a glance, not just "some fill".
+  const apX = 10, apY = 26, apW = 200, apH = 16;
+  const apFrac = player.maxAp > 0 ? player.ap / player.maxAp : 0;
+  if (!drawSprite(ctx, 'ui_hud', SRC.ui.apBar, apX, apY, apW, apH)) {
+    ctx.fillStyle = '#1a2a3a'; ctx.fillRect(apX, apY, apW, apH);
+    ctx.fillStyle = '#4fc3ff'; ctx.fillRect(apX, apY, apW * apFrac, apH);
+    ctx.strokeStyle = '#0a1420'; ctx.lineWidth = 1; ctx.strokeRect(apX, apY, apW, apH);
+  } else {
+    const filledW = apW * apFrac;
+    if (filledW < apW) {
+      ctx.fillStyle = 'rgba(10,14,26,0.78)';
+      ctx.fillRect(apX + filledW, apY + 2, apW - filledW, apH - 4);
     }
-    ctx.strokeStyle = '#0a1420'; ctx.lineWidth = 1;
-    ctx.strokeRect(sx, apY, segW, segH);
+  }
+  // per-point tick marks so the exact AP count reads clearly
+  ctx.strokeStyle = 'rgba(10,14,26,0.6)'; ctx.lineWidth = 1;
+  for (let i = 1; i < player.maxAp; i++) {
+    const tx = apX + (apW / player.maxAp) * i;
+    ctx.beginPath(); ctx.moveTo(tx, apY + 2); ctx.lineTo(tx, apY + apH - 2); ctx.stroke();
   }
 
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';

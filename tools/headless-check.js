@@ -47,6 +47,11 @@ try {
   await new Promise(r => setTimeout(r, 2500));
   await page.screenshot({ path: path.join(shotDir, '04-gameplay-later.png') });
 
+  // Open the quiz/question modal directly so we can verify its layout.
+  await page.evaluate(() => { if (typeof openMathPopup === 'function') openMathPopup('ap'); });
+  await new Promise(r => setTimeout(r, 300));
+  await page.screenshot({ path: path.join(shotDir, '05-quiz-modal.png') });
+
   await browser.close();
 
   if (errors.length) {
