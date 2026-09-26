@@ -215,6 +215,45 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await canvasShot('17-interior');
   }
 
+  // ---- soundtrack: decode all 8 buffers after a gesture, verify state->track mapping ----
+  {
+    await page.mouse.click(5, 5);
+    const t0 = Date.now();
+    let dec = null;
+    while (Date.now() - t0 < 30000) {
+      dec = await page.evaluate(() => ({ n: Music.decoded, f: Music.failed, keys: Object.keys(Music.buffers) }));
+      if (dec.n + dec.f >= 8) break;
+      await sleep(250);
+    }
+    const map = await page.evaluate(() => {
+      const T = CONFIG.TILE, out = {};
+      const saved = { gs: gameState, mode: world.mode, x: hero.x, y: hero.y };
+      dialogue.active = false; mathPopup.active = false; player.downed = false; player.invincibleT = 999;
+      gameState = STATE.TITLE; out.title = musicForState(); gameState = STATE.PLAYING;
+      world.mode = 'overworld'; world.dungeon = null; world.interior = null;
+      hero.x = (overworld.w / 2) * T; hero.y = (overworld.h / 2) * T; out.town = musicForState();
+      hero.x = (overworld.w / 2 + 40) * T; out.overworld = musicForState();
+      world.mode = 'interior'; world.interior = buildings[0].interior; out.house = musicForState();
+      world.interior = null; world.mode = 'dungeon'; world.dungeon = dungeons[0];
+      dungeons[0].roomIndex = 0; out.dungeonRoom = musicForState();
+      dungeons[0].roomIndex = 2; out.bossRoom = musicForState(); dungeons[0].roomIndex = 0;
+      world.dungeon = null; world.mode = 'castle'; castle.roomIndex = 1; out.finalBoss = musicForState();
+      castle.roomIndex = 0;
+      world.mode = 'overworld'; hero.x = (overworld.w / 2 + 40) * T; hero.y = (overworld.h / 2) * T;
+      return out;
+    });
+    await sleep(400);
+    const a = await page.evaluate(() => ({ key: Music.cur && Music.cur.key, sw: Music.switches }));
+    await page.evaluate(() => { hero.x = (overworld.w / 2) * CONFIG.TILE; hero.y = (overworld.h / 2) * CONFIG.TILE; });
+    await sleep(400);
+    const b = await page.evaluate(() => ({ key: Music.cur && Music.cur.key, sw: Music.switches }));
+    const want = { title: 'title', town: 'village', overworld: 'overworld', house: 'village', dungeonRoom: 'dungeon', bossRoom: 'boss', finalBoss: 'final_boss' };
+    const bad = Object.keys(want).filter(k => map[k] !== want[k]);
+    const ok = dec.n === 8 && bad.length === 0 && a.key === 'overworld' && b.key === 'village' && b.sw > a.sw;
+    console.log((ok ? 'OK' : 'FAIL') + ': music ' + JSON.stringify({ decoded: dec, map, before: a, after: b }));
+    if (!ok) errors.push('music check failed');
+  }
+
   await browser.close();
 
   if (errors.length) {

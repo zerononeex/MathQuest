@@ -322,15 +322,19 @@ function check(name, ok, detail) {
       player.unlockedSkins.blue = true; player.skin = 'blue';
       const tunicColor = currentTunic().body;
       audioSettings.muted = true;
-      const musicBefore = music.area;
-      setMusicArea('dungeon');
-      const musicSwitched = music.area === 'dungeon';
+      const savedMode = world.mode, savedD = world.dungeon;
+      const savedGs = gameState; gameState = STATE.PLAYING;
+      world.mode = 'overworld'; world.dungeon = null; hero.x = 40 * CONFIG.TILE; hero.y = 40 * CONFIG.TILE;
+      const musicBefore = musicForState();
+      world.mode = 'dungeon'; world.dungeon = dungeons[0]; dungeons[0].roomIndex = 0;
+      const musicSwitched = musicBefore !== 'dungeon' && musicForState() === 'dungeon';
+      world.mode = savedMode; world.dungeon = savedD; gameState = savedGs;
       audioSettings.muted = false;
-      return { tunicColor, musicSwitched };
+      return { tunicColor, musicSwitched, musicBefore, gs: gameState };
     } catch (e) { return { exception: e.message }; }
   });
   check('Wardrobe skin selection is reflected by currentTunic() used in hero draw', !!presentationResult.tunicColor, JSON.stringify(presentationResult));
-  check('Music area switches (overworld/dungeon/boss/title/victory)', presentationResult.musicSwitched);
+  check('Music area switches (overworld/dungeon/boss/title/victory)', presentationResult.musicSwitched, JSON.stringify(presentationResult));
 
   // --- Save/continue round-trip + corrupt save ---
   const saveResult = await page.evaluate(() => {
