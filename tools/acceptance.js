@@ -888,6 +888,65 @@ function check(name, ok, detail) {
     await tp.close();
   }
 
+  // --- Big door tap areas: tap the roof / sign / cave / exit rug / room door
+  // from afar and the hero walks a real path there and goes through ---
+  {
+    const tp = await browser.newPage();
+    tp.on('pageerror', e => errorsAll.push('doortap: ' + e.message));
+    await tp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await tp.evaluate(() => {
+      const out = {};
+      try {
+        startNewGame(); player.invincibleT = 999;
+        for (const e of wildsEnemies.concat(overworldEnemies)) e.alive = false;
+        const TS = CONFIG.TILE;
+        const run = (frames, done) => {
+          for (let i = 0; i < frames; i++) {
+            updatePlaying(1 / 60); updateCamera(1 / 60);
+            if (fadeCallback) { const f = fadeCallback; fadeCallback = null; f(); fadeAlpha = 0; fadeDir = 0; }
+            dialogue.active = false; mathPopup.active = false;
+            if (done()) return i;
+          }
+          return -1;
+        };
+        const tapWorld = (x, y) => { for (let k = 0; k < 40; k++) updateCamera(1); Input.tapX = x - world.camX; Input.tapY = y - world.camY; Input.tapped = true; };
+        // 1. shop: tap its ROOF from ~9 tiles away, around the corner
+        const shopB = buildings.find(b => b.name === 'shop');
+        world.mode = 'overworld'; hero.x = (shopB.doorTileX - 8.5) * TS; hero.y = (shopB.doorTileY + 5.5) * TS;
+        tapWorld((shopB.doorTileX + 1) * TS, (shopB.doorTileY - 1.5) * TS);
+        out.roofTap = run(600, () => world.mode === 'interior' && world.interior === shopB.interior);
+        // 2. inside: tap near the exit rug from the far side of the room
+        shop.active = false;
+        const ex = world.interior.exit;
+        { const sp = findClearSpot(world.interior, (ex.x - 4) * TS, (ex.y - 1.5) * TS, hero.w, hero.h, null, 6); hero.x = sp.x; hero.y = sp.y; } // across the room
+        tapWorld(ex.x * TS + 12, ex.y * TS + 6);
+        out.exitTap = run(600, () => world.mode === 'overworld');
+        // 3. Forest Dungeon: tap its signpost from 8 tiles away
+        const d = dungeons.find(x => x.def.id === 'forest'), [fx, fy] = OW_LAYOUT.dungeons.forest;
+        hero.x = (fx + 0.5) * TS; hero.y = (fy + 8.5) * TS;
+        tapWorld((fx + 0.5) * TS, (fy - 0.5) * TS);
+        out.dungeonTap = run(900, () => world.mode === 'dungeon' && world.dungeon === d);
+        // 4. inside the dungeon: open the east door, tap it
+        const room = d.rooms[0], midY = Math.floor(room.h / 2);
+        room.grid[midY][room.w - 1] = T.FLOOR; d.hasSmallKey = true;
+        hero.x = 3 * TS; hero.y = (midY + 0.5) * TS;
+        tapWorld((room.w - 1) * TS, (midY - 1) * TS);
+        out.roomDoorTap = run(600, () => d.roomIndex === 1);
+        // 5. a cave mouth: tap it from below and come out of the twin
+        world.mode = 'overworld'; world.dungeon = null;
+        const c = overworld.caves[0], twin = overworld.caves.find(o => o.id === c.to);
+        hero.x = (c.x + 0.5) * TS; hero.y = (c.y + 5.5) * TS; hero.caveExit = null;
+        tapWorld((c.x + 1) * TS, (c.y - 0.5) * TS);
+        out.caveTap = run(600, () => Math.abs(hero.x / TS - (twin.x + 0.5)) < 1.5 && Math.abs(hero.y / TS - (twin.y + 1.5)) < 1.5);
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Tapping near a door (roof, sign, cave, exit rug, room door) walks there and goes through',
+      !r.exception && ['roofTap', 'exitTap', 'dungeonTap', 'roomDoorTap', 'caveTap'].every(k => r[k] >= 0), JSON.stringify(r));
+    await tp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

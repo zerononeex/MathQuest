@@ -3328,6 +3328,123 @@ function interactFromTap(wp) {
   }
   return true;
 }
+// ---------------------------------------------------------------------------
+// Tap a door (iPad): every doorway / exit has a big tap area - the whole
+// building, the dungeon stairs and their sign, a cave mouth, the exit rug,
+// an open or locked room door - and the hero walks a real tile path there
+// (around trees and walls, never through another entrance) and goes in.
+// ---------------------------------------------------------------------------
+const DOOR_TAP_R = 30; // px around the doorway itself
+function doorTargets() {
+  const TS = CONFIG.TILE, out = [], map = currentMap();
+  // gx, gy: pixel spot the hero walks onto (it triggers the transition);
+  // hit: extra tap rectangle [x0, y0, x1, y1] (e.g. the whole building)
+  const add = (gx, gy, hit, name) => out.push({ x: gx, y: gy, hit, name });
+  if (world.mode === 'overworld') {
+    for (const b of buildings) add((b.doorTileX + 0.5) * TS, (b.doorTileY + 0.5) * TS,
+      [(b.doorTileX - 1) * TS - 6, (b.doorTileY - 2) * TS - 22, (b.doorTileX + 3) * TS + 6, (b.doorTileY + 1) * TS + 10], 'door:' + b.name);
+    for (const d of dungeons) {
+      const z = d.entranceZone, x = (z.minX + z.maxX) / 2, y = (z.minY + z.maxY) / 2;
+      add(x, y, [z.minX - 8, z.minY - 2 * TS, z.maxX + 8, z.maxY + 8], 'dungeon:' + d.def.id);
+    }
+    { const z = castleGate.zone; add((z.minX + z.maxX) / 2, (z.minY + z.maxY) / 2, [z.minX - 16, z.minY - 2 * TS, z.maxX + 16, z.maxY + 8], 'castle'); }
+    for (const c of overworld.caves) add((c.x + 0.5) * TS, (c.y + 0.6) * TS, [(c.x - 1.5) * TS, (c.y - 1) * TS, (c.x + 2.5) * TS, (c.y + 1) * TS], 'cave:' + c.id);
+  } else if (world.mode === 'interior') {
+    const ex = world.interior.exit;
+    add(ex.x * TS, ex.y * TS, [(ex.x - 1.5) * TS, (ex.y - 1) * TS, (ex.x + 1.5) * TS, (ex.y + 1.5) * TS], 'exit');
+  } else if (world.mode === 'dungeon' || world.mode === 'castle') {
+    const midY = Math.floor(map.h / 2), cy = (midY + 0.5) * TS;
+    for (const [edge, ex] of [['west', 0], ['east', map.w - 1]]) {
+      const t = map.grid[midY][ex], inward = edge === 'west' ? 1 : -1;
+      let gx = null;
+      if (t === T.FLOOR) gx = (ex + 0.5) * TS;                                   // open: walk out through it
+      else if (t === T.LOCKDOOR || t === T.BOSSDOOR) gx = (ex + 0.5 + inward * 0.95) * TS; // closed: walk up to it
+      if (gx !== null) add(gx, cy, [(ex - 1.5) * TS, (midY - 2) * TS, (ex + 2.5) * TS, (midY + 2) * TS], edge);
+    }
+  }
+  return out;
+}
+function doorAtTap(wp) {
+  let best = null, bd = Infinity;
+  for (const t of doorTargets()) {
+    const d = Math.hypot(wp.x - t.x, wp.y - t.y);
+    const inHit = t.hit && wp.x >= t.hit[0] && wp.x <= t.hit[2] && wp.y >= t.hit[1] && wp.y <= t.hit[3];
+    if ((inHit || d < DOOR_TAP_R) && d < bd) { bd = d; best = t; }
+  }
+  return best;
+}
+// BFS over walkable tiles (4-way). Other entrances are avoided so the walk
+// never wanders into the wrong door on the way.
+function tilePath(map, sx, sy, gx, gy) {
+  const W = map.w, H = map.h, prev = new Int32Array(W * H).fill(-1), start = sx + sy * W, goal = gx + gy * W;
+  if (sx < 0 || sy < 0 || sx >= W || sy >= H || gx < 0 || gy < 0 || gx >= W || gy >= H) return null;
+  const TS = CONFIG.TILE, q = [start]; prev[start] = start;
+  const blocked = (x, y) => {
+    const t = map.grid[y][x];
+    if (SOLID_TILES.has(t)) return true;
+    return map === overworld && overworldTriggerAt((x + 0.5) * TS, (y + 0.5) * TS);
+  };
+  for (let qi = 0; qi < q.length; qi++) {
+    const k = q[qi];
+    if (k === goal) break;
+    const x = k % W, y = (k - x) / W;
+    for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const nk = nx + ny * W;
+      if (prev[nk] !== -1 || (nk !== goal && blocked(nx, ny))) continue;
+      prev[nk] = k; q.push(nk);
+    }
+  }
+  if (prev[goal] === -1) return null;
+  const path = [];
+  for (let k = goal; k !== start; k = prev[k]) path.push([(k % W + 0.5) * TS, (Math.floor(k / W) + 0.5) * TS]);
+  return path.reverse();
+}
+function startDoorWalk(t) {
+  const TS = CONFIG.TILE, map = currentMap();
+  const path = tilePath(map, Math.floor(hero.x / TS), Math.floor(hero.y / TS), Math.floor(t.x / TS), Math.floor(t.y / TS));
+  clearHeroIntent();
+  hero.doorWalk = { path: path || [], goal: { x: t.x, y: t.y }, stuck: 0, lx: hero.x, ly: hero.y };
+  if (!path) hero.doorWalk.path = [];
+  rippleMarkers.push({ x: t.x, y: t.y, life: 0.5 });
+}
+// one step along the door walk; returns true while walking
+function updateDoorWalk(dt, map) {
+  const dw = hero.doorWalk;
+  if (!dw) return false;
+  // cut corners: skip waypoints the hero can already walk straight to
+  while (dw.path.length > 1) {
+    const [nx, ny] = dw.path[1], steps = Math.ceil(Math.hypot(nx - hero.x, ny - hero.y) / 4);
+    let clear = true;
+    for (let i = 1; i <= steps && clear; i++) {
+      const px = hero.x + (nx - hero.x) * i / steps, py = hero.y + (ny - hero.y) * i / steps;
+      if (boxHitsSolid(map, px, py, hero.w, hero.h) || (map === overworld && overworldTriggerAt(px, py) && i < steps)) clear = false;
+    }
+    if (!clear) break;
+    dw.path.shift();
+  }
+  const [tx, ty] = dw.path.length ? dw.path[0] : [dw.goal.x, dw.goal.y];
+  const dx = tx - hero.x, dy = ty - hero.y, d = Math.hypot(dx, dy);
+  if (d < 2) {
+    if (dw.path.length) dw.path.shift();
+    else { hero.doorWalk = null; return false; } // arrived (the door handler takes over)
+    return true;
+  }
+  const stepLen = Math.min(d, CONFIG.HERO_SPEED * dt);
+  moveWithCollision(hero, dx / d * stepLen, dy / d * stepLen, map);
+  faceToward(hero, dx, dy);
+  if (Math.hypot(hero.x - dw.lx, hero.y - dw.ly) < 0.2) { dw.stuck += dt; if (dw.stuck > 0.6) { hero.doorWalk = null; return false; } }
+  else dw.stuck = 0;
+  dw.lx = hero.x; dw.ly = hero.y;
+  return true;
+}
+function drawDoorWalkMarker(now) {
+  const dw = hero.doorWalk;
+  if (!dw) return;
+  const x = Math.round(dw.goal.x), y = Math.round(dw.goal.y - 26 - Math.abs(Math.sin(now * 6)) * 4);
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(x - 5, y - 1, 11, 5); ctx.fillRect(x - 3, y + 4, 7, 2); ctx.fillRect(x - 1, y + 6, 3, 2);
+  ctx.fillStyle = '#ffe066'; ctx.fillRect(x - 4, y, 9, 3); ctx.fillRect(x - 2, y + 3, 5, 2); ctx.fillRect(x, y + 5, 1, 2);
+}
 function updatePendingInteract() {
   const pi = hero.pendingInteract;
   if (!pi) return;
@@ -5287,7 +5404,7 @@ function updatePlaying(dt) {
 
   if (hero.hop) { dx = 0; dy = 0; }
   if (dx !== 0 || dy !== 0) {
-    hero.walkTargetX = null; hero.walkTargetY = null; hero.pendingInteract = null; // keyboard cancels tap-move
+    hero.walkTargetX = null; hero.walkTargetY = null; hero.pendingInteract = null; hero.doorWalk = null; // keyboard cancels tap-move
     const len = Math.hypot(dx, dy) || 1, y0 = hero.y;
     moveWithCollision(hero, (dx / len) * CONFIG.HERO_SPEED * dt, (dy / len) * CONFIG.HERO_SPEED * dt, map);
     if (dy > 0 && hero.y === y0) tryLedgeHop(); // walking south into a ledge hops down it
@@ -5341,9 +5458,13 @@ function updatePlaying(dt) {
       hero.pendingTalkTarget = tappedNpc;
       hero.walkTargetX = tappedNpc.x; hero.walkTargetY = tappedNpc.y + 16;
     } else {
-      hero.pendingTalkTarget = null; hero.pendingAttackTarget = null;
-      hero.walkTargetX = wp.x; hero.walkTargetY = wp.y;
-      rippleMarkers.push({ x: wp.x, y: wp.y, life: 0.5 });
+      hero.pendingTalkTarget = null; hero.pendingAttackTarget = null; hero.doorWalk = null;
+      const door = doorAtTap(wp);
+      if (door) startDoorWalk(door); // tapped near a doorway: walk there and go in
+      else {
+        hero.walkTargetX = wp.x; hero.walkTargetY = wp.y;
+        rippleMarkers.push({ x: wp.x, y: wp.y, life: 0.5 });
+      }
     }
     Input.tapped = false;
   }
@@ -5393,6 +5514,7 @@ function updatePlaying(dt) {
     interactFromKey();
   }
 
+  if (!moving && hero.doorWalk && updateDoorWalk(dt, map)) moving = true;
   if (!moving && hero.walkTargetX !== null) {
     const tdx = hero.walkTargetX - hero.x, tdy = hero.walkTargetY - hero.y;
     let dist = Math.hypot(tdx, tdy);
@@ -5531,6 +5653,7 @@ let fadeAlpha = 0, fadeDir = 0, fadeCallback = null;
 function clearHeroIntent() {
   hero.walkTargetX = null; hero.walkTargetY = null;
   hero.pendingAttackTarget = null; hero.pendingTalkTarget = null; hero.pendingInteract = null;
+  hero.doorWalk = null;
 }
 function fadeTo(callback) {
   clearHeroIntent();
@@ -6063,6 +6186,7 @@ function drawPlaying() {
     ctx.fillStyle = Math.floor(now * 20) % 2 ? '#ffd84a' : '#ff7030'; ctx.fillRect(Math.round(b.x) - 1, Math.round(b.y) - 10, 2, 2);
   }
   drawFxMarkers();
+  drawDoorWalkMarker(now);
   if (world.mode === 'dungeon') drawDungeonExtras(world.dungeon);
   for (const hp of heartPieces) if (heartPieceHere(hp)) drawHeartPiece(hp.x, hp.y, hp.t);
 
