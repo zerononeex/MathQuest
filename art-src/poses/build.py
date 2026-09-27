@@ -93,7 +93,7 @@ for name, bg, per, target in SHEETS:
     A = np.array(Image.open(os.path.join(ART, (name if name == 'map_symbols' else name + '_poses') + '_raw.jpg')).convert('RGB')).astype(float)
     fg = key(A, bg)
     fgd = dilate(fg, 3)
-    if name == 'cindermaw': # rows overlap vertically: split by connected blobs instead
+    if name in ('cindermaw', 'grovak'): # rows overlap vertically: split by connected blobs instead
         poses = blob_poses(fg, sum(per))
         atl_rows.append((name, scale_poses(A, fg, poses, name, target)))
         continue

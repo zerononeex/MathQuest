@@ -45,6 +45,15 @@ bim = Image.fromarray(bomb.astype(np.uint8), 'RGBA').resize((int(bw * sc), int(b
 fim = Image.fromarray(fr.astype(np.uint8), 'RGBA')
 fim.alpha_composite(bim, ((w - bim.width) // 2, (h - bim.height) // 2 + int(h * 0.03)))
 tiles['bomb'] = np.array(fim).astype(float)
+# the framed bomb from its own sheet replaces the composed one when present
+bp = os.path.join(HERE, '..', 'hud_bomb_raw.jpg')
+if os.path.exists(bp):
+    B = np.array(Image.open(bp).convert('RGB')).astype(float)
+    r2, g2, b2 = B[..., 0], B[..., 1], B[..., 2]
+    bfg = ~(((r2 > 150) & (b2 > 150) & (g2 < 130) & (np.abs(r2 - b2) < 90)) | ((r2 > g2 + 60) & (b2 > g2 + 60)))
+    ys = np.where(bfg.sum(1) > 20)[0]; xs = np.where(bfg.sum(0) > 20)[0]
+    y0, y1, x0, x1 = ys[0], ys[-1] + 1, xs[0], xs[-1] + 1
+    tiles['bomb'] = np.dstack([B[y0:y1, x0:x1], bfg[y0:y1, x0:x1] * 255.0])
 names.append('bomb')
 out = Image.new('RGBA', ((S + 2) * len(names), S), (0, 0, 0, 0)); src = {}
 for i, n in enumerate(names):
