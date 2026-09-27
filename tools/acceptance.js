@@ -1427,6 +1427,37 @@ function check(name, ok, detail) {
     await mp.close();
   }
 
+  // --- spring fairies heal to full on every visit; the treasure-room portal
+  // (after the chest) leads outside; 8 more golden gold chests ---
+  {
+    const fp = await browser.newPage();
+    fp.on('pageerror', e => errorsAll.push('fairy: ' + e.message));
+    await fp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await fp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame(); player.invincibleT = 1e9;
+        const f = owFountains[0], at = () => { hero.x = (f.x + 0.5) * 16; hero.y = (f.y + 1.5) * 16; }, away = () => { hero.x = (f.x + 8) * 16; };
+        const heals = [];
+        for (let i = 0; i < 3; i++) { player.hearts = 1; away(); updatePlaying(0.016); at(); updatePlaying(0.016); heals.push(player.hearts === player.maxHearts); }
+        out.everyVisit = heals.every(Boolean);
+        out.goldChests = owChests.filter(c => c.id.startsWith('g_') && c.big && c.gold > 0).length;
+        const d = dungeons[1]; world.returnSpot = { x: 100 * 16, y: 100 * 16 };
+        world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = d.TREAS; d.chestOpened = false;
+        out.noPortalBefore = treasurePortalPos(d) === null;
+        d.chestOpened = true; const pp = treasurePortalPos(d); hero.x = pp.x; hero.y = pp.y;
+        updateDungeonRoom(0.016, d.rooms[d.TREAS]); flush();
+        out.portalOut = world.mode === 'overworld' && Math.hypot(hero.x - 1600, hero.y - 1600) < 2;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Spring fairies heal to full on every visit; treasure-room portal leads outside after the chest; 8 more golden chests with gold',
+      !r.exception && r.everyVisit && r.goldChests === 8 && r.noPortalBefore && r.portalOut, JSON.stringify(r));
+    await fp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

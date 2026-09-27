@@ -2912,6 +2912,15 @@ const OW_POIS = [
   { type: 'camp', x: 176, y: 164 },
   { type: 'chest', id: 'c_se_coast', x: 212, y: 162, gold: 25 },
   { type: 'bigchest', id: 'b_mesa', x: 210, y: 118, reward: 'gold', gold: 60 },
+  // more golden treasure chests with gold, one or two in every land
+  { type: 'bigchest', id: 'g_dark_nw', x: 63, y: 8, reward: 'gold', gold: 80 },
+  { type: 'bigchest', id: 'g_mt_peak', x: 192, y: 8, reward: 'gold', gold: 70 },
+  { type: 'bigchest', id: 'g_forest_nw', x: 11, y: 50, reward: 'gold', gold: 50 },
+  { type: 'bigchest', id: 'g_mt_ridge', x: 146, y: 50, reward: 'gold', gold: 60 },
+  { type: 'bigchest', id: 'g_forest_s', x: 66, y: 92, reward: 'gold', gold: 40 },
+  { type: 'bigchest', id: 'g_desert_w', x: 146, y: 92, reward: 'gold', gold: 50 },
+  { type: 'bigchest', id: 'g_lake_w', x: 26, y: 134, reward: 'gold', gold: 60 },
+  { type: 'bigchest', id: 'g_desert_s', x: 192, y: 134, reward: 'gold', gold: 70 },
 ];
 // runtime lists built from the POIs
 const owChests = [];     // { id, x, y, big, reward, gold } (tile coords; opened state in owState.chests)
@@ -3346,9 +3355,31 @@ function drawLever(cx, foot, down) {
   ctx.fillStyle = '#d83030'; ctx.beginPath(); ctx.arc(0, -12, 2.5, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
+// a tiny folk-tale fairy: a little figure with butterfly wings, hovering over the spring
+function drawSpringFairy(x, y, now, healing) {
+  x = Math.round(x); y = Math.round(y);
+  if (typeof imgReady === 'function' && imgReady('fairy') && typeof FAIRY_SRC !== 'undefined') { // art, when added
+    drawSpriteFoot(ctx, 'fairy', FAIRY_SRC[Math.floor(now * 8) % FAIRY_SRC.length], x, y + 8, 18); return;
+  }
+  const flap = Math.abs(Math.sin(now * 14)), gl = healing ? 0.55 : 0.28;
+  const g = ctx.createRadialGradient(x, y, 1, x, y, 12); g.addColorStop(0, 'rgba(255,220,250,' + gl + ')'); g.addColorStop(1, 'rgba(255,200,240,0)');
+  ctx.fillStyle = g; ctx.fillRect(x - 12, y - 12, 24, 24);
+  ctx.fillStyle = 'rgba(190,240,255,0.75)'; // wings
+  ctx.beginPath(); ctx.ellipse(x - 3, y - 2, 4, 2 + 3 * flap, -0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + 3, y - 2, 4, 2 + 3 * flap, 0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#1a1410'; ctx.fillRect(x - 2, y - 5, 4, 9);     // outline
+  ctx.fillStyle = '#ff9ad8'; ctx.fillRect(x - 1, y - 1, 2, 5);     // dress
+  ctx.fillStyle = '#ffe0c0'; ctx.fillRect(x - 1, y - 4, 2, 3);     // face
+  ctx.fillStyle = '#ffd84a'; ctx.fillRect(x - 1, y - 5, 2, 1);     // golden hair
+  if (Math.floor(now * 6) % 3 === 0) { ctx.fillStyle = '#ffffff'; ctx.fillRect(x + 4, y + 3, 1, 1); }
+  if (healing) for (let i = 0; i < 5; i++) { const a = now * 6 + i * 1.26; ctx.fillStyle = '#ffb8e8'; ctx.fillRect(Math.round(x + Math.cos(a) * 9), Math.round(y + Math.sin(a) * 6), 2, 2); }
+}
 function drawFountainSparkle(f, now) {
   const TS = CONFIG.TILE, cx = (f.x + 0.5) * TS, foot = (f.y + 1) * TS;
   drawOwp(ctx, 'spring', cx, foot + 1);
+  ctx.save(); ctx.translate(Math.round(cx + Math.sin(now * 0.9) * 8), Math.round(foot - 44 + Math.sin(now * 2.3) * 3)); ctx.scale(1.6, 1.6);
+  drawSpringFairy(0, 0, now, f.healT > 0);
+  ctx.restore();
   // twinkles over the water
   for (let i = 0; i < 4; i++) {
     const t = (now * 0.7 + i * 0.25) % 1, a = i * 1.7 + Math.floor(now * 0.7 + i * 0.25) * 2.3;
@@ -3489,13 +3520,18 @@ function updateOverworldSpecials(dt) {
     }
   } else if (!onCave) hero.inCave = false;
   // healing springs
+  // each spring has a fairy who heals the hero to full on every visit
   for (const f of owFountains) {
-    f.cool = Math.max(0, f.cool - dt);
-    if (Math.hypot(hero.x - (f.x + 0.5) * TS, hero.y - (f.y + 0.5) * TS) < 36 && player.hearts < player.maxHearts && f.cool <= 0) {
-      player.hearts = player.maxHearts; f.cool = 20;
-      SFX.revive(); spawnConfetti(hero.x, hero.y - 8, 12);
-      spawnFloatingText(hero.x, hero.y - 22, 'Healed!', '#ff9ad8');
-    }
+    const near = Math.hypot(hero.x - (f.x + 0.5) * TS, hero.y - (f.y + 0.5) * TS) < 36;
+    if (near && !f.visiting) {
+      f.visiting = true;
+      if (player.hearts < player.maxHearts) {
+        player.hearts = player.maxHearts; f.healT = 1.2;
+        SFX.revive(); spawnConfetti(hero.x, hero.y - 8, 14);
+        spawnFloatingText(hero.x, hero.y - 22, 'The fairy heals you!', '#ff9ad8');
+      } else showHint('The spring fairy smiles. Come back when you are hurt!', 1.8);
+    } else if (!near) f.visiting = false;
+    if (f.healT > 0) f.healT -= dt;
   }
 }
 
@@ -4291,11 +4327,42 @@ function updateHeartPieces(dt) {
     }
   }
 }
+// where the exit portal stands in a temple's treasure room (only once the chest is open)
+function treasurePortalPos(d) {
+  if (!d || d.roomIndex !== d.TREAS || !d.chestOpened) return null;
+  const r = d.rooms[d.TREAS], TS = CONFIG.TILE;
+  return { x: (Math.floor(r.w / 2) + 3.5) * TS, y: (Math.floor(r.h / 2) + 0.5) * TS };
+}
+function drawTreasurePortal(d) {
+  const pp = treasurePortalPos(d);
+  if (!pp) return;
+  const now = performance.now() / 1000, x = Math.round(pp.x), y = Math.round(pp.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(x, y + 4, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
+  const g = ctx.createRadialGradient(x, y, 1, x, y, 14); g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.4, 'rgba(120,220,255,0.7)'); g.addColorStop(1, 'rgba(120,120,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, 14, 9, 0, 0, Math.PI * 2); ctx.fill();
+  for (let i = 0; i < 3; i++) { // swirling rings
+    ctx.strokeStyle = ['#8fe0ff', '#c8a0ff', '#ffffff'][i]; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(x, y, 11 - i * 3, 7 - i * 2, 0, now * (3 + i) + i, now * (3 + i) + i + Math.PI * 1.3); ctx.stroke();
+  }
+  for (let i = 0; i < 4; i++) { const t = (now * 0.8 + i * 0.25) % 1; ctx.fillStyle = 'rgba(200,240,255,' + (1 - t).toFixed(2) + ')'; ctx.fillRect(x - 8 + i * 5, Math.round(y - t * 18), 2, 2); }
+  if (Math.hypot(hero.x - x, hero.y - y) < 40) {
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(10,10,20,0.8)'; ctx.fillRect(x - 22, y - 26, 44, 11);
+    ctx.fillStyle = '#8fe0ff'; ctx.fillText('EXIT', x, y - 18);
+  }
+}
 function updateDungeonRoom(dt, room) {
   const d = world.dungeon;
   handleDungeonDoors(d, room, dt);
   updateDungeonPuzzle(d, dt);
   updateDungeonExtra(d, dt);
+  // the treasure room's portal (once the chest is open) carries the hero outside
+  const pp = treasurePortalPos(d);
+  if (pp && Math.hypot(hero.x - pp.x, hero.y - pp.y) < 11 && fadeDir === 0 && !d.portalUsed) {
+    d.portalUsed = true; SFX.medallion(); spawnConfetti(pp.x, pp.y, 18);
+    showHint('The portal carries you outside!', 1.8);
+    exitDungeonToOverworld();
+  }
+  if (d.roomIndex !== d.TREAS) d.portalUsed = false;
 
   // miniboss extra attack: periodic dash toward hero (bug #5: this hook
   // must keep working even while the math/revive popup is open elsewhere)
@@ -8348,7 +8415,7 @@ function drawPlaying() {
   if (world.mode === 'overworld') drawWaterShimmer(map, now);
   if (world.mode === 'dungeon' || world.mode === 'castle' || world.mode === 'mirage') drawRoomDoors(map);
   if (world.mode === 'mirage') mirageGroundItems();
-  if (world.mode === 'dungeon') drawDungeonGround(world.dungeon);
+  if (world.mode === 'dungeon') { drawDungeonGround(world.dungeon); drawTreasurePortal(world.dungeon); }
   if (world.mode === 'castle') drawCastleGround();
 
   // dust puffs + ripple markers sit on the ground
