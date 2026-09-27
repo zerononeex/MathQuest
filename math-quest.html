@@ -1174,7 +1174,8 @@ const OW_LAYOUT = {
     { w: 1, pts: [[178, 104], [204, 94], [226, 79]] },                  // east stairs loop
     { w: 2, pts: [[164, 122], [172, 134], [180, 140]] },                // desert outpost
     { w: 1, pts: [[180, 140], [192, 136], [200, 131]] },                // mesa stairs
-    { w: 2, pts: [[74, 118], [58, 122], [50, 128], [50, 146]] },        // Water Dungeon bridge
+    { w: 2, pts: [[74, 118], [58, 122], [50, 128]] },                   // to the Water Dungeon lever...
+    { w: 2, pts: [[50, 128], [50, 146]], straight: true },              // ...and its island bridge (exactly here)
     { w: 1, pts: [[118, 136], [104, 150], [92, 161], [86, 161]] },                 // bluff stairs
   ],
   // the retractable bridge to the Water Dungeon island: a lever on the
@@ -1305,18 +1306,6 @@ function buildOverworld() {
     }
     if (sea) grid[y][x] = T.SAND;
   }
-  // 5. roads (dirt; a road over water becomes a bridge). Diagonal legs are
-  // routed as short orthogonal steps, like a 16-bit map's paths.
-  const lakeBridge = L.bridges[0];
-  for (const r of L.roads) stampPolyline(orthoRoute(r.pts), r.w, (x, y) => {
-    if (!inb(x, y)) return;
-    if (grid[y][x] === T.WATER) {
-      grid[y][x] = T.BRIDGE;
-      const bid = (x >= lakeBridge.x - 1 && x <= lakeBridge.x + 1 && y >= lakeBridge.y0 && y <= lakeBridge.y1) ? lakeBridge.id : 'fixed';
-      (ow.bridgeTiles[bid] = ow.bridgeTiles[bid] || []).push([x, y]);
-    } else if (grid[y][x] !== T.BRIDGE) grid[y][x] = T.DIRT;
-    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) if (inb(x + ox, y + oy)) keep[y + oy][x + ox] = 1;
-  });
   // 6. cliffs from the height map (faces on the lower cells, rims on the upper)
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     const lv = hgt[y][x];
@@ -1351,6 +1340,66 @@ function buildOverworld() {
     ow.caves.push({ id: c.id, x: c.x, y: c.y + 1, to: c.to });
     for (let oy = 0; oy <= 4; oy++) for (let ox = -2; ox <= 2; ox++) if (inb(c.x + ox, c.y + oy)) keep[c.y + oy][c.x + ox] = 1;
   }
+  // 5. roads, routed over the real terrain between their authored waypoints
+  // (after the cliffs are known): A* where water costs a lot (a road crosses
+  // a river straight across at its narrowest - a short bridge - instead of
+  // running along it), cliffs are walls except at their stairs, and every
+  // bend costs a little so roads stay straight with a few clean turns.
+  const lakeBridge = L.bridges[0];
+  const isStair = (x, y) => role[y][x] === 'stT' || role[y][x] === 'stB';
+  const roadPath = (x0, y0, x1, y1) => {
+    const N = w * h, DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const g = new Float32Array(N * 4).fill(Infinity), prev = new Int32Array(N * 4).fill(-1), heap = [];
+    const push = (f, st) => { heap.push([f, st]); let i = heap.length - 1; while (i > 0) { const q = (i - 1) >> 1; if (heap[q][0] <= heap[i][0]) break; [heap[q], heap[i]] = [heap[i], heap[q]]; i = q; } };
+    const pop = () => { const t = heap[0], l = heap.pop(); if (heap.length) { heap[0] = l; let i = 0; for (;;) { const a2 = 2 * i + 1, b2 = a2 + 1; let m = i; if (a2 < heap.length && heap[a2][0] < heap[m][0]) m = a2; if (b2 < heap.length && heap[b2][0] < heap[m][0]) m = b2; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return t; };
+    const hh = (x, y) => Math.abs(x - x1) + Math.abs(y - y1);
+    for (let d = 0; d < 4; d++) { const st = (y0 * w + x0) * 4 + d; g[st] = 0; push(hh(x0, y0), st); }
+    let end = -1;
+    while (heap.length) {
+      const [f, st] = pop(), c = st >> 2, d = st & 3, x = c % w, y = (c - x) / w;
+      if (f - hh(x, y) > g[st] + 1e-6) continue;
+      if (x === x1 && y === y1) { end = st; break; }
+      for (let nd = 0; nd < 4; nd++) {
+        const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
+        if (nx < 2 || ny < 2 || nx >= w - 2 || ny >= h - 2) continue;
+        if (role[ny][nx] && !isStair(nx, ny)) continue;                       // cliff
+        if (hgt[ny][nx] !== hgt[y][x] && !isStair(nx, ny) && !isStair(x, y)) continue; // height change off the stairs
+        const cost = (grid[ny][nx] === T.WATER ? 30 : 1) + (nd !== d ? 4 : 0);
+        const ns = (ny * w + nx) * 4 + nd, ng = g[st] + cost;
+        if (ng < g[ns]) { g[ns] = ng; prev[ns] = st; push(ng + hh(nx, ny), ns); }
+      }
+    }
+    if (end < 0) return null;
+    const out = [];
+    for (let st = end; st !== -1; st = prev[st]) { const c = st >> 2; out.push([c % w, Math.floor(c / w)]); if (g[st] === 0) break; }
+    return out.reverse();
+  };
+  const paintRoad = (x, y) => {
+    if (!inb(x, y) || (role[y][x] && !isStair(x, y))) return;
+    if (isStair(x, y)) return; // the stairs keep their own art
+    if (grid[y][x] === T.WATER) {
+      grid[y][x] = T.BRIDGE;
+      const bid = (x >= lakeBridge.x - 1 && x <= lakeBridge.x + 1 && y >= lakeBridge.y0 && y <= lakeBridge.y1) ? lakeBridge.id : 'fixed';
+      (ow.bridgeTiles[bid] = ow.bridgeTiles[bid] || []).push([x, y]);
+    } else if (grid[y][x] !== T.BRIDGE) grid[y][x] = T.DIRT;
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) if (inb(x + ox, y + oy)) keep[y + oy][x + ox] = 1;
+  };
+  for (const r of L.roads) {
+    if (r.straight) { stampPolyline(r.pts, r.w, paintRoad); continue; }
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const [ax, ay] = r.pts[i], [bx, by] = r.pts[i + 1];
+      const path = roadPath(ax, ay, bx, by);
+      if (!path) { console.warn('road: no route', ax, ay, bx, by); stampPolyline(orthoRoute([r.pts[i], r.pts[i + 1]]), r.w, paintRoad); continue; }
+      // widen along the travel direction: the second lane sits right of / below it
+      for (let k = 0; k < path.length; k++) {
+        const [x, y] = path[k], [px2, py2] = path[Math.max(0, k - 1)], [nx2, ny2] = path[Math.min(path.length - 1, k + 1)];
+        const vertical = px2 === nx2 ? true : py2 === ny2 ? false : Math.abs(ny2 - py2) > Math.abs(nx2 - px2);
+        paintRoad(x, y);
+        if (r.w >= 2) { if (vertical) paintRoad(x + 1, y); else paintRoad(x, y + 1); }
+        if (r.w >= 2 && k > 0 && k < path.length - 1 && (px2 !== nx2 && py2 !== ny2)) paintRoad(x + 1, y + 1); // fill the corner of a bend
+      }
+    }
+  }
   // role -> tile
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const rl = role[y][x];
@@ -1366,7 +1415,7 @@ function buildOverworld() {
 // trees, groves and rock patches (after the landmarks are carved, so their
 // clearings are honoured); density comes from region + a noise field, so
 // forests read as groves with glades rather than evenly sprinkled dots
-const TREE_DENSITY = { town: 0.0, forest: 1.0, darkness: 0.8, lakes: 0.45, mountain: 0.3, desert: 0.03 };
+const TREE_DENSITY = { town: 0.0, forest: 0.6, darkness: 0.45, lakes: 0.22, mountain: 0.16, desert: 0.03 }; // (thinned: open meadows between groves)
 function plantTrees(ow) {
   const { w, h, grid, keep, hgt } = ow;
   const cx = w / 2, cy = h / 2;
@@ -1605,7 +1654,7 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
       // sand + foam shoreline cut from the scene, rotated per land side
       for (const [dx, dy, rot] of _SIDES) {
         const n = neighborTile(mapData, gx, gy, dx, dy);
-        if (n !== null && n !== T.WATER) drawTileImg(octx, 'edgeShoreN', px, py, rot);
+        if (n !== null && n !== T.WATER && n !== T.BRIDGE) drawTileImg(octx, 'edgeShoreN', px, py, rot); // a bridge is not a shore
       }
       break;
     }
@@ -2802,8 +2851,9 @@ function drawBridgeTile(octx, mapData, px, py, gx, gy) {
   const TS = CONFIG.TILE;
   drawGroundKind(octx, 'water', px, py, gx, gy);
   const n = (dx, dy) => neighborTile(mapData, gx, gy, dx, dy);
-  const land = t => t !== null && t !== T.WATER;
-  const vertical = land(n(0, -1)) || land(n(0, 1)) || !(land(n(-1, 0)) || land(n(1, 0)));
+  // travel direction = the longer run of bridge tiles through this one
+  const run = (dx, dy) => { let k = 0; for (let i = 1; i < 30 && neighborTile(mapData, gx, gy, dx * i, dy * i) === T.BRIDGE; i++) k++; return k; };
+  const vertical = run(0, -1) + run(0, 1) >= run(-1, 0) + run(1, 0);
   octx.fillStyle = '#4a2e18'; octx.fillRect(px, py, TS, TS);
   for (let i = 0; i < 4; i++) {
     octx.fillStyle = i % 2 ? '#a8743e' : '#b98450';
