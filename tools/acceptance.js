@@ -120,7 +120,10 @@ function check(name, ok, detail) {
       out.boomerangBought = player.owned.boomerang;
       out.boomerangAutoSlotted = player.slots.includes('boomerang');
 
-      // AP drain + Q auto-open at 0 AP
+      // AP drain + Q auto-open at 0 AP (full hearts + shielded: the wild enemy
+      // next to the hero used to down it now and then, so the revive question
+      // opened instead of the AP one and the later checks inherited it)
+      player.hearts = player.maxHearts; player.downed = false; player.invincibleT = 99;
       player.ap = 1;
       const target = overworldEnemies.find(e => e.alive);
       hero.x = target.x - 5; hero.y = target.y; hero.facing = 'right';
