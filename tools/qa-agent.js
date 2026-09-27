@@ -1623,6 +1623,13 @@
     return true;
   }
   function* leaveDungeon(d, st) {
+    // a cleared treasure room has an exit portal: take it, like a player would
+    const pp = typeof treasurePortalPos === 'function' ? treasurePortalPos(d) : null;
+    if (pp) {
+      const TSp = CONFIG.TILE;
+      yield* navTo(Math.floor(pp.x / TSp), Math.floor(pp.y / TSp), { allowZone: true, expectTransition: true, label: 'exit ' + d.def.name + ' through the treasure-room portal', timeoutMs: 20000 });
+      yield* waitUntil(() => !fading(), 1500);
+    }
     let guard = 0;
     while (world.mode === 'dungeon' && guard++ < 8) {
       const ri = d.roomIndex, room = currentMap(), midY = Math.floor(room.h / 2);
