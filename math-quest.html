@@ -1911,8 +1911,12 @@ function drawSmoothShore(octx, mapData, t, px, py, gx, gy) {
     else { r = land[k]; g = land[k + 1]; b = land[k + 2]; }
     d[k] = r; d[k + 1] = g; d[k + 2] = b; d[k + 3] = 255;
   }
-  _shoreTmp._x.putImageData(img, 0, 0);
-  octx.drawImage(_shoreTmp, px, py);
+  // Write the pixels straight into the target. Drawing one reused scratch
+  // canvas into the map lets Safari (iPad) batch the draws and paint every
+  // shore tile with the LAST tile's pixels - the blocky "teeth" seen there.
+  const tr = octx.getTransform ? octx.getTransform() : null;
+  if (tr && tr.a === 1 && tr.d === 1 && !tr.b && !tr.c) octx.putImageData(img, Math.round(px + tr.e), Math.round(py + tr.f));
+  else { const c = makeCanvas(TS, TS); c.getContext('2d').putImageData(img, 0, 0); octx.drawImage(c, px, py); }
   return true;
 }
 // just the hanging board of the shop sign art (no iron bracket) for signposts
@@ -3800,7 +3804,7 @@ function scaleBossForFight(e) {
   e.bossScaled = true;
   const per = computeDamage(equippedSwordKind(), e.defense || 0);
   const hits = Math.round(BOSS_HITS[e.bossKind] * (littleHero() ? 0.6 : 1));
-  e.hp = e.maxHp = Math.max(e.maxHp, hits * per);
+  e.hp = e.maxHp = Math.max(e.maxHp, hits * per) * 2; // doubled: fast tapping on a tablet made fights too short
 }
 function bossDmg() { return littleHero() ? 1 : 2; }
 function bossPickAttack(e) {
@@ -4702,7 +4706,7 @@ function malrekScale(g) {
   if (g.bonus === N && g.scaledFor === player.attack) return;
   const frac = g.maxHp > 0 && g.bonus !== undefined ? Math.max(0, g.hp / g.maxHp) : 1;
   const per = computeDamage(equippedSwordKind(), g.defense || 0);
-  const hits = littleHero() ? 16 + N : 26 + 2 * N;
+  const hits = (littleHero() ? 16 + N : 26 + 2 * N) * 2; // doubled, like the temple bosses
   const weaker = g.bonus !== undefined && N < g.bonus;
   g.bonus = N; g.scaledFor = player.attack;
   g.maxHp = hits * per;
