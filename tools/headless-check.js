@@ -323,7 +323,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await page.evaluate(() => { player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null; });
   }
 
-  // ---- soundtrack: decode all 8 buffers after a gesture, verify state->track mapping ----
+  // ---- soundtrack: decode the 8 core buffers after a gesture (area songs load on demand), verify state->track mapping ----
   {
     await page.mouse.click(5, 5);
     const t0 = Date.now();
@@ -350,14 +350,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       world.mode = 'overworld'; hero.x = (overworld.w / 2 + 40) * T; hero.y = (overworld.h / 2) * T;
       return out;
     });
-    await sleep(400);
-    const a = await page.evaluate(() => ({ key: Music.cur && Music.cur.key, sw: Music.switches }));
+    // (area songs decode on demand: give the first one a moment)
+    let a = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(250);
+      a = await page.evaluate(() => ({ key: Music.cur && Music.cur.key, sw: Music.switches, lazy: Object.keys(Music.buffers).filter(k => k.startsWith('ow_')) }));
+      if (a.key === map.overworld) break;
+    }
     await page.evaluate(() => { hero.x = (overworld.w / 2) * CONFIG.TILE; hero.y = (overworld.h / 2) * CONFIG.TILE; });
     await sleep(400);
     const b = await page.evaluate(() => ({ key: Music.cur && Music.cur.key, sw: Music.switches }));
-    const want = { title: 'title', town: 'village', overworld: 'overworld', house: 'village', dungeonRoom: 'dungeon', bossRoom: 'boss', finalBoss: 'final_boss' };
-    const bad = Object.keys(want).filter(k => map[k] !== want[k]);
-    const ok = dec.n === 8 && bad.length === 0 && a.key === 'overworld' && b.key === 'village' && b.sw > a.sw;
+    const want = { title: 'title', town: 'village', overworld: /^(overworld|ow_\w+)$/, house: 'village', dungeonRoom: 'dungeon', bossRoom: 'boss', finalBoss: 'final_boss' };
+    const bad = Object.keys(want).filter(k => want[k] instanceof RegExp ? !want[k].test(map[k]) : map[k] !== want[k]);
+    const ok = dec.n >= 8 && dec.f === 0 && bad.length === 0 && a.key === map.overworld && a.lazy.length <= 2 && b.key === 'village' && b.sw > a.sw;
     console.log((ok ? 'OK' : 'FAIL') + ': music ' + JSON.stringify({ decoded: dec, map, before: a, after: b }));
     if (!ok) errors.push('music check failed');
   }
