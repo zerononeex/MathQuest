@@ -12,6 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); ART = os.path.join(HERE, '..'
 SHEETS = [
     ('homes_raw.jpg', [('home1', (205, 398)), ('home2', (483, 398)), ('home3', (817, 405))], 0.24),
     ('shop_raw.jpg', [('shop', (705, 636))], 0.099),
+    ('desert_buildings_raw.jpg', [('desert_shop', (378, 445)), ('desert_hut', (785, 468))], 0.16),
     ('regional_shops_raw.jpg', [('shop_forest', (112, 338)), ('shop_lakes', (362, 292)), ('shop_mountain', (612, 335)), ('shop_darkness', (868, 345))], 0.3),
 ]
 def key(A):
