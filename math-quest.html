@@ -1451,6 +1451,21 @@ function buildOverworld() {
     if (!isF(role[y][x - 1])) role[y][x] = rl + 'L';
     else if (!isF(role[y][x + 1])) role[y][x] = rl + 'R';
   }
+  // wrap a face's end cap under the side wall that meets it, so the cliff
+  // turns the corner in one piece (no notch of open ground between them)
+  const wraps = [];
+  for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) {
+    const rl = role[y][x];
+    if (rl !== 'fTL' && rl !== 'fTR') continue;
+    const s = rl === 'fTL' ? -1 : 1, lv = hgt[y][x];
+    if (role[y - 1][x + s] !== (s < 0 ? 'wallE' : 'wallW') || role[y][x + s] || hgt[y][x + s] !== lv) continue;
+    wraps.push([x, y, s]);
+  }
+  for (const [x, y, s] of wraps) {
+    const e = s < 0 ? 'L' : 'R', lv = hgt[y][x];
+    role[y][x + s] = 'fT' + e; role[y][x] = 'fT';
+    if (role[y + 1][x] === 'fB' + e && !role[y + 1][x + s] && hgt[y + 1][x + s] === lv) { role[y + 1][x + s] = 'fB' + e; role[y + 1][x] = 'fB'; }
+  }
   // stairs and caves cut through faces
   for (const [x, y] of L.stairs) {
     role[y][x] = 'stT'; role[y + 1][x] = 'stB'; ow.stairsTiles.push([x, y], [x, y + 1]);
@@ -3244,7 +3259,106 @@ function drawElevPiece(octx, sx, sy, w, h, px, py) {
   octx.drawImage(ATLAS.elev_tiles, sx, sy, w, h, px, py, w, h);
   return true;
 }
+// Cliff tops and face ends are drawn per pixel from a distance field, so a
+// plateau's outline turns its corners in smooth curves: a rock lip runs
+// along every open side of the raised block (plateau + its side-wall and
+// face cells, i.e. exactly what is solid), outer corners are rounded off and
+// inner corners bend the lip around in an arc.
+const CLIFF_PAL = [
+  { o: [26, 16, 22], l: [190, 139, 95], m: [143, 99, 75], d: [107, 70, 64], s: [60, 40, 50] },
+  { o: [26, 16, 22], l: [132, 128, 146], m: [70, 66, 84], d: [30, 26, 38], s: [60, 40, 50] },
+  { o: [26, 16, 22], l: [236, 184, 120], m: [156, 90, 48], d: [70, 34, 22], s: [60, 40, 50] },
+];
+const CLIFF_EDGE_ROLES = new Set(['wallE', 'wallW', 'rim', 'rimNW', 'rimNE', 'fT', 'fB', 'fTL', 'fBL', 'fTR', 'fBR']);
+let _elevPx = null;
+function _elevAtlasPixels() {
+  if (_elevPx) return _elevPx;
+  const im = ATLAS.elev_tiles, c = makeCanvas(im.width, im.height), x = c.getContext('2d');
+  x.drawImage(im, 0, 0);
+  _elevPx = { w: im.width, d: x.getImageData(0, 0, im.width, im.height).data };
+  return _elevPx;
+}
+function drawCliffEdgeTile(octx, rl, px, py, gx, gy) {
+  const ow = overworld;
+  if (!ow || !ow.hgt || !imgReady('elev_tiles') || !imgReady('overworld_tiles')) return false;
+  const TS = CONFIG.TILE, R = 7, th = elevTheme(gx, gy), P = CLIFF_PAL[th] || CLIFF_PAL[0];
+  const face = rl[0] === 'f', rimR = rl.startsWith('rim'), lo = ow.hgt[gy][gx] - (rimR ? 1 : 0);
+  // is a neighbour part of this raised block? (higher ground, or a cliff cell at our level)
+  const inB = (dx, dy) => {
+    const x = gx + dx, y = gy + dy;
+    if (x < 0 || y < 0 || x >= ow.w || y >= ow.h) return true;
+    const hh = ow.hgt[y][x];
+    return hh > lo || (hh === lo && !!ow.role[y][x]);
+  };
+  const oN = !inB(0, -1), oS = !inB(0, 1), oW = !inB(-1, 0), oE = !inB(1, 0);
+  // faces keep their own top and bottom art: only their open side is lipped
+  const eN = !face && oN, eS = !face && oS, eW = oW, eE = oE;
+  const corner = (a, b, diag) => a && b ? 1 : (!a && !b && diag) ? 2 : 0; // 1 convex, 2 concave
+  const cNW = corner(oN, oW, !inB(-1, -1)), cNE = corner(oN, oE, !inB(1, -1));
+  const cSW = corner(oS, oW, !inB(-1, 1)), cSE = corner(oS, oE, !inB(1, 1));
+  // ground: the lower level shows where a corner is rounded away
+  // (a side-wall cell wears the plateau's ground; a face's fringe the cell above's)
+  const topKind = (x, y) => {
+    const r = ow.role[y] && ow.role[y][x], own = overworldGroundKind(x, y);
+    if (r !== 'wallE' && r !== 'wallW') return own;
+    return overworldGroundKind(r === 'wallE' ? x + 1 : x - 1, y) === 'rock' ? 'rock' : own; // (mountain rock runs to the edge)
+  };
+  const upKind = face ? (rl[1] === 'B' ? topKind(gx, gy + 1) : topKind(gx, gy - 1)) : topKind(gx, gy);
+  const upper = _groundPixels(upKind, gx, gy), lower = _groundPixels(overworldGroundKind(gx, gy), gx, gy);
+  let art = null, ax = 0, ay = 0;
+  if (face) {
+    const A = _elevAtlasPixels(), v = Math.floor(tileHash(gx, rl[1] === 'B' ? gy - 1 : gy, 21) * 4);
+    art = A; ax = ELEV.face + v * 16; ay = th * 32 + (rl[1] === 'B' ? 16 : 0);
+  }
+  const img = _shoreTmp._x.createImageData(TS, TS), out = img.data;
+  for (let v = 0; v < TS; v++) for (let u = 0; u < TS; u++) {
+    const cu = u + 0.5, cv = v + 0.5;
+    let d = Infinity;
+    if (eN) d = Math.min(d, cv);
+    if (eS) d = Math.min(d, TS - cv);
+    if (eW) d = Math.min(d, cu);
+    if (eE) d = Math.min(d, TS - cu);
+    // rounded outer corners (a convex corner overrides its two edges) and
+    // arcs around inner ones
+    const conv = (ex, ey) => R - Math.hypot(R - ex, R - ey);
+    if (cNW === 1 && cu < R && cv < R) d = Math.min(eS ? TS - cv : Infinity, eE ? TS - cu : Infinity, conv(cu, cv));
+    else if (cNE === 1 && TS - cu < R && cv < R) d = Math.min(eS ? TS - cv : Infinity, eW ? cu : Infinity, conv(TS - cu, cv));
+    else if (cSW === 1 && cu < R && TS - cv < R) d = Math.min(eN ? cv : Infinity, eE ? TS - cu : Infinity, conv(cu, TS - cv));
+    else if (cSE === 1 && TS - cu < R && TS - cv < R) d = Math.min(eN ? cv : Infinity, eW ? cu : Infinity, conv(TS - cu, TS - cv));
+    if (!face) {
+      if (cNW === 2) d = Math.min(d, Math.hypot(cu, cv));
+      if (cNE === 2) d = Math.min(d, Math.hypot(TS - cu, cv));
+      if (cSW === 2) d = Math.min(d, Math.hypot(cu, TS - cv));
+      if (cSE === 2) d = Math.min(d, Math.hypot(TS - cu, TS - cv));
+    }
+    const k = (v * TS + u) * 4;
+    const bare = face && rl[1] === 'B' && oS;   // below a face's foot: open lower ground
+    let c = null, g = bare ? lower : upper, shade = 1;
+    const ak = face ? ((ay + v) * art.w + ax + u) * 4 : 0;
+    if (face && art.d[ak + 3]) {
+      if (d < 0) g = lower;
+      else if (d < 1) c = P.o;
+      else if (d < 3) c = d < 2 ? P.s : P.d;
+      else c = [art.d[ak], art.d[ak + 1], art.d[ak + 2]];
+    } else if (bare) { if (d < 0) g = lower; }
+    else if (d < 0) g = lower;                  // (a face top's grass fringe takes the lip too)
+    else if (d < 1) c = P.o;
+    else if (d < 2) c = P.l;
+    else if (d < 4) c = tileHash(gx * 16 + u, gy * 16 + v, 5) < 0.18 ? P.l : P.m;
+    else if (d < 5) c = tileHash(gx * 16 + u, gy * 16 + v, 6) < 0.3 ? P.m : P.d;
+    else if (d < 6) c = P.s;
+    else if (d < 7) shade = 0.75;
+    if (c) { out[k] = c[0]; out[k + 1] = c[1]; out[k + 2] = c[2]; }
+    else { out[k] = g[k] * shade; out[k + 1] = g[k + 1] * shade; out[k + 2] = g[k + 2] * shade; }
+    out[k + 3] = 255;
+  }
+  const tr = octx.getTransform ? octx.getTransform() : null;
+  if (tr && tr.a === 1 && tr.d === 1 && !tr.b && !tr.c) octx.putImageData(img, Math.round(px + tr.e), Math.round(py + tr.f));
+  else { const cc = makeCanvas(TS, TS); cc.getContext('2d').putImageData(img, 0, 0); octx.drawImage(cc, px, py); }
+  return true;
+}
 function drawElevTile(octx, rl, px, py, gx, gy) {
+  if (CLIFF_EDGE_ROLES.has(rl) && drawCliffEdgeTile(octx, rl, px, py, gx, gy)) return;
   const TS = CONFIG.TILE, Y = elevTheme(gx, gy) * 32;
   const upper = rl === 'fT' || rl === 'fTL' || rl === 'fTR' || rl === 'stT' || rl.endsWith('T') && rl.startsWith('cave') || rl.startsWith('rim');
   drawGroundKind(octx, overworldGroundKind(gx, upper && !rl.startsWith('rim') ? gy - 1 : gy), px, py, gx, gy);
