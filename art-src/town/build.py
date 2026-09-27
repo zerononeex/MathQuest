@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); ART = os.path.join(HERE, '..'
 # sheet, [(name, (door centre x, door bottom y) in the raw sheet)], game px per raw px
 SHEETS = [
     ('homes_raw.jpg', [('home1', (205, 398)), ('home2', (483, 398)), ('home3', (817, 405))], 0.24),
+    ('shop_raw.jpg', [('shop', (705, 636))], 0.099),
 ]
 def key(A):
     r, g, b = A[..., 0], A[..., 1], A[..., 2]
