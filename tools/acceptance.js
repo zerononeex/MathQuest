@@ -1093,6 +1093,38 @@ function check(name, ok, detail) {
     await gp.close();
   }
 
+  // --- enemy attacks: wind-up (telegraph) -> lunge that hurts -> rest; shooters
+  // fire after their wind-up; dungeon enemies get tougher temple by temple ---
+  {
+    const ep = await browser.newPage();
+    ep.on('pageerror', e => errorsAll.push('enemyatk: ' + e.message));
+    await ep.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await ep.evaluate(() => {
+      const out = {};
+      try {
+        CONFIG.DIFFICULTY = 'ADVENTURER'; startNewGame();
+        for (const e of wildsEnemies.concat(overworldEnemies)) e.alive = false;
+        const TS = CONFIG.TILE;
+        const w = makeDungeonEnemy('wolf', hero.x + 30, hero.y); w.atkCD = 0; wildsEnemies.push(w); cachedOverworldEnemies = null;
+        player.invincibleT = 0; const h0 = player.hearts, seen = [];
+        for (let i = 0; i < 90; i++) { updateEnemies(1 / 60, overworld); if (w.atk && seen[seen.length - 1] !== w.atk.st) seen.push(w.atk.st); }
+        out.phases = seen.join('>'); out.hurt = h0 - player.hearts;
+        const o = makeDungeonEnemy('octorok', hero.x + 60, hero.y); o.atkCD = 0; wildsEnemies.push(o); cachedOverworldEnemies = null;
+        const n0 = enemyShots.length;
+        for (let i = 0; i < 60; i++) updateEnemies(1 / 60, overworld);
+        out.shot = enemyShots.length > n0;
+        const hp = dungeons.map(d => { scaleDungeonEnemies(d); const e = d.enemies[0].find(x => !x.isMiniboss); return e ? e.maxHp : 0; });
+        out.dungeonHp = hp;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Enemy attacks: wind-up -> lunge (hurts) -> rest; octoroks shoot after a wind-up; temples get tougher in order',
+      !r.exception && r.phases === 'wind>lunge>rest' && r.hurt >= 1 && r.shot && r.dungeonHp.every((v, i) => i === 0 || v >= r.dungeonHp[i - 1]) && r.dungeonHp[3] > r.dungeonHp[0],
+      JSON.stringify(r));
+    await ep.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

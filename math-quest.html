@@ -782,6 +782,8 @@ function playTone(freq, dur, type, gainAmt, startDelay) {
   } catch (e) { /* ignore */ }
 }
 const SFX = {
+  enemyWindup: () => { playTone(220, 0.1, 'square', 0.05); playTone(330, 0.09, 'square', 0.05, 0.09); },
+  spit: () => { playTone(620, 0.05, 'triangle', 0.09); playTone(310, 0.08, 'triangle', 0.07, 0.04); },
   swish: () => { playTone(520, 0.12, 'triangle', 0.12); playTone(760, 0.08, 'triangle', 0.08, 0.03); },
   hit: () => playTone(140, 0.1, 'square', 0.15),
   thud: () => playTone(100, 0.08, 'square', 0.12),
@@ -3197,8 +3199,22 @@ function settleSpawn(ent, map, reject) {
   ent.x = sp.x; ent.y = sp.y;
   return true;
 }
+// Dungeon enemies are tougher than overworld ones, and each temple more
+// than the last (Forest < Fire < Water < Shadow); Little Hero stays gentle.
+function scaleDungeonEnemies(d) {
+  if (d.scaled) return;
+  d.scaled = true;
+  const i = DUNGEON_DEFS.findIndex(x => x.id === d.def.id);
+  const mult = littleHero() ? 1 + 0.15 * i : 1.5 + 0.35 * i;
+  for (const list of d.enemies) for (const e of list) {
+    if (e.isMiniboss || e.isBoss) continue;
+    e.hp = e.maxHp = Math.ceil(e.maxHp * mult);
+    e.xp = Math.round((e.xp || 5) * (1 + 0.25 * i));
+  }
+}
 function enterDungeon(d) {
   if (world.mode !== 'overworld') return;
+  scaleDungeonEnemies(d);
   fadeTo(() => {
     world.mode = 'dungeon';
     world.dungeon = d;
@@ -4760,12 +4776,69 @@ function drawStatusFx(e, x, topY) {
   if (f !== 1) drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, x + 1, topY - 5, 5, 6);
 }
 
+// ---------------------------------------------------------------------------
+// Enemy attacks: every regular enemy has one telegraphed move on top of its
+// walk. Melee kinds wind up (shake + flash + '!'), lunge at where the hero
+// stood (hits harder than a bump), then rest - the moment to strike back.
+// Octoroks and fire imps wind up and shoot (a pebble / a fireball). The
+// mole, wisp and spitter keep their own special moves. Little Hero gets
+// longer wind-ups and softer hits; dungeon enemies hit harder.
+// ---------------------------------------------------------------------------
+const ENEMY_LUNGERS = new Set(['slime', 'wolf', 'wraith', 'thornling', 'ironclamp', 'grimshade', 'beetle', 'bat']);
+const ENEMY_SHOOTERS = new Set(['octorok', 'fireImp']);
+function enemyAttackDamage(e) {
+  if (littleHero()) return 1;
+  return world.mode === 'dungeon' || world.mode === 'castle' ? 2 : 1;
+}
+// returns true while the attack owns the enemy's movement this frame
+function updateEnemyAttack(e, dt, dist, map) {
+  const lunger = ENEMY_LUNGERS.has(e.type), shooter = ENEMY_SHOOTERS.has(e.type);
+  if (!lunger && !shooter) return false;
+  const LH = littleHero();
+  e.atkCD = (e.atkCD === undefined ? 1 + Math.random() * 1.5 : e.atkCD) - dt;
+  const a = e.atk;
+  if (!a) {
+    const reach = lunger ? 46 : 120;
+    if (dist < reach && e.atkCD <= 0 && !player.downed) {
+      e.atk = { st: 'wind', t: LH ? 0.85 : 0.5, dx: (hero.x - e.x) / (dist || 1), dy: (hero.y - e.y) / (dist || 1), tx: hero.x, ty: hero.y };
+      if (shooter || Math.random() < 0.5) SFX.enemyWindup && SFX.enemyWindup();
+    }
+    return false;
+  }
+  a.t -= dt;
+  if (a.st === 'wind') {
+    if (a.t <= 0) {
+      if (lunger) { a.st = 'lunge'; a.t = 0.24; a.hit = false; SFX.swish(); }
+      else { // fire a shot at where the hero stood
+        const sp = LH ? 90 : 130, ang = Math.atan2(a.ty - e.y, a.tx - e.x);
+        enemyShots.push({ kind: 'pebble', map, x: e.x, y: e.y - 3, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 2.2, reflected: false, fire: e.type === 'fireImp', dmg: 1 });
+        e.type === 'fireImp' ? SFX.fireWhoosh() : SFX.spit && SFX.spit();
+        a.st = 'rest'; a.t = 0.5;
+      }
+    }
+    return true;
+  }
+  if (a.st === 'lunge') {
+    const sp = (LH ? 130 : 175) * enemySlowFactor(e);
+    moveWithCollision(e, a.dx * sp * dt, a.dy * sp * dt, map);
+    if (!a.hit && Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 + 2) { a.hit = true; damageHero(enemyAttackDamage(e), e.x, e.y); }
+    if (a.t <= 0) { a.st = 'rest'; a.t = LH ? 0.9 : 0.6; }
+    return true;
+  }
+  // rest: a moment of vulnerability, then back to walking
+  if (a.t <= 0) { e.atk = null; e.atkCD = (LH ? 2.6 : 1.7) + Math.random() * 1.0; }
+  return true;
+}
 function updateEnemies(dt, map) {
   for (const e of currentEnemies()) {
     if (!e.alive || e.isMiniboss || e.isBoss) continue; // minibosses/final boss handled by their own update fns
     if (e.hitFlash > 0) e.hitFlash -= dt;
     const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
     const sdt = dt * enemySlowFactor(e); // movement step (ice arrows slow it)
+    if (updateEnemyAttack(e, dt, dist, map)) {
+      if (e.atk && e.atk.st !== 'lunge' && Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) damageHero(1, e.x, e.y);
+      continue;
+    }
 
     if (e.type === 'slime' || e.type === 'wolf' || e.type === 'fireImp' || e.type === 'wraith' ||
         e.type === 'thornling' || e.type === 'ironclamp') {
@@ -4929,7 +5002,7 @@ function updateEnemyShots(dt, map) {
         const e = currentEnemies().find(o => enemyTargetable(o) && Math.hypot(o.x - s.x, o.y - s.y) < 9);
         if (e) { damageEnemy(e, 'sword', { x: s.x - s.vx * 0.05, y: s.y - s.vy * 0.05 }); enemyShots.splice(i, 1); }
       } else if (Math.hypot(hero.x - s.x, hero.y - s.y) < 8) {
-        damageHero(1, s.x, s.y); enemyShots.splice(i, 1);
+        damageHero(s.dmg || 1, s.x, s.y); enemyShots.splice(i, 1);
       }
     } else if (s.kind === 'lava') {
       s.t += dt;
@@ -4965,7 +5038,12 @@ function drawEnemyShots(now) {
   for (const s of enemyShots) {
     if (s.map !== map) continue;
     const x = Math.round(s.x), y = Math.round(s.y);
-    if (s.kind === 'pebble') {
+    if (s.kind === 'pebble' && s.fire) { // a fire imp's fireball
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - 2, y + 4, 5, 1);
+      ctx.save(); ctx.translate(x, y); ctx.rotate(Math.floor(now * 12) * Math.PI / 2);
+      if (!drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, -4, -5, 8, 10)) { ctx.fillStyle = '#ff7030'; ctx.fillRect(-3, -3, 6, 6); }
+      ctx.restore();
+    } else if (s.kind === 'pebble') {
       ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - 2, y + 4, 5, 1);
       if (!drawSpriteFoot(ctx, 'new_enemies', SRC.newEnemy.pebble, x, y + 3, 5, { w: 6 })) { ctx.fillStyle = '#888'; ctx.fillRect(x - 2, y - 2, 4, 4); }
     } else if (s.kind === 'lava') {
@@ -6490,6 +6568,14 @@ function drawPlaying() {
     }
     if (swinging && hero.facing !== 'up') drawSwordArc(hero.x, hero.y, hero.facing, player.swordSwingT);
   } });
+  // an enemy winding up an attack gets a '!' over its head
+  for (const e of enemies) if (e.alive && e.atk && e.atk.st === 'wind' && onScr(e.x, e.y)) {
+    items.push({ y: 1e9, draw: () => {
+      const bx = Math.round(e.x), by = Math.round(e.y - e.h / 2 - 20);
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(bx - 3, by - 1, 7, 12);
+      ctx.fillStyle = '#ff5a3a'; ctx.fillRect(bx - 1, by, 3, 6); ctx.fillRect(bx - 1, by + 8, 3, 2);
+    } });
+  }
   if (world.mode === 'overworld') owTreeOcclusion(items);
   items.sort((a, b) => a.y - b.y || (a.hero ? 1 : 0) - (b.hero ? 1 : 0));
   for (const it of items) it.draw();
@@ -6761,7 +6847,10 @@ function drawEnemy(e) {
   const hs = enemyHitState(e, nowMs);
   if (e.type === 'ganon') { drawGanon(e, hs); return; }
   const scale = e.isMiniboss ? 1.8 : 1;
-  const x = Math.round(e.x) + hs.kx, foot = Math.round(e.y + e.h / 2) + hs.ky;
+  // attack wind-up: shiver and blink so the hit is readable before it lands
+  const winding = e.atk && e.atk.st === 'wind';
+  if (winding && Math.floor(now * 16) % 2 === 0) hs.flash = true;
+  const x = Math.round(e.x) + hs.kx + (winding ? (Math.floor(now * 30) % 2 ? 1 : -1) : 0), foot = Math.round(e.y + e.h / 2) + hs.ky;
   if (e.bossKind) { drawNewBoss(e, hs, x, foot); return; }
   if (NEW_ENEMY_TYPES.has(e.type)) { drawNewEnemy(e, hs, x, foot, now); return; }
   const art = ENEMY_ART[e.type];
