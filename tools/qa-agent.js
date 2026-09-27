@@ -1044,6 +1044,8 @@
       for (const r of cand) {
         // skip progress-bar fills drawn over a wider track with the same origin/height
         if (cand.some(o => o !== r && Math.abs(o.x - r.x) < 0.6 && Math.abs(o.y - r.y) < 0.6 && Math.abs(o.h - r.h) < 0.6 && o.w > r.w)) continue;
+        // a bigger panel drawn later (e.g. a dialogue box over the HUD slots) covers this box
+        if (cand.some(o => o.seq > r.seq && o.w * o.h > r.w * r.h)) continue;
         const a = r.w * r.h; if (a < ba) { ba = a; best = r; }
       }
       tx.box = best;

@@ -982,7 +982,19 @@ function musicForState() {
     return (castle.roomIndex === CASTLE_ARENA && castle.ganon && castle.ganon.alive) ? 'final_boss' : 'dungeon';
   }
   if (world.mode === 'mirage') return mirage.mode === 'rush' ? (mirage.rushIndex === 4 ? 'final_boss' : 'boss') : mirage.mode === 'waves' ? 'boss' : 'dungeon';
-  return heroInVillage() ? 'village' : 'overworld';
+  return heroInVillage() ? 'village' : overworldMusicKey();
+}
+// one overworld song per land (forest, desert, lakes, the dark woods, the
+// mountains). A land without its own track yet borrows another: the dark
+// woods use the dungeon theme (moodier than the old overworld song).
+const OW_MUSIC = { forest: 'ow_forest', desert: 'ow_desert', lakes: 'ow_lakes', darkness: 'ow_darkness', mountain: 'ow_mountain', town: 'ow_forest' };
+const OW_MUSIC_FALLBACK = { ow_darkness: 'dungeon' };
+function overworldMusicKey() {
+  const reg = regionAt(Math.floor(hero.x / CONFIG.TILE), Math.floor(hero.y / CONFIG.TILE));
+  const k = OW_MUSIC[reg];
+  if (k && MUSIC_SRC[k]) return k;
+  if (k && OW_MUSIC_FALLBACK[k] && MUSIC_SRC[OW_MUSIC_FALLBACK[k]]) return OW_MUSIC_FALLBACK[k];
+  return 'overworld';
 }
 const MUSIC_FADE = 0.8;
 function musicPlayLoop(key) {
@@ -1000,19 +1012,30 @@ function musicPlayLoop(key) {
   Music.switches++;
   return true;
 }
-function musicSting(key) {
+// maxSec (optional) cuts a long sting short with a quick fade-out
+function musicSting(key, maxSec) {
   if (!audioCtx || !Music.master) return false;
   const buf = Music.buffers[key]; if (!buf) return false;
   try {
     const src = audioCtx.createBufferSource(); src.buffer = buf;
     // sting bypasses the duck gain, which lowers the area track meanwhile
     const sg = audioCtx.createGain(); src.connect(sg);
-    sg.gain.value = audioSettings.muted ? 0 : CONFIG.MUSIC_VOLUME * 1.2;
+    const vol = audioSettings.muted ? 0 : CONFIG.MUSIC_VOLUME * 1.2, now = audioCtx.currentTime;
+    const len = maxSec ? Math.min(buf.duration, maxSec) : buf.duration;
+    sg.gain.setValueAtTime(vol, now);
+    if (len < buf.duration) { sg.gain.setValueAtTime(vol, now + len - 0.6); sg.gain.linearRampToValueAtTime(0, now + len); src.stop(now + len + 0.05); }
     sg.connect(audioCtx.destination); src.start();
-    Music.stingGain = sg;
-    Music.stingUntil = audioCtx.currentTime + buf.duration;
+    Music.stingGain = sg; Music.stingSrc = src; Music.stingKey = key;
+    Music.stingUntil = now + len;
     return true;
   } catch (e) { return false; }
+}
+// fade out whatever sting is playing (e.g. the fall sting once revived)
+function musicStopSting() {
+  if (!Music.stingSrc || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  try { Music.stingGain.gain.cancelScheduledValues(now); Music.stingGain.gain.setValueAtTime(Music.stingGain.gain.value, now); Music.stingGain.gain.linearRampToValueAtTime(0, now + 0.3); Music.stingSrc.stop(now + 0.35); } catch (e) {}
+  Music.stingSrc = null; Music.stingUntil = now;
 }
 function musicOnBossDefeated() { return musicSting('victory'); }
 function updateMusic() {
@@ -1024,7 +1047,8 @@ function updateMusic() {
   if (Music.stingGain && audioSettings.muted) Music.stingGain.gain.value = 0;
   // hero downed -> game-over sting once
   const downed = gameState === STATE.PLAYING && player.downed;
-  if (downed && !Music.wasDowned) musicSting('gameover');
+  if (downed && !Music.wasDowned) musicSting('gameover', 3); // short: just a "you fell" cue
+  if (!downed && Music.wasDowned && Music.stingKey === 'gameover') musicStopSting(); // revived: stop it
   Music.wasDowned = downed;
   const key = musicForState();
   Music.wantKey = key;
@@ -1278,7 +1302,7 @@ const OW_LAYOUT = {
   // the retractable bridge to the Water Dungeon island: a lever on the
   // shore (math lock) lowers it; saved in player.world.bridges
   bridges: [{ id: 'lakeBridge', x: 50, y0: 128, y1: 146, lever: [53, 129] }],
-  dungeons: { forest: [22, 62], fire: [214, 24], water: [50, 148], shadow: [54, 18] },
+  dungeons: { forest: [22, 62], fire: [214, 24], water: [50, 151], shadow: [54, 18] }, // water: south end of its island, clear of the bridge landing
   castleGate: [120, 10],
   desertTown: [182, 142],
   secretHeart: [26, 110],
@@ -2638,6 +2662,118 @@ const castleGate = {};
     minY: ty * CONFIG.TILE, maxY: (ty + 1) * CONFIG.TILE,
   };
 })();
+
+// -------------------------------------------------------------------------
+// Grand entrances: every temple gets a stone facade over its stairs and
+// Malrek's Castle a giant fortress over its gate. Their footprints are solid
+// (the stairs stay the way in) and they are drawn as y-sorted props; art
+// from entrances.png is used when present, else the code-drawn facades.
+// -------------------------------------------------------------------------
+const ENTRANCE_PROPS = [];
+(function placeGrandEntrances() {
+  const TS = CONFIG.TILE, g = overworld.grid;
+  const solid = (x, y) => { if (y > 1 && x > 1 && y < overworld.h - 2 && x < overworld.w - 2 && !overworld.role[y][x]) { g[y][x] = T.PROP; overworld.keep[y][x] = 1; } };
+  for (const d of dungeons) {
+    const [x, y] = OW_LAYOUT.dungeons[d.def.id];
+    for (let oy = -3; oy <= -1; oy++) for (let ox = -2; ox <= 2; ox++) solid(x + ox, y + oy);
+    solid(x - 2, y); solid(x + 2, y); // the pillar bases beside the steps
+    // the sign moves beside the temple
+    const sg = owSigns.find(s => s.x === x && s.y === y - 1);
+    if (sg) {
+      const free = (sx, sy) => !overworld.role[sy][sx] && !SOLID_TILES.has(g[sy][sx]) && g[sy][sx] !== T.WATER;
+      const [sx, sy] = [[x + 3, y], [x - 3, y], [x + 3, y + 1], [x - 3, y + 1]].find(([a, b]) => free(a, b)) || [x + 3, y];
+      g[sy][sx] = T.SIGNPOST; overworld.keep[sy][sx] = 1; sg.x = sx; sg.y = sy;
+    }
+    ENTRANCE_PROPS.push({ kind: d.def.id, cx: (x + 0.5) * TS, foot: (y + 1) * TS, sortY: y * TS, w: 6 * TS, h: 5 * TS });
+  }
+  const [cx, cy] = OW_LAYOUT.castleGate;
+  for (let oy = -8; oy <= -1; oy++) for (let ox = -6; ox <= 6; ox++) if (!(oy === -1 && ox === 0)) solid(cx + ox, cy + oy);
+  g[cy - 1][cx] = T.DOOR;
+  ENTRANCE_PROPS.push({ kind: 'castle', cx: (cx + 0.5) * TS, foot: (cy + 1) * TS, sortY: cy * TS, w: 14 * TS, h: 10 * TS });
+})();
+const ENTRANCE_THEME = {
+  forest: { stone: '#7d8a6a', light: '#a8b48c', dark: '#4a5540', trim: '#3f8a3a', gem: '#6ff08a', glow: '120,255,150' },
+  fire: { stone: '#8e5a46', light: '#bd8062', dark: '#55301f', trim: '#d8642a', gem: '#ffb23a', glow: '255,160,60' },
+  water: { stone: '#5a7ca0', light: '#8fb6d8', dark: '#324f6c', trim: '#3aa8e8', gem: '#6fd8ff', glow: '120,210,255' },
+  shadow: { stone: '#4a4260', light: '#6e6490', dark: '#27213a', trim: '#7a4ab0', gem: '#c68aff', glow: '190,130,255' },
+};
+const _entranceCanvas = {};
+// a temple facade, w x h logical px, drawn once into a canvas (feet at the bottom)
+function makeTempleFacade(kind, W, H) {
+  const t = ENTRANCE_THEME[kind], c = makeCanvas(W, H), x = c.getContext('2d');
+  const R = (col, a, b, w, h) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
+  const OL = '#1a1410', mid = W / 2;
+  // stepped roof
+  const roof = [[mid - 44, 14, 88, 8], [mid - 36, 7, 72, 8], [mid - 24, 1, 48, 7]];
+  for (const [a, b, w, h] of roof) { R(OL, a - 1, b - 1, w + 2, h + 2); R(t.stone, a, b, w, h); R(t.light, a, b, w, 2); R(t.dark, a, b + h - 2, w, 2); }
+  for (let i = mid - 40; i < mid + 40; i += 8) R(t.dark, i, 18, 1, 3); // carved grooves on the eave
+  // gem over the door
+  R(OL, mid - 5, 3, 10, 10); R(t.gem, mid - 4, 4, 8, 8); R('#ffffff', mid - 3, 5, 3, 2);
+  // wall behind the columns
+  R(OL, mid - 33, 22, 66, H - 32); R(t.dark, mid - 32, 22, 64, H - 33);
+  for (let r = 26; r < H - 12; r += 7) for (let q = (r / 7) % 2 ? 0 : 5; q < 64; q += 10) R(t.stone, mid - 32 + q, r, 8, 5); // bricks
+  // arched doorway
+  const dw = 22, dh = 30, dx = mid - dw / 2, dy = H - 10 - dh;
+  R(OL, dx - 2, dy - 2, dw + 4, dh + 2);
+  R(t.light, dx - 1, dy - 1, dw + 2, 2);
+  for (let i = 0; i < dh; i++) { const k = i < 6 ? Math.round(Math.sqrt(36 - (6 - i) * (6 - i)) * 1.6) : dw / 2; R('#0a0808', mid - k, dy + i, k * 2, 1); }
+  const gr = x.createLinearGradient(0, dy, 0, dy + dh); gr.addColorStop(0, 'rgba(' + t.glow + ',0.25)'); gr.addColorStop(1, 'rgba(' + t.glow + ',0)');
+  x.fillStyle = gr; x.fillRect(dx + 3, dy + 6, dw - 6, dh - 6);
+  // two columns
+  for (const colx of [mid - 38, mid + 26]) {
+    R(OL, colx - 1, 20, 14, H - 29); R(t.stone, colx, 21, 12, H - 31); R(t.light, colx + 1, 21, 3, H - 31); R(t.dark, colx + 9, 21, 3, H - 31);
+    R(OL, colx - 3, 19, 18, 5); R(t.light, colx - 2, 20, 16, 3);                   // capital
+    R(OL, colx - 3, H - 14, 18, 6); R(t.stone, colx - 2, H - 13, 16, 4);           // base
+  }
+  // plinth and steps down to the ground
+  R(OL, mid - 42, H - 10, 84, 10); R(t.stone, mid - 41, H - 9, 82, 9); R(t.light, mid - 41, H - 9, 82, 2);
+  for (let s = 0; s < 3; s++) { R(OL, dx - 4 - s * 2, H - 9 + s * 3, dw + 8 + s * 4, 4); R(t.light, dx - 3 - s * 2, H - 8 + s * 3, dw + 6 + s * 4, 2); }
+  // theme trim
+  if (kind === 'forest') for (const [a, b] of [[mid - 36, 30], [mid + 30, 44], [mid - 30, 18], [mid + 20, 16], [mid - 34, 56]]) { R('#2a6a2a', a, b, 3, 10); R(t.trim, a + 1, b, 2, 7); R('#6ad06a', a - 2, b + 2, 3, 2); }
+  if (kind === 'fire') for (const bx of [mid - 46, mid + 40]) { R(OL, bx, H - 24, 8, 12); R('#5a3a2a', bx + 1, H - 23, 6, 10); R('#ffb23a', bx + 1, H - 30, 6, 6); R('#ff6a1a', bx + 2, H - 33, 4, 4); R('#fff0a0', bx + 3, H - 28, 2, 2); }
+  if (kind === 'water') for (let i = 0; i < 64; i += 8) { R(t.trim, mid - 32 + i, 23, 5, 2); R('#cfefff', mid - 31 + i, 23, 2, 1); }
+  if (kind === 'shadow') { for (const [a, b] of [[mid - 30, 28], [mid + 24, 36], [mid - 26, 50]]) R(t.trim, a, b, 2, 2); R('rgba(190,130,255,0.35)', mid - 44, 13, 88, 2); }
+  return c;
+}
+// Malrek's fortress: side towers, a tall keep, battlements, banners, a gate
+function makeCastleFacade(W, H) {
+  const c = makeCanvas(W, H), x = c.getContext('2d');
+  const R = (col, a, b, w, h) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
+  const OL = '#0e0c14', S = '#3e3e4e', L = '#5a5a6e', D = '#26263a', mid = W / 2;
+  const block = (a, b, w, h) => { R(OL, a - 1, b - 1, w + 2, h + 2); R(S, a, b, w, h); R(L, a, b, 2, h); R(D, a + w - 3, b, 3, h);
+    for (let r = b + 4; r < b + h - 2; r += 6) for (let q = ((r - b) / 6) % 2 ? 0 : 4; q < w - 4; q += 9) R(D, a + q, r, 7, 1); };
+  const crenel = (a, b, w) => { for (let q = 0; q < w; q += 8) { R(OL, a + q - 1, b - 6, 6, 7); R(L, a + q, b - 5, 4, 5); } };
+  const tower = (a, b, w, h) => { block(a, b, w, h); crenel(a, b, w); R(OL, a - 3, b + 6, w + 6, 4); R(D, a - 2, b + 7, w + 4, 2);
+    for (const wy of [b + 16, b + 40]) if (wy + 10 < b + h - 8) { R(OL, a + w / 2 - 3, wy - 1, 6, 11); R('#ff5a3a', a + w / 2 - 2, wy, 4, 9); R('#ffd0a0', a + w / 2 - 1, wy + 1, 2, 3); } };
+  // curtain wall, keep, towers
+  block(20, H - 70, W - 40, 60); crenel(20, H - 70, W - 40);
+  block(mid - 36, 26, 72, H - 60); crenel(mid - 36, 26, 72);
+  tower(mid - 14, 4, 28, 40); // the keep's spire
+  R(OL, mid - 16, 1, 32, 5); for (let i = 0; i < 12; i++) R('#6a3a9a', mid - 1, -2 + i, 2, 1); // spire tip
+  tower(2, 20, 34, H - 30); tower(W - 36, 20, 34, H - 30);
+  // banners
+  for (const bx of [mid - 30, mid + 20]) { R(OL, bx - 1, 40, 12, 30); R('#5a2a8a', bx, 41, 10, 26); R('#c89a3a', bx, 41, 10, 2); R('#c89a3a', bx + 4, 52, 2, 6); R('#5a2a8a', bx + 2, 67, 6, 3); }
+  // glowing keep windows
+  for (const [wx, wy] of [[mid - 20, 36], [mid + 14, 36], [mid - 3, 60]]) { R(OL, wx - 1, wy - 1, 8, 12); R('#ff4a2a', wx, wy, 6, 10); R('#ffc080', wx + 1, wy + 1, 2, 3); }
+  // the great gate with a portcullis
+  const gw = 34, gh = 38, gx = mid - gw / 2, gy = H - 10 - gh;
+  R(OL, gx - 3, gy - 3, gw + 6, gh + 3); R(L, gx - 2, gy - 2, gw + 4, 3);
+  for (let i = 0; i < gh; i++) { const k = i < 10 ? Math.round(Math.sqrt(100 - (10 - i) * (10 - i)) * 1.7) : gw / 2; R('#07060a', mid - k, gy + i, k * 2, 1); }
+  for (let q = gx + 3; q < gx + gw - 2; q += 6) R('#4a4a58', q, gy + 6, 2, gh - 8);
+  for (let r = gy + 12; r < gy + gh - 2; r += 8) R('#4a4a58', gx + 2, r, gw - 4, 2);
+  // steps and base
+  R(OL, 16, H - 10, W - 32, 10); R(S, 17, H - 9, W - 34, 9); R(L, 17, H - 9, W - 34, 2);
+  for (let s = 0; s < 3; s++) { R(OL, gx - 6 - s * 3, H - 9 + s * 3, gw + 12 + s * 6, 4); R(L, gx - 5 - s * 3, H - 8 + s * 3, gw + 10 + s * 6, 2); }
+  return c;
+}
+function drawEntranceProp(p) {
+  const art = typeof ENTRANCE_SRC !== 'undefined' && ENTRANCE_SRC[p.kind] && imgReady('entrances');
+  if (art) { drawSpriteFoot(ctx, 'entrances', ENTRANCE_SRC[p.kind], p.cx, p.foot, p.h, { w: p.w }); return; }
+  if (!_entranceCanvas[p.kind]) _entranceCanvas[p.kind] = p.kind === 'castle' ? makeCastleFacade(p.w, p.h) : makeTempleFacade(p.kind, p.w, p.h);
+  const c = _entranceCanvas[p.kind];
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(c, Math.round(p.cx - p.w / 2), Math.round(p.foot - p.h));
+}
 
 // =========================================================================
 // Second small town in the Desert, with its own shop
@@ -8246,6 +8382,11 @@ function drawPlaying() {
       items.push({ y: (p.y0 + p.h) * TS, box: [px, py, px + p.w * TS + p.ox * 2, (p.y0 + p.h) * TS], draw: () => { const c = buildingCanvas(p); if (c) ctx.drawImage(c, px, py, c._lw, c._lh); } });
     }
     for (const it of owPropItems()) items.push(it);
+    for (const p of ENTRANCE_PROPS) {
+      const px = p.cx - p.w / 2, py = p.foot - p.h;
+      if (px > world.camX + CONFIG.GAME_W || px + p.w < world.camX || py > world.camY + CONFIG.GAME_H || p.foot < world.camY) continue;
+      items.push({ y: p.sortY, box: [px, py, px + p.w, p.foot], draw: () => drawEntranceProp(p) });
+    }
   }
   // only what can be on screen goes into the y-sort (the map has hundreds)
   const onScr = (x, y) => x > world.camX - 64 && x < world.camX + CONFIG.GAME_W + 64 && y > world.camY - 48 && y < world.camY + CONFIG.GAME_H + 80;
