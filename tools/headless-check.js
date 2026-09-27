@@ -249,7 +249,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     // and check a tap after scrolling buys the row under the finger
     await page.evaluate(() => {
       world.mode = 'interior'; world.interior = buildings[1].interior;
-      hero.x = 5 * CONFIG.TILE; hero.y = 5 * CONFIG.TILE; hud.gold = 45;
+      hero.x = 5 * CONFIG.TILE; hero.y = 5 * CONFIG.TILE; hud.gold = 140; // (the Red Tunic costs 120)
       openShop();
     });
     await sleep(150);
@@ -285,7 +285,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await page.mouse.click(tp.x, tp.y); await sleep(80);
     const bought = await page.evaluate(() => ({ red: !!player.unlockedSkins.red, gold: hud.gold, allReachable: getShopRows().every(r => r.rect.y + r.rect.h <= SHOP_LAYOUT.y + SHOP_LAYOUT.h + shopMaxScroll() + 1) }));
     const shopOk = afterWheel > 0 && drag.scroll > 60 && drag.gold === goldBeforeDrag &&
-      bottom.scroll === bottom.max && bottom.sel === bottom.n - 1 && tapInfo.visible && bought.red && bought.gold === 25;
+      bottom.scroll === bottom.max && bottom.sel === bottom.n - 1 && tapInfo.visible && bought.red && bought.gold === 20;
     console.log((shopOk ? 'OK' : 'FAIL') + ': shop scroll ' + JSON.stringify({ afterWheel, drag, bottom, tapInfo, bought }));
     if (!shopOk) errors.push('shop scroll check failed');
     await page.evaluate(() => { closeShop(); player.skin = 'classic'; });
