@@ -4084,6 +4084,7 @@ const player = {
   invincibleT: 0,
   attackCooldown: 0,
   questionsAnswered: 0, revivesUsed: 0,
+  streak: 0, // correct math answers in a row (any popup); a wrong one resets it
   swordSwingT: 0, // >0 while swing animation plays
   downed: false, // true when hearts hit 0 (revive flow)
   zeroApAttackTimer: 0, // counts up after attacking at 0 AP, auto-opens math popup at 1s
@@ -4161,8 +4162,29 @@ function spawnConfetti(x, y, count) {
   }
 }
 
-function gainAP(n) {
-  player.ap = Math.min(player.maxAp, player.ap + n);
+// AP_OVERFLOW: streak bonuses may push AP past the bar (shown as a number)
+const AP_OVERFLOW = 99;
+function gainAP(n, cap) {
+  player.ap = Math.max(player.ap, Math.min(cap || player.maxAp, player.ap + n));
+}
+// Answer streak -> AP multiplier: x1 at 0 in a row, +0.2 per answer to x3 at
+// 10, +0.1 per answer to x4 at 20, then on to a x10 cap. Guessing breaks it.
+function streakMultiplier(k) {
+  const m = k <= 10 ? 1 + 0.2 * k : k <= 20 ? 3 + 0.1 * (k - 10) : 4 + 0.1 * (k - 20);
+  return Math.min(10, Math.round(m * 10) / 10);
+}
+// best streak ever, kept on this device across new games (title screen)
+const RECORDS_KEY = 'mathquest_records_v1';
+function loadRecords() {
+  try { const r = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); return { bestStreak: r.bestStreak | 0 }; } catch (e) { return { bestStreak: 0 }; }
+}
+function noteStreakRecord() {
+  const r = loadRecords();
+  if (player.streak > r.bestStreak) {
+    try { localStorage.setItem(RECORDS_KEY, JSON.stringify({ bestStreak: player.streak })); } catch (e) {}
+    return true;
+  }
+  return false;
 }
 function spendAP(n) {
   if (player.ap < n) return false;
@@ -4384,12 +4406,14 @@ function fireActiveWeapon() {
 }
 const bombs = []; // {x,y,t}
 function throwBomb() {
-  if (!player.bombBag || dialogue.active || player.downed) return;
+  if (!player.bombBag || dialogue.active || player.downed || (player.bombCooldown || 0) > 0) return;
+  player.bombCooldown = 0.6;
   const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
   SFX.bombFuse();
   bombs.push({ x: hero.x + dirVec[0] * 14, y: hero.y + dirVec[1] * 14, t: 2 });
 }
 function updateBombs(dt) {
+  if (player.bombCooldown > 0) player.bombCooldown -= dt;
   for (let i = bombs.length - 1; i >= 0; i--) {
     const b = bombs[i];
     b.t -= dt;
@@ -4517,6 +4541,9 @@ function answerMathPopup(idx) {
   if (idx === q.correctIndex) {
     player.questionsAnswered++;
     SFX.correct();
+    const mult = streakMultiplier(player.streak); // this answer is paid at the streak so far
+    player.streak++;
+    if (noteStreakRecord() && player.streak >= 5) spawnFloatingText(hero.x, hero.y - 34, 'NEW BEST STREAK: ' + player.streak + '!', '#ffd84a');
     if (mathPopup.purpose === 'revive') {
       closeMathPopup();
       doRevive();
@@ -4526,16 +4553,19 @@ function answerMathPopup(idx) {
       spawnConfetti(hero.x, hero.y, 14);
       if (fn) fn();
     } else {
-      const reward = tierAPReward();
-      gainAP(reward);
+      const reward = Math.round(tierAPReward() * mult);
+      mathPopup.lastReward = reward;
+      gainAP(reward, mult > 1 ? AP_OVERFLOW : player.maxAp);
       closeMathPopup();
-      spawnConfetti(hero.x, hero.y, 14);
-      spawnFloatingText(hero.x, hero.y - 20, '+' + reward + ' AP', '#8effc1');
+      spawnConfetti(hero.x, hero.y, mult > 1 ? 24 : 14);
+      spawnFloatingText(hero.x, hero.y - 20, '+' + reward + ' AP' + (mult > 1 ? '  (x' + mult + ')' : ''), '#8effc1');
       player.zeroApAttackTimer = 0;
     }
   } else {
     SFX.wrong();
     mathPopup.wrongIdx = idx;
+    if (player.streak >= 3) spawnFloatingText(hero.x, hero.y - 34, 'Streak lost at ' + player.streak, '#ffb3b3');
+    player.streak = 0;
     showHint('', 0);
   }
 }
@@ -5324,6 +5354,27 @@ function drawQButton() {
   ctx.fillText('AP', r.x + r.w / 2, r.y + r.h - 4);
 }
 
+// Bomb button (bottom-right, big for small fingers): only once the Bomb
+// Bag is owned. Bombs cost no AP; a short cooldown stops accidental spam.
+function bombButtonRect() { return { x: CONFIG.GAME_W - 60, y: CONFIG.GAME_H - 60, w: 50, h: 50 }; }
+function tapBombButton(sx, sy) { return player.bombBag && pointInRect(sx, sy, bombButtonRect()); }
+function drawBombButton() {
+  if (!player.bombBag) return;
+  const r = bombButtonRect(), cx = r.x + r.w / 2, cy = r.y + r.h / 2 + 3, ready = (player.bombCooldown || 0) <= 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.globalAlpha = ready ? 1 : 0.45;
+  ctx.fillStyle = '#1c1c28'; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3a3a50'; ctx.beginPath(); ctx.arc(cx - 3, cy - 3, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#9aa0c0'; ctx.fillRect(cx - 7, cy - 8, 3, 3);
+  ctx.fillStyle = '#8a6a3a'; ctx.fillRect(cx + 6, cy - 16, 3, 6);
+  const t = performance.now() / 1000;
+  ctx.fillStyle = Math.floor(t * 10) % 2 ? '#ffd84a' : '#ff7030'; ctx.fillRect(cx + 5, cy - 20, 5, 5);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('BOMB', cx, r.y + r.h - 3);
+}
+
 // Bottom-left icon row: sits just right of the 3 weapon slots (also
 // bottom-left, see drawWeaponSlots), vertically centered on the slot row.
 // slots occupy x:[10, 10+3*48+2*6=166], y:[GAME_H-58, GAME_H-10].
@@ -5383,6 +5434,7 @@ function updatePlaying(dt) {
   // pause menu (Escape) and the manual Save HUD button
   if (pauseMenu.active) { updatePauseMenuInput(); return; }
   if (Input.keys['Escape']) { Input.keys['Escape'] = false; pauseMenu.active = true; return; }
+  if (Input.tapped && tapBombButton(Input.tapX, Input.tapY)) { Input.tapped = false; throwBomb(); }
   if (Input.tapped && tapSaveButton(Input.tapX, Input.tapY)) {
     Input.tapped = false;
     if (saveGame()) spawnFloatingText(hero.x, hero.y - 20, 'Saved!', '#8effc1');
@@ -5816,6 +5868,13 @@ function draw() {
       drawPixelText('Tap New Game again to confirm - your save will be erased', CONFIG.GAME_W / 2 + 150, 260, 10, '#ffb3b3');
     }
 
+    // best answer streak ever (this device)
+    {
+      const rec = loadRecords();
+      if (rec.bestStreak > 0) {
+        drawPixelText('Best streak: ' + rec.bestStreak + ' in a row  (x' + streakMultiplier(rec.bestStreak) + ' AP)', CONFIG.GAME_W / 2 + 150, 292, 12, '#ffd84a');
+      }
+    }
     // scroll icon beside the help text
     const helpText = 'Tap a difficulty, then New Game or Continue';
     ctx.font = 'bold 12px monospace';
@@ -6271,6 +6330,7 @@ function drawPlaying() {
   drawWardrobeButton();
   drawSaveButton();
   drawQButton();
+  drawBombButton();
 
   // named dungeon boss banner + HP bar (screen space so it never drifts
   // with the camera in small rooms)
@@ -6880,6 +6940,13 @@ function drawMathPopup() {
 
   ctx.fillStyle = '#ffffff'; ctx.font = 'bold 28px monospace';
   ctx.fillText(mathPopup.question.questionText, CONFIG.GAME_W / 2, by + 90);
+  // answer streak: the next right answer pays this multiplier
+  {
+    const k = player.streak, m = streakMultiplier(k);
+    ctx.font = 'bold 13px monospace';
+    ctx.fillStyle = k > 0 ? '#8effc1' : '#aab4c8';
+    ctx.fillText(k > 0 ? 'Streak: ' + k + ' in a row!   Next answer: x' + m + ' AP' : 'Answer right in a row to build an AP streak!', CONFIG.GAME_W / 2, by + 118);
+  }
 
   const btns = getMathButtons();
   const q = mathPopup.question;
@@ -6987,6 +7054,21 @@ function drawHUD() {
   for (let i = 1; i < player.maxAp; i++) {
     const tx = Math.round(ch.x + (ch.w / player.maxAp) * i);
     ctx.fillRect(tx, ch.y, 1, ch.h);
+  }
+  // streak bonus AP above the bar: show the count
+  if (player.ap > player.maxAp) {
+    ctx.font = 'bold 10px monospace'; ctx.textAlign = 'right';
+    ctx.fillStyle = '#10182a'; ctx.fillText(player.ap + ' AP', ch.x + ch.w - 1, ch.y + ch.h + 0);
+    ctx.fillStyle = '#ffe066'; ctx.fillText(player.ap + ' AP', ch.x + ch.w - 2, ch.y + ch.h - 1);
+  }
+  // answer-streak badge
+  if (player.streak >= 2) {
+    const txt = 'Streak ' + player.streak + '  x' + streakMultiplier(player.streak) + ' AP';
+    ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
+    const bw = ctx.measureText(txt).width + 14, bx = 10, by = CONFIG.GAME_H - 80; // above the weapon slots: clear of hints and boss bars
+    ctx.fillStyle = 'rgba(10,14,30,0.8)'; ctx.fillRect(bx, by, bw, 16);
+    ctx.strokeStyle = '#8effc1'; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, 15);
+    ctx.fillStyle = '#8effc1'; ctx.fillText(txt, bx + 7, by + 12);
   }
 
   // Gold, key icons, medallions
@@ -7280,6 +7362,7 @@ function buildSaveData() {
     skin: player.skin,
     unlockedSkins: player.unlockedSkins,
     questionsAnswered: player.questionsAnswered,
+    streak: player.streak,
     revivesUsed: player.revivesUsed,
     secretHeartTaken: player.secretHeartTaken,
     world: owState, // opened overworld chests, lifted boulders, bombed rocks, lowered bridges
@@ -7322,8 +7405,9 @@ function applySaveData(data) {
     player.hearts = clampNum(data.hearts, 1, 20, 3);
     player.maxHearts = clampNum(data.maxHearts, player.hearts, 20, 3);
     player.ap = clampNum(data.ap, 0, 999, CONFIG.STARTING_AP);
-    // older saves stored the old 10-AP cap: never keep a cap below today's
-    player.maxAp = Math.max(CONFIG.MAX_AP, clampNum(data.maxAp, player.ap, 999, CONFIG.MAX_AP));
+    // the bar is always CONFIG.MAX_AP (older saves had 10); streak bonus AP
+    // above it is kept (player.ap may exceed maxAp up to AP_OVERFLOW)
+    player.maxAp = CONFIG.MAX_AP;
     hud.gold = clampNum(data.gold, 0, 999999, 0);
     player.attack = clampNum(data.attack, 1, 999, 1);
     player.level = clampNum(data.level, 1, 999, 1);
@@ -7339,6 +7423,7 @@ function applySaveData(data) {
     if (data.skin && TUNIC_SKINS[data.skin]) player.skin = data.skin;
     if (data.unlockedSkins && typeof data.unlockedSkins === 'object') Object.assign(player.unlockedSkins, data.unlockedSkins);
     player.questionsAnswered = clampNum(data.questionsAnswered, 0, 999999, 0);
+    player.streak = clampNum(data.streak, 0, 999999, 0);
     player.revivesUsed = clampNum(data.revivesUsed, 0, 999999, 0);
     if (Array.isArray(data.dungeons)) {
       for (const dd of data.dungeons) {

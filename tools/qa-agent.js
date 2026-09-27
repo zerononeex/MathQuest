@@ -519,7 +519,7 @@
     if (sig !== M.sig) {
       M.sig = sig; M.tries = []; M.lastTap = -1e9; M.openedAt = QA.gameMs; M.ap0 = player.ap; M.maxAp = player.maxAp;
       M.purpose = mathPopup.purpose; M.q = q.questionText; M.answers = q.answers.slice(); M.value = evalMath(q.questionText);
-      M.qa0 = player.questionsAnswered;
+      M.qa0 = player.questionsAnswered; M.streak0 = player.streak || 0;
       Cap.arm('math');
       checkRectSet('Math popup answer buttons', getMathButtons().map((r, i) => ({ name: 'answer ' + (i + 1), r })), { overlap: true });
       if (!isFinite(M.value)) report('WARNING', 'math', 'Could not parse question text "' + q.questionText + '"');
@@ -546,8 +546,12 @@
     if (answered) {
       QA.stats.mathSolved++;
       if (M.purpose === 'ap') {
-        const want = Math.min(M.maxAp, M.ap0 + tierReward());
-        if (player.ap !== want) report('CRITICAL', 'math', 'AP reward mismatch after correct answer: AP ' + M.ap0 + ' -> ' + player.ap + ', expected ' + want + ' (+' + tierReward() + ', cap ' + M.maxAp + ')');
+        // answer streak: a wrong try resets it, so the paying streak is 0 then
+        const k = M.tries.length > 1 ? 0 : M.streak0;
+        const mult = typeof streakMultiplier === 'function' ? streakMultiplier(k) : 1;
+        const reward = Math.round(tierReward() * mult), cap = mult > 1 && typeof AP_OVERFLOW === 'number' ? AP_OVERFLOW : M.maxAp;
+        const want = Math.max(M.ap0, Math.min(cap, M.ap0 + reward));
+        if (player.ap !== want) report('CRITICAL', 'math', 'AP reward mismatch after correct answer: AP ' + M.ap0 + ' -> ' + player.ap + ', expected ' + want + ' (+' + reward + ' at streak ' + k + ' x' + mult + ', cap ' + cap + ')');
       } else if (M.purpose === 'lock') {
         QA.stats.mathLocks++; // boss-door seal / big-chest math lock
       } else {

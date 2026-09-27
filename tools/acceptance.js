@@ -947,6 +947,56 @@ function check(name, ok, detail) {
     await tp.close();
   }
 
+  // --- on-screen bomb button (iPad): hidden without the Bomb Bag, throws with it ---
+  {
+    const bp = await browser.newPage();
+    bp.on('pageerror', e => errorsAll.push('bombbtn: ' + e.message));
+    await bp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await bp.evaluate(() => {
+      const out = {};
+      try {
+        startNewGame(); player.invincibleT = 999;
+        const b = bombButtonRect(), tap = () => { Input.tapX = b.x + b.w / 2; Input.tapY = b.y + b.h / 2; Input.tapped = true; updatePlaying(1 / 60); };
+        player.bombBag = false; tap(); out.withoutBag = bombs.length;
+        player.bombBag = true; player.bombCooldown = 0; hero.walkTargetX = null; tap(); out.withBag = bombs.length;
+        out.heroStill = !hero.walkTargetX; // the tap did not also walk the hero
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Bomb button: hidden without the Bomb Bag; with it, a tap throws a bomb', !r.exception && r.withoutBag === 0 && r.withBag === 1 && r.heroStill, JSON.stringify(r));
+    await bp.close();
+  }
+
+  // --- answer streak: x1 -> x3 at 10 in a row -> x4 at 20 -> cap x10; a
+  // wrong answer resets it; the best streak is kept on the title screen ---
+  {
+    const sp = await browser.newPage();
+    sp.on('pageerror', e => errorsAll.push('streak: ' + e.message));
+    await sp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await sp.evaluate(() => {
+      const out = {};
+      try {
+        localStorage.removeItem(RECORDS_KEY);
+        CONFIG.DIFFICULTY = 'ADVENTURER'; startNewGame(); player.invincibleT = 999;
+        out.curve = [0, 5, 10, 15, 20, 80, 200].map(streakMultiplier);
+        const answer = right => { openMathPopup('ap'); const q = mathPopup.question; answerMathPopup(right ? q.correctIndex : (q.correctIndex + 1) % 3); if (mathPopup.active) closeMathPopup(); };
+        for (let i = 0; i < 10; i++) answer(true);
+        player.ap = 0; answer(true); out.eleventh = player.ap;      // paid at streak 10: 8 x3 = 24 (above the 20 bar)
+        out.streak = player.streak;
+        answer(false); out.afterWrong = player.streak;
+        player.ap = 0; answer(true); out.afterReset = player.ap;     // back to x1 = 8
+        out.record = loadRecords().bestStreak;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Answer streak: x3 at 10 in a row, x4 at 20, x10 cap; wrong resets; best streak recorded',
+      !r.exception && JSON.stringify(r.curve) === JSON.stringify([1, 2, 3, 3.5, 4, 10, 10]) && r.eleventh === 24 && r.streak === 11 && r.afterWrong === 0 && r.afterReset === 8 && r.record === 11,
+      JSON.stringify(r));
+    await sp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
