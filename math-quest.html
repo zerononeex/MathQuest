@@ -817,6 +817,9 @@ const SFX = {
   medallion: () => { [660, 880, 1100].forEach((f, i) => playTone(f, 0.2, 'triangle', 0.15, i * 0.12)); },
   chestFanfare: () => { [523, 659, 784].forEach((f, i) => playTone(f, 0.18, 'square', 0.15, i * 0.1)); },
   victoryMelody: () => { [523, 659, 784, 1046, 784, 1046].forEach((f, i) => playTone(f, 0.22, 'triangle', 0.16, i * 0.18)); },
+  malrekBlink: () => { playTone(900, 0.06, 'sine', 0.08); playTone(450, 0.1, 'sine', 0.08, 0.05); playTone(1350, 0.08, 'sine', 0.06, 0.12); },
+  malrekCharge: () => { for (let i = 0; i < 6; i++) playTone(180 + i * 70, 0.1, 'sawtooth', 0.06, i * 0.07); },
+  malrekNova: () => { playTone(60, 0.5, 'sawtooth', 0.16); playTone(90, 0.4, 'square', 0.12, 0.05); for (let i = 0; i < 4; i++) playTone(1200 - i * 220, 0.12, 'triangle', 0.07, 0.05 + i * 0.06); },
   ganonLaugh: () => { for (let i = 0; i < 4; i++) playTone(90 - i * 6, 0.18, 'sawtooth', 0.12, i * 0.12); },
   clink: () => { playTone(1500, 0.05, 'square', 0.08); playTone(2100, 0.07, 'triangle', 0.07, 0.03); }, // blocked by a shield
 };
@@ -896,7 +899,7 @@ function musicForState() {
     return (d.roomIndex === 2 && !d.bossDefeated) ? 'boss' : 'dungeon';
   }
   if (world.mode === 'castle') {
-    return (castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) ? 'final_boss' : 'dungeon';
+    return (castle.roomIndex === CASTLE_ARENA && castle.ganon && castle.ganon.alive) ? 'final_boss' : 'dungeon';
   }
   return heroInVillage() ? 'village' : 'overworld';
 }
@@ -1056,9 +1059,10 @@ const T = {
   // ledge (hop down from the north), bridge planks, a solid prop footprint
   // (chest / statue / campfire / lever), heavy boulder and cracked rock gates
   CAVE: 20, LEDGE: 21, BRIDGE: 22, PROP: 23, BOULDER: 24, CRACKED: 25,
+  PEGUP: 26, PEGDOWN: 27, // castle barrier pegs (colour in map.peg), raised = solid
 };
 const SOLID_TILES = new Set([T.WATER, T.TREE, T.WALL, T.LOCKDOOR, T.BOSSDOOR, T.SIGNPOST, T.CLIFF, T.FURN,
-  T.LEDGE, T.PROP, T.BOULDER, T.CRACKED]);
+  T.LEDGE, T.PROP, T.BOULDER, T.CRACKED, T.PEGUP]);
 // Overworld building footprints drawn as composed props (roof + facade +
 // door + window + sign from buildings.png). Filled in once the buildings are
 // carved (see registerBuildingProps); tiles inside render as plain ground.
@@ -1722,6 +1726,24 @@ function drawTile(octx, t, px, py, rand, mapData, gx, gy) {
     case T.FURN:   // furniture footprint: the furniture itself is a prop
       drawFloorTile(octx, mapData, px, py, gx, gy);
       break;
+    case T.PEGUP:
+    case T.PEGDOWN: { // castle barrier pegs: raised = a coloured stone post, lowered = a flat tile
+      drawFloorTile(octx, mapData, px, py, gx, gy);
+      const red = mapData.peg && mapData.peg[gy * mapData.w + gx] === 'red';
+      const C = red ? ['#5a1414', '#c83232', '#ff7a6a'] : ['#142a5a', '#3264c8', '#7aa8ff'];
+      if (t === T.PEGDOWN) {
+        octx.fillStyle = C[0]; octx.fillRect(px + 2, py + 2, TS - 4, TS - 4);
+        octx.fillStyle = C[1]; octx.fillRect(px + 3, py + 3, TS - 6, TS - 6);
+        octx.fillStyle = 'rgba(0,0,0,0.35)'; octx.fillRect(px + 5, py + 5, TS - 10, TS - 10);
+      } else {
+        octx.fillStyle = 'rgba(0,0,0,0.35)'; octx.fillRect(px + 1, py + TS - 3, TS - 2, 3);
+        octx.fillStyle = C[0]; octx.fillRect(px + 1, py, TS - 2, TS - 2);
+        octx.fillStyle = C[1]; octx.fillRect(px + 2, py + 1, TS - 4, TS - 6);
+        octx.fillStyle = C[2]; octx.fillRect(px + 2, py + 1, TS - 4, 2); octx.fillRect(px + 2, py + 3, 2, TS - 9);
+        octx.fillStyle = C[0]; octx.fillRect(px + 2, py + TS - 5, TS - 4, 3);
+      }
+      break;
+    }
     case T.LOCKDOOR: // wall behind the framed doorway sprite (drawRoomDoors)
     case T.BOSSDOOR:
       drawGroundKind(octx, 'brick', px, py, gx, gy); themeTint(octx, mapData, px, py, 0.3);
@@ -1982,6 +2004,14 @@ function drawTileFallback(octx, t, px, py, rand, mapData, gx, gy) {
       octx.fillStyle = '#5a4a2a'; octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#ffd84a'; octx.fillRect(px + 6, py + 6, 4, 4);
       break;
+    case T.PEGUP:
+    case T.PEGDOWN: {
+      const red = mapData.peg && mapData.peg[gy * mapData.w + gx] === 'red';
+      octx.fillStyle = '#c9a876'; octx.fillRect(px, py, TS, TS);
+      octx.fillStyle = red ? '#c83232' : '#3264c8';
+      if (t === T.PEGUP) octx.fillRect(px + 1, py + 1, TS - 2, TS - 2); else octx.fillRect(px + 4, py + 4, TS - 8, TS - 8);
+      break;
+    }
     case T.BOSSDOOR:
       octx.fillStyle = '#3a1a1a'; octx.fillRect(px, py, TS, TS);
       octx.fillStyle = '#8a2a2a'; octx.fillRect(px + 2, py + 2, TS - 4, TS - 4);
@@ -3402,6 +3432,7 @@ const INTERACT_TAP_R = 18;
 function worldInteractables() {
   const list = [], TS = CONFIG.TILE;
   if (world.mode === 'overworld') return owInteractables();
+  if (world.mode === 'castle') return castleInteractables();
   if (world.mode === 'dungeon' && world.dungeon) {
     const d = world.dungeon, room = d.rooms[d.roomIndex];
     if (d.roomIndex === 3 && !d.chestOpened) {
@@ -4038,27 +4069,91 @@ function missingMedallionNames() {
   return Object.keys(MEDALLION_NAMES).filter(k => !player.medallions[k]).map(k => MEDALLION_NAMES[k]);
 }
 
+// Malrek's Castle: seven rooms in a row, each a different puzzle, four
+// Small Keys for four locked doors, and a way back out through the gate.
+//   0 Gate Hall (guards -> key)      1 Hall of Weights (two blocks, two plates)
+//   2 Brazier Gallery (order -> key) 3 Crystal Hall (red/blue pegs -> key)
+//   4 Guard Gauntlet (2 waves -> key) 5 Antechamber (memory orbs -> sealed door)
+//   6 Malrek's Throne
+const CASTLE_ROOM_NAMES = ['Gate Hall', 'Hall of Weights', 'Brazier Gallery', 'Crystal Hall', 'Guard Gauntlet', 'Antechamber', "Malrek's Throne"];
+const CASTLE_ARENA = 6;
 function buildCastle() {
-  const hallway = makeRoom(16, 10, '#2a2a3a');
-  const arena = makeRoom(20, 14, '#1a1a28');
-  carveDoorGap(hallway, 'east', T.FLOOR); // one-way: no lock, no going back
-  const hallwayEnemies = [
-    Object.assign(makeDungeonEnemy('wolf', 8 * CONFIG.TILE, 4 * CONFIG.TILE), { hp: 4, maxHp: 4 }),
-    Object.assign(makeDungeonEnemy('wraith', 8 * CONFIG.TILE, 7 * CONFIG.TILE), { hp: 4, maxHp: 4 }),
-  ];
-  hallway.role = 'castle'; hallway.seed = 3; arena.role = 'castle'; arena.seed = 5;
-  hallway.canvas = prerenderMap(hallway);
-  arena.canvas = prerenderMap(arena);
-  return {
-    roomIndex: 0,
-    rooms: [
-      { map: hallway, pots: [], enemies: hallwayEnemies },
-      { map: arena, pots: [], enemies: [] },
-    ],
-    ganon: null,
-    defeated: false,
-    startTime: 0,
-  };
+  const TS = CONFIG.TILE, RW = 18, RH = 11;
+  const rooms = CASTLE_ROOM_NAMES.map((name, i) => {
+    const big = i === CASTLE_ARENA;
+    const map = makeRoom(big ? 24 : RW, big ? 14 : RH, big ? '#1a1a28' : '#2a2a3a');
+    map.role = 'castle'; map.seed = 3 + i * 7;
+    return { map, pots: [], enemies: [], name, puz: null, keyDrop: null };
+  });
+  const M = rooms.map(r => r.map);
+  const E = (kind, tx, ty) => makeDungeonEnemy(kind, (tx + 0.5) * TS, (ty + 0.5) * TS);
+  for (const m of M) carveDoorGap(m, 'west', T.FLOOR); // room 0's west gap is the way out
+  carveDoorGap(M[0], 'east', T.LOCKDOOR);
+  carveDoorGap(M[1], 'east', T.WALL);     // opens when both plates are weighed down
+  carveDoorGap(M[2], 'east', T.LOCKDOOR);
+  carveDoorGap(M[3], 'east', T.LOCKDOOR);
+  carveDoorGap(M[4], 'east', T.LOCKDOOR);
+  carveDoorGap(M[5], 'east', T.WALL);     // the sealed boss door appears when the orbs are solved
+
+  // 0 Gate Hall: beat the guards, a Small Key appears
+  for (const [x, y] of [[5, 2], [5, 8], [12, 2], [12, 8]]) M[0].grid[y][x] = T.WALL; // pillars
+  rooms[0].enemies = [E('beetle', 9, 3), E('grimshade', 9, 7), E('ironclamp', 14, 5)];
+  rooms[0].puz = { type: 'guards', solved: false };
+  rooms[0].keyDrop = { x: 9 * TS, y: 5.5 * TS, shown: false, taken: false };
+
+  // 1 Hall of Weights: two stone blocks onto two pressure plates
+  rooms[1].puz = { type: 'weights', solved: false,
+    blocks: [{ hx: 6, hy: 3 }, { hx: 10, hy: 4 }], plates: [{ x: 12, y: 7 }, { x: 14, y: 2 }] };
+  castleResetBlocks(rooms[1].puz);
+  rooms[1].enemies = [E('wolf', 3, 8), E('wraith', 15, 8)];
+
+  // 2 Brazier Gallery: light the braziers in the order of their dots
+  rooms[2].puz = { type: 'braziers', solved: false, lit: [], order: [1, 3, 0, 2],
+    torches: [{ x: 4, y: 2 }, { x: 13, y: 2 }, { x: 13, y: 8 }, { x: 4, y: 8 }] };
+  for (const t of rooms[2].puz.torches) M[2].grid[t.y][t.x] = T.TORCH;
+  rooms[2].enemies = [E('fireImp', 9, 3), E('fireImp', 9, 7), E('mole', 15, 3)];
+  rooms[2].keyDrop = { x: 9 * TS, y: 5.5 * TS, shown: false, taken: false };
+
+  // 3 Crystal Hall: striking a crystal swaps which barrier pegs are raised
+  const pz = { type: 'crystal', solved: false, raised: 'blue', t: 0,
+    crystals: [{ x: 4, y: 3 }, { x: 9, y: 7 }, { x: 16, y: 2 }], red: [], blue: [] };
+  for (let y = 1; y < RH - 1; y++) { pz.blue.push([7, y]); pz.red.push([14, y]); }
+  pz.red.push([10, 1], [10, 2], [10, 3], [11, 3], [12, 3], [12, 2], [12, 1]); // cage around the key
+  M[3].peg = {};
+  for (const [x, y] of pz.red) M[3].peg[y * M[3].w + x] = 'red';
+  for (const [x, y] of pz.blue) M[3].peg[y * M[3].w + x] = 'blue';
+  for (const c of pz.crystals) M[3].grid[c.y][c.x] = T.FURN;
+  rooms[3].puz = pz;
+  castleSetPegs(rooms[3], false);
+  rooms[3].enemies = [E('wisp', 3, 8), E('spitter', 11, 8)];
+  rooms[3].keyDrop = { x: 11.5 * TS, y: 2.5 * TS, shown: true, taken: false };
+
+  // 4 Guard Gauntlet: two waves of guards, then a Small Key
+  rooms[4].puz = { type: 'waves', solved: false, wave: 0, delay: 0,
+    waves: [[['wolf', 6, 3], ['wraith', 12, 7], ['grimshade', 9, 5]],
+            [['beetle', 6, 7], ['ironclamp', 12, 3], ['wisp', 9, 2], ['mole', 9, 8]]] };
+  rooms[4].keyDrop = { x: 9 * TS, y: 5.5 * TS, shown: false, taken: false };
+
+  // 5 Antechamber: watch the orbs glow, then step on them in that order;
+  // pots hold hearts for the fight ahead
+  rooms[5].puz = { type: 'memory', solved: false, stepped: [], order: [2, 0, 3, 1], t: 0.8, justStepped: false,
+    switches: [{ x: 5, y: 3 }, { x: 12, y: 3 }, { x: 12, y: 7 }, { x: 5, y: 7 }] };
+  for (const s of rooms[5].puz.switches) M[5].grid[s.y][s.x] = T.SWITCH;
+  rooms[5].pots = [[2, 2], [2, 8], [15, 2], [15, 8]].map(([x, y]) => ({ x: (x + 0.5) * TS, y: (y + 0.5) * TS, alive: true, w: 14, h: 14, holdsHeart: true }));
+
+  for (const m of M) m.canvas = prerenderMap(m);
+  return { roomIndex: 0, rooms, keys: 0, sealOpen: false, ganon: null, defeated: false, startTime: 0, scaled: false };
+}
+function castleResetBlocks(p) {
+  const TS = CONFIG.TILE;
+  p.blocks.forEach(b => { if (!b.locked) { b.x = (b.hx + 0.5) * TS; b.y = (b.hy + 0.5) * TS; } });
+}
+// raise the pegs of the `raised` colour (solid), lower the other ones
+function castleSetPegs(r, rebake) {
+  const p = r.puz, m = r.map;
+  for (const [x, y] of p.red) m.grid[y][x] = p.raised === 'red' ? T.PEGUP : T.PEGDOWN;
+  for (const [x, y] of p.blue) m.grid[y][x] = p.raised === 'blue' ? T.PEGUP : T.PEGDOWN;
+  if (rebake) m.canvas = prerenderMap(m);
 }
 const castle = buildCastle();
 
@@ -4072,6 +4167,16 @@ function castleEntranceCheck() {
   return true;
 }
 
+// Castle guards are the toughest foes in the game: at least three sword hits
+// each at the hero's current strength (Little Hero: two)
+function castleScaleEnemy(e) {
+  if (e.castleScaled || e.isBoss) return;
+  e.castleScaled = true;
+  const per = computeDamage(equippedSwordKind(), e.defense || 0);
+  const LH = littleHero();
+  e.hp = e.maxHp = Math.max(Math.ceil(e.maxHp * (LH ? 1.6 : 3)), (LH ? 2 : 3) * per);
+  e.xp = Math.round((e.xp || 5) * 2);
+}
 function enterCastle() {
   if (world.mode !== 'overworld') return;
   if (!castleEntranceCheck()) return;
@@ -4080,117 +4185,602 @@ function enterCastle() {
     castle.roomIndex = 0;
     world.returnSpot = overworldReturnSpot(hero.x, hero.y + CONFIG.TILE);
     hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[0].map.h / 2) * CONFIG.TILE;
+    castleEnterRoom(0);
     SFX.door();
     saveGame(); // auto-save on entering the castle
   });
 }
+function exitCastle() {
+  fadeTo(() => {
+    world.mode = 'overworld';
+    hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
+    saveGame();
+  });
+}
+function castleGoRoom(ni, fromEdge) {
+  fadeTo(() => {
+    castle.roomIndex = ni;
+    const m = castle.rooms[ni].map;
+    hero.x = fromEdge === 'west' ? 2 * CONFIG.TILE : (m.w - 3) * CONFIG.TILE;
+    hero.y = Math.floor(m.h / 2) * CONFIG.TILE;
+    castleEnterRoom(ni);
+    saveGame(); // auto-save on entering a new castle room
+  });
+}
+const CASTLE_TIPS = [
+  'Defeat the guards to find a Small Key.',
+  'Push both stone blocks onto the plates.',
+  'Light the braziers in order: count the dots.',
+  'Strike a crystal to swap the red and blue pegs.',
+  'Survive two waves of guards!',
+  'Watch the orbs glow, then step on them in that order.',
+];
+function castleEnterRoom(ri) {
+  const r = castle.rooms[ri];
+  for (const e of r.enemies) castleScaleEnemy(e);
+  const p = r.puz;
+  if (p && p.type === 'weights' && !p.solved) castleResetBlocks(p);
+  if (p && p.type === 'waves' && !p.solved && p.wave === 0) castleSpawnWave(r);
+  if (p && p.type === 'memory' && !p.solved) { p.stepped = []; p.t = 1; }
+  if (ri === CASTLE_ARENA) {
+    if (!castle.defeated && (!castle.ganon || castle.ganon.alive)) {
+      if (!castle.ganon) {
+        castle.ganon = makeGanon((r.map.w - 5) * CONFIG.TILE, Math.floor(r.map.h / 2) * CONFIG.TILE);
+        r.enemies = [castle.ganon];
+        castle.startTime = performance.now();
+      }
+      malrekScale(castle.ganon);
+      castleArenaDoor(true);
+      screenShake(6, 0.3);
+      SFX.ganonLaugh();
+      showHint('Malrek, the Shadow King\nLv ' + (player.level + castle.ganon.bonus) + ' - he has grown strong to match you!', 3);
+    }
+    return;
+  }
+  showHint(r.name + (p && !p.solved ? '\n' + CASTLE_TIPS[ri] : ''), p && !p.solved ? 3 : 1.5);
+}
+function castleArenaDoor(shut) {
+  const m = castle.rooms[CASTLE_ARENA].map, midY = Math.floor(m.h / 2), want = shut ? T.BOSSDOOR : T.FLOOR;
+  if (m.grid[midY][0] === want) return;
+  m.grid[midY][0] = want;
+  m.canvas = prerenderMap(m);
+}
+function castleSpawnWave(r) {
+  const p = r.puz, TS = CONFIG.TILE, list = p.waves[p.wave];
+  p.wave++;
+  for (const [kind, x, y] of list) {
+    const e = makeDungeonEnemy(kind, (x + 0.5) * TS, (y + 0.5) * TS);
+    castleScaleEnemy(e);
+    r.enemies.push(e);
+    spawnVisualFx('burst', e.x, e.y, 0.35);
+  }
+  SFX.bossTell();
+  if (p.wave > 1) showHint('Here comes the second wave!', 1.6);
+}
+function castleShowKey(r) {
+  if (!r.keyDrop || r.keyDrop.shown) return;
+  r.keyDrop.shown = true;
+  spawnConfetti(r.keyDrop.x, r.keyDrop.y, 14);
+  SFX.door();
+  showHint('A Small Key appeared!', 1.8);
+}
 
+function updateCastleRoom(dt, map) {
+  const ri = castle.roomIndex, r = castle.rooms[ri], TS = CONFIG.TILE, midY = Math.floor(map.h / 2);
+  castleDoors(ri, r, map);
+  castlePuzzle(r, map, dt);
+  // Small Key pickups
+  const k = r.keyDrop;
+  if (k && k.shown && !k.taken && Math.hypot(hero.x - k.x, hero.y - k.y) < 13) {
+    k.taken = true; castle.keys++;
+    spawnFloatingText(k.x, k.y - 12, 'Small Key!', '#ffd84a');
+    SFX.coin(2);
+    if (r.puz && r.puz.type === 'crystal') r.puz.solved = true;
+    saveGame();
+  }
+  if (ri === CASTLE_ARENA && castle.ganon) updateGanon(dt, map);
+  // room-edge transitions (only through open doorways)
+  if (hero.x < TS * 1.2 && map.grid[midY][0] === T.FLOOR) {
+    if (ri === 0) exitCastle(); else castleGoRoom(ri - 1, 'east');
+  } else if (hero.x > (map.w - 1.2) * TS && map.grid[midY][map.w - 1] === T.FLOOR && ri < CASTLE_ARENA) {
+    castleGoRoom(ri + 1, 'west');
+  }
+}
+const castleDoorHint = { lock: false, seal: false, arena: false };
+function castleDoors(ri, r, map) {
+  const TS = CONFIG.TILE, midY = Math.floor(map.h / 2);
+  const eastX = (map.w - 1) * TS, doorY = (midY + 0.5) * TS;
+  const nearEast = Math.hypot(hero.x - eastX, hero.y - doorY) < 20;
+  const east = map.grid[midY][map.w - 1];
+  if (east === T.LOCKDOOR) {
+    if (nearEast) {
+      if (castle.keys > 0) {
+        castle.keys--;
+        map.grid[midY][map.w - 1] = T.FLOOR;
+        map.canvas = prerenderMap(map);
+        r.doorOpened = true;
+        SFX.door();
+        showHint('Used a Small Key!', 1.5);
+        saveGame();
+      } else if (!castleDoorHint.lock) {
+        castleDoorHint.lock = true;
+        showHint('Locked! ' + (CASTLE_TIPS[ri] || 'Find a Small Key.'), 2.2);
+      }
+    } else castleDoorHint.lock = false;
+  }
+  if (east === T.BOSSDOOR && ri === 5) {
+    if (nearEast) { if (!castleDoorHint.seal) { castleDoorHint.seal = true; openMathLock("Break Malrek's Seal!", castleBreakSeal); } }
+    else castleDoorHint.seal = false;
+  }
+  if (ri === CASTLE_ARENA && map.grid[midY][0] === T.BOSSDOOR) {
+    if (Math.hypot(hero.x - TS, hero.y - doorY) < 22) { if (!castleDoorHint.arena) { castleDoorHint.arena = true; showHint('The door is sealed shut! Defeat Malrek!', 1.8); } }
+    else castleDoorHint.arena = false;
+  }
+}
+function castleBreakSeal() {
+  const m = castle.rooms[5].map, midY = Math.floor(m.h / 2);
+  castle.sealOpen = true;
+  m.grid[midY][m.w - 1] = T.FLOOR;
+  m.canvas = prerenderMap(m);
+  SFX.door();
+  spawnConfetti((m.w - 1.5) * CONFIG.TILE, (midY + 0.5) * CONFIG.TILE, 16);
+  showHint('The seal breaks! Malrek awaits...', 2);
+  saveGame();
+}
+function castleOpenEast(r, hint) {
+  const m = r.map, midY = Math.floor(m.h / 2);
+  m.grid[midY][m.w - 1] = T.FLOOR;
+  m.canvas = prerenderMap(m);
+  SFX.door();
+  if (hint) showHint(hint, 2);
+}
+function castlePuzzle(r, map, dt) {
+  const p = r.puz, TS = CONFIG.TILE;
+  if (!p) return;
+  if (p.type === 'crystal' && p.t > 0) p.t -= dt;
+  if (p.solved) return;
+  if (p.type === 'guards') {
+    if (!r.enemies.some(e => e.alive)) { p.solved = true; castleShowKey(r); saveGame(); }
+  } else if (p.type === 'waves') {
+    if (r.enemies.some(e => e.alive)) return;
+    if (p.wave < p.waves.length) {
+      p.delay += dt;
+      if (p.delay > 0.9) { p.delay = 0; castleSpawnWave(r); }
+    } else { p.solved = true; castleShowKey(r); saveGame(); }
+  } else if (p.type === 'weights') {
+    const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+    for (const b of p.blocks) {
+      if (b.locked) continue;
+      if (hero.moving && Math.hypot(hero.x - b.x, hero.y - b.y) < 16) {
+        // only push away from the hero (standing beside a block never drags it)
+        const away = (b.x - hero.x) * dirVec[0] + (b.y - hero.y) * dirVec[1];
+        const nbx = b.x + dirVec[0] * CONFIG.HERO_SPEED * dt, nby = b.y + dirVec[1] * CONFIG.HERO_SPEED * dt;
+        const blocked = boxHitsSolid(map, nbx, nby, 14, 14) || p.blocks.some(o => o !== b && Math.abs(o.x - nbx) < 15 && Math.abs(o.y - nby) < 15);
+        if (away > 4 && !blocked) { b.x = nbx; b.y = nby; }
+      }
+      for (const pl of p.plates) {
+        const px = (pl.x + 0.5) * TS, py = (pl.y + 0.5) * TS;
+        if (!pl.held && Math.hypot(b.x - px, b.y - py) < 8) {
+          b.x = px; b.y = py; b.locked = true; pl.held = true;
+          SFX.thud(); spawnConfetti(px, py, 8);
+        }
+      }
+    }
+    if (p.plates.every(pl => pl.held)) { p.solved = true; castleOpenEast(r, 'Both plates are down - the gate grinds open!'); saveGame(); }
+  } else if (p.type === 'memory') {
+    // replay the order while the hero isn't mid-attempt
+    if (!p.stepped.length) { p.t -= dt; if (p.t <= 0) p.t = 1.2 + p.order.length * 0.6 + 2.2; }
+    const flashing = castleMemoryFlash(p);
+    if (flashing !== p.lastFlash) { p.lastFlash = flashing; if (flashing >= 0) playTone(440 + flashing * 110, 0.18, 'triangle', 0.08); }
+    const onIdx = p.switches.findIndex(s => Math.hypot(hero.x - (s.x + 0.5) * TS, hero.y - (s.y + 0.5) * TS) < 9);
+    if (onIdx < 0) { p.justStepped = false; return; }
+    if (p.justStepped || p.stepped.includes(onIdx)) return;
+    p.justStepped = true;
+    if (onIdx === p.order[p.stepped.length]) {
+      p.stepped.push(onIdx);
+      playTone(440 + onIdx * 110, 0.2, 'triangle', 0.1);
+      if (p.stepped.length === p.order.length) {
+        p.solved = true;
+        const m = r.map, midY = Math.floor(m.h / 2);
+        m.grid[midY][m.w - 1] = castle.sealOpen ? T.FLOOR : T.BOSSDOOR;
+        m.canvas = prerenderMap(m);
+        SFX.door();
+        showHint("Malrek's door appears! Answer to break its seal.", 2.4);
+        saveGame();
+      }
+    } else {
+      p.stepped = []; p.t = 1.4;
+      SFX.hurt && playTone(140, 0.25, 'square', 0.08);
+      showHint('Not quite! Watch the orbs again.', 1.6);
+    }
+  }
+}
+// which switch is glowing in the replay right now (-1: none)
+function castleMemoryFlash(p) {
+  if (p.solved || p.stepped.length) return -1;
+  const cycle = 1.2 + p.order.length * 0.6 + 2.2, since = cycle - p.t - 1.2;
+  if (since < 0) return -1;
+  const k = Math.floor(since / 0.6);
+  return k < p.order.length && since - k * 0.6 < 0.45 ? p.order[k] : -1;
+}
+function lightCastleBrazier(r, i) {
+  const p = r.puz;
+  if (p.solved || p.lit.includes(i)) return;
+  if (i === p.order[p.lit.length]) {
+    p.lit.push(i);
+    SFX.fireWhoosh();
+    if (p.lit.length === p.order.length) { p.solved = true; castleShowKey(r); saveGame(); }
+  } else {
+    p.lit = [];
+    playTone(140, 0.25, 'square', 0.08);
+    showHint('The flames went out! Count the dots: light 1, then 2, 3, 4.', 2.4);
+  }
+}
+function strikeCrystal(r) {
+  const p = r.puz;
+  if (!p || p.type !== 'crystal' || p.t > 0) return false;
+  p.t = 0.5;
+  p.raised = p.raised === 'blue' ? 'red' : 'blue';
+  castleSetPegs(r, true);
+  playTone(p.raised === 'red' ? 880 : 660, 0.12, 'triangle', 0.1); playTone(p.raised === 'red' ? 1320 : 990, 0.18, 'triangle', 0.07, 0.08);
+  // anyone standing where a peg rose is nudged onto open floor
+  const m = r.map;
+  if (boxHitsSolid(m, hero.x, hero.y, hero.w, hero.h)) { const s = findClearSpot(m, hero.x, hero.y, hero.w, hero.h, null, 3); hero.x = s.x; hero.y = s.y; }
+  for (const e of r.enemies) if (e.alive && boxHitsSolid(m, e.x, e.y, e.w, e.h)) settleSpawn(e, m);
+  return true;
+}
+// a sword swing near a crystal strikes it
+function castleSwordHit(range, facingAngle) {
+  if (world.mode !== 'castle') return;
+  const r = castle.rooms[castle.roomIndex], p = r.puz, TS = CONFIG.TILE;
+  if (!p || p.type !== 'crystal') return;
+  for (const c of p.crystals) {
+    const cx = (c.x + 0.5) * TS, cy = (c.y + 0.5) * TS, d = Math.hypot(cx - hero.x, cy - hero.y);
+    if (d > range + 8) continue;
+    let diff = Math.abs(Math.atan2(cy - hero.y, cx - hero.x) - facingAngle);
+    if (diff > Math.PI) diff = Math.PI * 2 - diff;
+    if (diff < Math.PI * 0.7 && strikeCrystal(r)) { spawnVisualFx('burst', cx, cy - 4, 0.25); return; }
+  }
+}
+function castleInteractables() {
+  const list = [], TS = CONFIG.TILE, ri = castle.roomIndex, r = castle.rooms[ri], p = r.puz, m = r.map;
+  if (p && p.type === 'braziers' && !p.solved) {
+    p.torches.forEach((t, i) => {
+      if (p.lit.includes(i)) return;
+      list.push({ kind: 'torch', key: 'ctorch:' + i, x: (t.x + 0.5) * TS, y: (t.y + 0.5) * TS, range: 24, act: () => lightCastleBrazier(r, i) });
+    });
+  }
+  if (p && p.type === 'crystal') {
+    p.crystals.forEach((c, i) => list.push({ kind: 'crystal', key: 'crystal:' + i, x: (c.x + 0.5) * TS, y: (c.y + 0.5) * TS, range: 24,
+      act: () => { if (strikeCrystal(r)) { SFX.swish(); spawnVisualFx('burst', (c.x + 0.5) * TS, (c.y + 0.5) * TS - 4, 0.25); } } }));
+  }
+  const my = Math.floor(m.h / 2);
+  if (ri === 5 && m.grid[my][m.w - 1] === T.BOSSDOOR) {
+    list.push({ kind: 'seal', key: 'cseal', x: (m.w - 1) * TS, y: (my + 0.5) * TS, range: 28, act: () => openMathLock("Break Malrek's Seal!", castleBreakSeal) });
+  }
+  return list;
+}
+
+// ---- castle drawing: plates, blocks, braziers + dot counts, crystals, orbs, keys
+function drawCastleGround() {
+  const r = castle.rooms[castle.roomIndex], p = r.puz, TS = CONFIG.TILE;
+  if (!p) return;
+  if (p.type === 'weights') {
+    for (const pl of p.plates) {
+      const px = (pl.x + 0.5) * TS, foot = (pl.y + 1) * TS - 1;
+      drawSpriteFoot(ctx, 'dungeon_props', pl.held ? SRC.prop.plateDown : SRC.prop.plateUp, px, foot, pl.held ? 12 : 14, { w: 16 });
+    }
+  }
+  if (p.type === 'braziers') { // 1-4 dots on the floor in front of each brazier
+    p.torches.forEach((t, i) => {
+      const n = p.order.indexOf(i) + 1, cx = (t.x + 0.5) * TS, cy = (t.y + 1) * TS + 5;
+      for (let k = 0; k < n; k++) {
+        const dx = cx + (k - (n - 1) / 2) * 5;
+        ctx.fillStyle = '#1a1010'; ctx.fillRect(dx - 2, cy - 2, 4, 4);
+        ctx.fillStyle = p.lit.includes(i) || p.solved ? '#ffcc40' : '#e0d0a0'; ctx.fillRect(dx - 1, cy - 1, 2, 2);
+      }
+    });
+  }
+}
+function castlePropItems() {
+  const out = [], r = castle.rooms[castle.roomIndex], p = r.puz, TS = CONFIG.TILE, K = 'dungeon_props', P = SRC.prop;
+  const now = performance.now() / 1000;
+  if (p && p.type === 'weights') {
+    for (const b of p.blocks) {
+      const bx = Math.round(b.x), by = Math.round(b.y);
+      out.push({ y: by + 7, draw: () => {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(bx - 7, by + 6, 15, 2);
+        if (!drawSpriteFoot(ctx, K, P.pushBlock, bx, by + 8, 18, { w: 16 })) { ctx.fillStyle = '#8a6a3a'; ctx.fillRect(bx - 7, by - 7, 14, 14); }
+      } });
+    }
+  }
+  if (p && p.type === 'braziers') {
+    p.torches.forEach((t, i) => {
+      const lit = p.solved || p.lit.includes(i), x = (t.x + 0.5) * TS, foot = (t.y + 1) * TS - 1;
+      out.push({ y: foot - 2, draw: () => {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 5, foot - 2, 11, 2);
+        if (!lit) { drawSpriteFoot(ctx, K, P.brazierOff, x, foot, 13, { w: 12 }); return; }
+        const f = Math.floor(now * 9 + i * 1.7) % 3;
+        drawSpriteFoot(ctx, K, P.brazierOn, x, foot, 17 + (f === 1 ? 1 : 0), { w: 12, flip: f === 2 });
+      } });
+    });
+  }
+  if (p && p.type === 'crystal') {
+    p.crystals.forEach(c => {
+      const x = (c.x + 0.5) * TS, foot = (c.y + 1) * TS - 1, col = p.raised === 'red' ? '#ff5050' : '#4a90ff';
+      const glow = p.t > 0 ? 'white' : 'tint:' + col;
+      out.push({ y: foot - 2, draw: () => {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 6, foot - 2, 12, 2);
+        drawSpriteFoot(ctx, K, P.orbOn, x, foot + Math.round(Math.sin(now * 3) * 1), 18, { w: 13, ops: glow });
+      } });
+    });
+  }
+  if (p && p.type === 'memory') {
+    const fl = castleMemoryFlash(p);
+    p.switches.forEach((sw, i) => {
+      const on = p.solved || p.stepped.includes(i) || fl === i, x = (sw.x + 0.5) * TS, foot = (sw.y + 1) * TS - 1;
+      out.push({ y: foot - 2, draw: () => {
+        ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(x - 5, foot - 2, 10, 2);
+        drawSpriteFoot(ctx, K, on ? P.orbOn : P.orbOff, x, foot, on ? 16 : 15, { w: 11, ops: fl === i ? 'white' : undefined });
+      } });
+    });
+  }
+  const k = r.keyDrop;
+  if (k && k.shown && !k.taken) {
+    const bob = Math.round(Math.sin(now * 4) * 2);
+    out.push({ y: k.y + 4, draw: () => {
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(k.x - 4, k.y + 3, 8, 2);
+      drawSpriteFoot(ctx, 'enemies_objects', SRC.objects.key, k.x, k.y + 2 + bob, 7, { w: 14 });
+    } });
+  }
+  return out;
+}
+function castleLights() {
+  const r = castle.rooms[castle.roomIndex], p = r.puz, TS = CONFIG.TILE, out = [];
+  if (p && p.type === 'braziers') p.torches.forEach((t, i) => { if (p.solved || p.lit.includes(i)) out.push({ x: (t.x + 0.5) * TS, y: (t.y + 0.5) * TS - 6, r: 34 }); });
+  if (p && p.type === 'crystal') p.crystals.forEach(c => out.push({ x: (c.x + 0.5) * TS, y: (c.y + 0.5) * TS - 6, r: 22 }));
+  return out;
+}
+
+// castle progress is saved additively: keys held, doors unlocked, puzzles
+// solved, keys picked up, the seal and the crystal colour
+function castleSaveData() {
+  return {
+    keys: castle.keys, sealOpen: castle.sealOpen,
+    rooms: castle.rooms.map(r => ({ solved: !!(r.puz && r.puz.solved), door: !!r.doorOpened,
+      key: r.keyDrop ? (r.keyDrop.taken ? 2 : r.keyDrop.shown ? 1 : 0) : 0 })),
+  };
+}
+function applyCastleSave(s) {
+  if (!s || !Array.isArray(s.rooms)) return;
+  castle.keys = clampNum(s.keys, 0, 9, 0);
+  s.rooms.forEach((st, i) => {
+    const r = castle.rooms[i];
+    if (!r || !st || i === CASTLE_ARENA) return;
+    const p = r.puz, m = r.map, midY = Math.floor(m.h / 2);
+    if (r.keyDrop) { r.keyDrop.shown = st.key >= 1 || r.keyDrop.shown; r.keyDrop.taken = st.key === 2; }
+    if (p && st.solved) {
+      p.solved = true;
+      if (p.type === 'guards' || p.type === 'waves') { for (const e of r.enemies) e.alive = false; p.wave = p.waves ? p.waves.length : 0; }
+      if (p.type === 'weights') { p.blocks.forEach((b, k) => { const pl = p.plates[k]; b.locked = true; pl.held = true; b.x = (pl.x + 0.5) * CONFIG.TILE; b.y = (pl.y + 0.5) * CONFIG.TILE; }); m.grid[midY][m.w - 1] = T.FLOOR; }
+      if (p.type === 'braziers') p.lit = p.order.slice();
+      if (p.type === 'memory') m.grid[midY][m.w - 1] = s.sealOpen ? T.FLOOR : T.BOSSDOOR;
+    }
+    if (st.door) { r.doorOpened = true; m.grid[midY][m.w - 1] = T.FLOOR; }
+    m.canvas = prerenderMap(m);
+  });
+  castle.sealOpen = !!s.sealOpen;
+}
+
+// =========================================================================
+// MALREK: five telegraphed attacks, unlocked by phase
+//   phase 1: Shadow Slash (dash along a marked lane), Dark Orbs (a fan)
+//   phase 2: + Spike Line (spikes erupt toward the hero), Meteor Rain
+//            (falling rocks marked by shadows); he blinks between attacks
+//   phase 3: + Dark Nova (a room-wide ring; stand on a glowing safe rune)
+// His strength is set from the hero's own: HP from the sword's damage, his
+// hits from the hero's hearts, as if he were 5 levels above the hero - 4
+// after 10 revives, 3 after 20, 2 after 30.
+// =========================================================================
+function malrekBonus() {
+  const r = player.revivesUsed || 0;
+  return r >= 30 ? 2 : r >= 20 ? 3 : r >= 10 ? 4 : 5;
+}
+function malrekScale(g) {
+  const N = malrekBonus();
+  if (g.bonus === N && g.scaledFor === player.attack) return;
+  const frac = g.maxHp > 0 && g.bonus !== undefined ? Math.max(0, g.hp / g.maxHp) : 1;
+  const per = computeDamage(equippedSwordKind(), g.defense || 0);
+  const hits = littleHero() ? 16 + N : 26 + 2 * N;
+  const weaker = g.bonus !== undefined && N < g.bonus;
+  g.bonus = N; g.scaledFor = player.attack;
+  g.maxHp = hits * per;
+  g.hp = Math.max(1, Math.round(g.maxHp * frac));
+  g.dmg = littleHero() ? 1 : Math.min(3, Math.max(1, Math.round(player.maxHearts * (0.1 + 0.025 * N))));
+  g.tempo = (littleHero() ? 0.8 : 1) * (1 + 0.06 * N);
+  if (weaker) showHint('Malrek weakens... (now Lv ' + (player.level + N) + ')', 2);
+}
 function makeGanon(x, y) {
   return {
     type: 'ganon', x, y, w: 44, h: 48, hp: CONFIG.GANON_MAX_HP, maxHp: CONFIG.GANON_MAX_HP,
     defense: 0, alive: true, hitFlash: 0, isBoss: true,
     phase: 1, attackTimer: 1.5, siphonTimer: CONFIG.GANON_SIPHON_INTERVAL,
-    telegraph: 0, teleportCooldown: 0, projectiles: [],
+    telegraph: 0, teleportCooldown: 0, projectiles: [], hazards: [],
+    mk: { st: 'idle', t: 1.8, atk: null, last: null, count: 0 },
+    dmg: 2, tempo: 1,
   };
 }
-
-function updateCastleRoom(dt, map) {
-  // hallway -> arena transition (one-way; no locked door, but no going back)
-  if (castle.roomIndex === 0) {
-    const midY = Math.floor(map.h / 2);
-    if (hero.x > (map.w - 1.2) * CONFIG.TILE && map.grid[midY][map.w - 1] === T.FLOOR) {
-      fadeTo(() => {
-        castle.roomIndex = 1;
-        hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(castle.rooms[1].map.h / 2) * CONFIG.TILE;
-        if (!castle.ganon) {
-          castle.ganon = makeGanon((castle.rooms[1].map.w - 5) * CONFIG.TILE, Math.floor(castle.rooms[1].map.h / 2) * CONFIG.TILE);
-          castle.rooms[1].enemies = [castle.ganon];
-          castle.startTime = performance.now();
-          screenShake(6, 0.3);
-          SFX.ganonLaugh();
-        }
-      });
-    }
-  } else if (castle.roomIndex === 1 && castle.ganon) {
-    updateGanon(dt, map);
-  }
+const MALREK_WIND = { slash: 0.75, orbs: 0.85, spikes: 0.75, meteors: 0.9, nova: 1.5 };
+function malrekAttacks(g) {
+  return g.phase >= 3 ? ['slash', 'orbs', 'spikes', 'meteors', 'nova'] : g.phase === 2 ? ['slash', 'orbs', 'spikes', 'meteors'] : ['slash', 'orbs'];
 }
-
-function ganonProjectileSpeed() { return castle.ganon.phase >= 3 ? 130 : 90; }
-
+function malrekPick(g) {
+  const mk = g.mk, list = malrekAttacks(g);
+  mk.count++;
+  if (g.phase >= 3 && mk.count % 3 === 0 && mk.last !== 'nova') return 'nova';
+  let a;
+  do { a = list[Math.floor(Math.random() * list.length)]; } while (a === mk.last && list.length > 1);
+  return a;
+}
+function ganonProjectileSpeed() { return castle.ganon.phase >= 3 ? 130 : 105; }
 function updateGanon(dt, map) {
   const g = castle.ganon;
-  if (!g.alive) return;
+  if (!g || !g.alive) return;
+  malrekScale(g); // re-tunes if a revive milestone was just crossed
   const frac = g.hp / g.maxHp;
   g.phase = frac <= CONFIG.GANON_PHASE3_HP_FRAC ? 3 : frac <= CONFIG.GANON_PHASE2_HP_FRAC ? 2 : 1;
-  const speedMult = g.phase === 3 ? 0.55 : 1;
-
   if (g.hitFlash > 0) g.hitFlash -= dt;
-  if (g.telegraph > 0) {
-    g.telegraph -= dt;
-    if (g.telegraph <= 0) ganonUnleashAttack(g);
-  } else {
-    g.attackTimer -= dt * enemySlowFactor(g);
-    if (g.attackTimer <= 0) {
-      g.attackTimer = CONFIG.GANON_ATTACK_INTERVAL * speedMult;
-      g.telegraph = 0.5; // flash/wind-up before the attack lands
+  const sf = enemySlowFactor(g), mk = g.mk, tempo = g.tempo || 1;
+  const dx = hero.x - g.x, dy = hero.y - g.y, dist = Math.hypot(dx, dy) || 1;
+  mk.t -= dt * sf;
+  mk.age = (mk.age || 0) + dt;
+  let vx = 0, vy = 0;
+  if (mk.st === 'idle') {
+    const sp = 30 * tempo;
+    if (dist > 40) { vx = dx / dist * sp; vy = dy / dist * sp; }
+    if (mk.t <= 0) {
+      mk.atk = malrekPick(g); mk.last = mk.atk;
+      if (g.phase >= 2 && Math.random() < 0.45 && mk.atk !== 'nova') { mk.st = 'blink'; mk.t = 0.6; g.airborne = true; SFX.malrekBlink(); }
+      else malrekWind(g, map);
     }
-  }
-
-  if (g.phase >= 2) {
-    g.teleportCooldown -= dt * enemySlowFactor(g);
-    if (g.teleportCooldown <= 0) {
-      g.teleportCooldown = 3.5 * speedMult;
-      const ang = Math.random() * Math.PI * 2;
-      const dist = 60 + Math.random() * 40;
-      let nx = hero.x + Math.cos(ang) * dist, ny = hero.y + Math.sin(ang) * dist;
-      nx = Math.max(3 * CONFIG.TILE, Math.min((map.w - 3) * CONFIG.TILE, nx));
-      ny = Math.max(3 * CONFIG.TILE, Math.min((map.h - 3) * CONFIG.TILE, ny));
-      g.x = nx; g.y = ny;
+  } else if (mk.st === 'blink') {
+    if (mk.t <= 0.3 && !mk.moved) {
+      mk.moved = true;
+      const ang = Math.random() * Math.PI * 2, d = 80 + Math.random() * 40;
+      const p = findClearSpot(map, Math.max(3 * CONFIG.TILE, Math.min((map.w - 3) * CONFIG.TILE, hero.x + Math.cos(ang) * d)),
+        Math.max(3 * CONFIG.TILE, Math.min((map.h - 3) * CONFIG.TILE, hero.y + Math.sin(ang) * d)), g.w, g.h, null, 4);
+      g.x = p.x; g.y = p.y;
       spawnConfetti(g.x, g.y, 6);
     }
+    if (mk.t <= 0) { mk.moved = false; g.airborne = false; malrekWind(g, map); }
+  } else if (mk.st === 'wind') {
+    if (mk.atk === 'slash') { mk.ang = Math.atan2(dy, dx); } // tracks the hero until it lunges
+    if (mk.t <= 0) malrekAct(g, map);
+  } else if (mk.st === 'act') {
+    if (mk.atk === 'slash') {
+      const sp = 300;
+      const ox = g.x, oy = g.y;
+      moveWithCollision(g, Math.cos(mk.ang) * sp * dt, Math.sin(mk.ang) * sp * dt, map);
+      if (Math.hypot(g.x - ox, g.y - oy) < 1) mk.t = Math.min(mk.t, 0.02); // hit a wall
+      if (!mk.hit && Math.hypot(hero.x - g.x, hero.y - g.y) < 30) { mk.hit = true; damageHero(g.dmg, g.x, g.y); }
+    } else if (mk.atk === 'nova') {
+      const prev = mk.ring; mk.ring += dt * 300;
+      const hd = Math.hypot(hero.x - g.x, hero.y - g.y);
+      if (!mk.hit && hd >= prev - 8 && hd <= mk.ring + 6) {
+        mk.hit = true;
+        if (!mk.runes.some(s => Math.hypot(hero.x - s.x, hero.y - s.y) < 16)) damageHero(g.dmg, g.x, g.y);
+        else spawnFloatingText(hero.x, hero.y - 22, 'SAFE!', '#ffe066');
+      }
+    }
+    if (mk.t <= 0) {
+      mk.st = 'rest';
+      mk.t = (mk.atk === 'slash' || mk.atk === 'nova' ? 1.3 : 0.9) / Math.max(0.8, tempo * 0.9);
+      mk.runes = null;
+    }
+  } else { // rest: he pants, the best time to strike
+    if (mk.t <= 0) { mk.st = 'idle'; mk.t = (1.5 + Math.random() * 0.7) / tempo; }
+  }
+  moveWithCollision(g, vx * dt * sf, vy * dt * sf, map);
+
+  // Dark Siphon (phase 2+): steals a little AP now and then
+  if (g.phase >= 2) {
     g.siphonTimer -= dt;
     if (g.siphonTimer <= 0) {
       g.siphonTimer = CONFIG.GANON_SIPHON_INTERVAL;
-      const stolen = Math.min(player.ap, CONFIG.GANON_SIPHON_AP);
+      const stolen = goldenPowers() ? 0 : Math.min(player.ap, CONFIG.GANON_SIPHON_AP);
       player.ap -= stolen;
-      spawnFloatingText(hero.x, hero.y - 24, '-' + stolen + ' AP (Dark Siphon!)', '#c060ff');
+      if (stolen) spawnFloatingText(hero.x, hero.y - 24, '-' + stolen + ' AP (Dark Siphon!)', '#c060ff');
       screenShake(3, 0.2);
     }
   }
-
-  // projectiles
+  // orbs
   for (let i = g.projectiles.length - 1; i >= 0; i--) {
     const p = g.projectiles[i];
+    if (p.home > 0) { // curve gently toward the hero for a moment
+      p.home -= dt;
+      const a = Math.atan2(hero.y - p.y, hero.x - p.x), sp = Math.hypot(p.vx, p.vy), cur = Math.atan2(p.vy, p.vx);
+      let da = a - cur; while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
+      const na = cur + Math.max(-1.2 * dt, Math.min(1.2 * dt, da));
+      p.vx = Math.cos(na) * sp; p.vy = Math.sin(na) * sp;
+    }
     p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
     if (p.life <= 0 || tileSolidAt(map, p.x, p.y)) { g.projectiles.splice(i, 1); continue; }
-    if (Math.hypot(hero.x - p.x, hero.y - p.y) < 10) {
-      damageHero(1, p.x, p.y);
-      g.projectiles.splice(i, 1);
+    if (Math.hypot(hero.x - p.x, hero.y - p.y) < 10) { damageHero(Math.max(1, g.dmg - 1), p.x, p.y); g.projectiles.splice(i, 1); }
+  }
+  // spikes and meteors: a warning mark, then the strike
+  for (let i = g.hazards.length - 1; i >= 0; i--) {
+    const h = g.hazards[i];
+    h.t -= dt;
+    if (!h.done && h.t <= 0) {
+      h.done = true; h.life = h.kind === 'spike' ? 0.45 : 0.35;
+      if (h.kind === 'meteor') { SFX.bossSlam(); screenShake(3, 0.12); spawnVisualFx('burst', h.x, h.y, 0.35); }
+      else if (h.first) SFX.bossRumble();
+      if (Math.hypot(hero.x - h.x, hero.y - h.y) < h.r) damageHero(g.dmg, h.x, h.y);
     }
+    if (h.done) { h.life -= dt; if (h.life <= 0) g.hazards.splice(i, 1); }
   }
-
-  // melee contact (phase 1 sword duel + any phase touch)
-  if (Math.hypot(hero.x - g.x, hero.y - g.y) < (g.w + hero.w) / 2 - 6) {
-    damageHero(1, g.x, g.y);
-  }
-
+  // touching him hurts (not while he is blinking)
+  if (!g.airborne && dist < (g.w + hero.w) / 2 - 6) damageHero(g.dmg, g.x, g.y);
   if (g.hp <= 0) ganonDefeated(g);
 }
-
-function ganonUnleashAttack(g) {
-  if (g.phase === 1) {
-    // slow telegraphed sword swing - melee only, handled by contact check
-    SFX.hit();
-  } else {
-    const count = g.phase >= 3 ? 2 : 1;
-    for (let i = 0; i < count; i++) {
-      const spread = (i - (count - 1) / 2) * 0.3;
-      const ang = Math.atan2(hero.y - g.y, hero.x - g.x) + spread;
-      const spd = ganonProjectileSpeed();
-      g.projectiles.push({ x: g.x, y: g.y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, life: 3 });
+function malrekWind(g, map) {
+  const mk = g.mk, LH = littleHero();
+  mk.st = 'wind'; mk.hit = false;
+  mk.t = Math.max(0.5, MALREK_WIND[mk.atk] / (g.tempo || 1)) * (LH ? 1.4 : 1);
+  mk.windT = mk.t;
+  g.telegraph = mk.t; // (kept for old readers: >0 while winding up)
+  if (mk.atk === 'slash') { mk.ang = Math.atan2(hero.y - g.y, hero.x - g.x); SFX.bossTell(); }
+  if (mk.atk === 'orbs') SFX.malrekCharge();
+  if (mk.atk === 'spikes') SFX.bossTell();
+  if (mk.atk === 'meteors') SFX.malrekCharge();
+  if (mk.atk === 'nova') {
+    SFX.malrekCharge(); SFX.ganonLaugh();
+    // three glowing safe runes, one of them always reachable near the hero
+    const TS = CONFIG.TILE, runes = [];
+    const a0 = Math.random() * Math.PI * 2;
+    for (let k = 0; k < 3; k++) {
+      const a = a0 + k * Math.PI * 2 / 3, d = k === 0 ? 40 : 90;
+      const p = findClearSpot(map, Math.max(2 * TS, Math.min((map.w - 2) * TS, hero.x + Math.cos(a) * d)), Math.max(2 * TS, Math.min((map.h - 2) * TS, hero.y + Math.sin(a) * d)), 14, 14, null, 3);
+      runes.push(p);
     }
-    SFX.swish();
+    mk.runes = runes;
+  }
+}
+function malrekAct(g, map) {
+  const mk = g.mk, LH = littleHero(), N = g.bonus || 5;
+  mk.st = 'act'; g.telegraph = 0;
+  const ang = Math.atan2(hero.y - g.y, hero.x - g.x);
+  switch (mk.atk) {
+    case 'slash': mk.t = 0.4; SFX.swish(); SFX.bossSpin(); break;
+    case 'orbs': {
+      mk.t = 0.35; SFX.zap();
+      const n = LH ? 3 : N >= 4 ? 5 : 4, sp = ganonProjectileSpeed() * (LH ? 0.8 : 1);
+      for (let k = 0; k < n; k++) {
+        const a = ang + (k - (n - 1) / 2) * 0.32;
+        g.projectiles.push({ x: g.x, y: g.y - 10, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 3.2, home: 0.7 });
+      }
+      break;
+    }
+    case 'spikes': {
+      mk.t = 0.3; SFX.bossSlam(); screenShake(5, 0.2);
+      const n = LH ? 5 : 8;
+      for (let k = 1; k <= n; k++) {
+        const x = g.x + Math.cos(ang) * 22 * k, y = g.y + 8 + Math.sin(ang) * 22 * k;
+        if (tileSolidAt(map, x, y)) break;
+        g.hazards.push({ kind: 'spike', x, y, r: 13, t: 0.35 + k * 0.1, warn: 0.35 + k * 0.1, first: k === 1 });
+      }
+      break;
+    }
+    case 'meteors': {
+      mk.t = 0.3; SFX.bossRumble();
+      const n = LH ? 3 : 4 + (N >= 4 ? 1 : 0);
+      for (let k = 0; k < n; k++) {
+        const x = hero.x + (k ? (Math.random() - 0.5) * 120 : 0), y = hero.y + (k ? (Math.random() - 0.5) * 80 : 0);
+        g.hazards.push({ kind: 'meteor', x, y, r: 16, t: 0.9 + k * 0.22, warn: 0.9 + k * 0.22 });
+      }
+      break;
+    }
+    case 'nova': mk.t = 0.9; mk.ring = 20; SFX.malrekNova(); screenShake(7, 0.4); break;
   }
 }
 
@@ -4207,6 +4797,8 @@ function ganonDefeated(g) {
   if (!g.alive) return;
   g.alive = false;
   castle.defeated = true;
+  g.hazards = []; g.projectiles = [];
+  castleArenaDoor(false);
   screenShake(8, 0.5);
   spawnConfetti(g.x, g.y, 40);
   if (!musicOnBossDefeated()) SFX.victoryMelody();
@@ -4720,6 +5312,7 @@ function trySwingSword() {
     const d = Math.hypot(p.x - hero.x, p.y - hero.y);
     if (d <= range) smashPot(p);
   }
+  castleSwordHit(range, facingAngle);
 }
 
 // --- Boomerang (Phase 3) ---
@@ -4879,6 +5472,7 @@ function smashPot(p) {
     return;
   }
   SFX.potSmash();
+  if (p.holdsHeart) { spawnHeartPickup(p.x, p.y); return; }
   if (Math.random() < 0.6) spawnCoin(p.x, p.y);
 }
 
@@ -6742,6 +7336,7 @@ function drawPlaying() {
   if (world.mode === 'overworld') drawWaterShimmer(map, now);
   if (world.mode === 'dungeon' || world.mode === 'castle') drawRoomDoors(map);
   if (world.mode === 'dungeon') drawDungeonGround(world.dungeon);
+  if (world.mode === 'castle') drawCastleGround();
 
   // dust puffs + ripple markers sit on the ground
   for (const d of dustPuffs) {
@@ -6788,6 +7383,7 @@ function drawPlaying() {
     items.push({ y: n.y + 7, box: [n.x - 10, n.y - 32, n.x + 10, n.y + 8], draw: () => drawNpcSprite(n.x, n.y, n.color, n.facing, n.sprite, n) });
   }
   if (world.mode === 'dungeon') for (const it of dungeonPropItems(world.dungeon)) items.push(it);
+  if (world.mode === 'castle') for (const it of castlePropItems()) items.push(it);
   const heroVisible = !(player.invincibleT > 0 && Math.floor(player.invincibleT * 12) % 2 === 0);
   items.push({ y: hero.y + 7, hero: true, box: [hero.x - 22, hero.y - 40, hero.x + 22, hero.y + 16], draw: () => {
     const swinging = player.swordSwingT > 0;
@@ -6831,6 +7427,7 @@ function drawPlaying() {
   // warm light sources (interior lamps/fires, lit dungeon braziers)
   if (world.mode === 'interior' && map.lights) drawRoomLighting(map, map.lights, now, true);
   else if (world.mode === 'dungeon') drawRoomLighting(map, dungeonLights(world.dungeon), now, false);
+  else if (world.mode === 'castle') drawRoomLighting(map, castleLights(), now, false);
 
   drawVisualFx(now);
   drawEnemyShots(now);
@@ -6921,7 +7518,7 @@ function drawPlaying() {
     for (const e of world.dungeon.enemies[world.dungeon.roomIndex]) if (e.isMiniboss && e.alive && e.bossKind) drawNewBossHPBar(e);
   }
   // boss HP bar (top of screen, Phase 5)
-  if (world.mode === 'castle' && castle.roomIndex === 1 && castle.ganon && castle.ganon.alive) {
+  if (world.mode === 'castle' && castle.roomIndex === CASTLE_ARENA && castle.ganon && castle.ganon.alive) {
     drawBossHPBar(castle.ganon);
   }
 
@@ -7198,23 +7795,124 @@ function drawNewEnemy(e, hs, x, foot, now) {
 // hit or while telegraphing, violet-tinted swirl projectiles.
 function drawGanon(g, hs) {
   hs = hs || { flash: false, kx: 0, ky: 0 };
-  const now = performance.now() / 1000;
-  const telegraph = g.telegraph > 0 && Math.floor(g.telegraph * 10) % 2 === 0;
+  const now = performance.now() / 1000, mk = g.mk || { st: 'idle' };
   const x = Math.round(g.x) + hs.kx, foot = Math.round(g.y + g.h / 2) + hs.ky;
+  const winding = mk.st === 'wind', acting = mk.st === 'act';
+  const wk = winding && mk.windT ? 1 - Math.max(0, mk.t) / mk.windT : 0; // wind-up progress 0..1
+  drawMalrekFloorFx(g, now, wk);
+  // pose: lean/squash/lift per attack
+  let sx = 1, sy = 1, lift = 0, alpha = 1, flashP = false;
   const bob = Math.round(Math.sin(now * 2.2) * 1.5);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 20, foot - 2, 40, 4);
-  const ops = hs.flash || telegraph ? 'white' : statusOps(g, '');
-  if (!drawSpriteFoot(ctx, 'final_boss', SRC.boss.malrek, x, foot + bob, 66, { flip: hero.x < g.x, ops })) {
-    ctx.fillStyle = telegraph ? '#ffffff' : '#2a1a2a';
-    ctx.fillRect(g.x - 18, g.y - 22, 36, 40);
+  if (mk.st === 'blink') alpha = Math.abs(mk.t - 0.3) / 0.3;
+  if (winding) {
+    flashP = Math.floor(now * 12) % 2 === 0 && wk > 0.5;
+    if (mk.atk === 'slash') { sx = 1 + 0.1 * wk; sy = 1 - 0.08 * wk; }
+    if (mk.atk === 'orbs' || mk.atk === 'meteors') { lift = Math.round((mk.atk === 'meteors' ? 14 : 6) * wk); sy = 1 + 0.05 * wk; }
+    if (mk.atk === 'spikes') { lift = Math.round(10 * Math.sin(wk * Math.PI * 0.9)); sy = 1 + 0.06 * wk; }
+    if (mk.atk === 'nova') { const pu = 1 + 0.06 * Math.sin(now * 18) * wk; sx = pu; sy = pu; }
   }
-  drawStatusFx(g, x, foot + bob - 66);
+  if (acting) {
+    if (mk.atk === 'slash') { sx = 1.18; sy = 0.88; }
+    if (mk.atk === 'spikes' || mk.atk === 'meteors') { sy = 0.86; sx = 1.1; }
+    if (mk.atk === 'nova') { sx = 1.1; sy = 1.1; }
+  }
+  if (mk.st === 'rest') { sy = 0.94 + 0.03 * Math.sin(now * 10); } // panting
+  const flip = mk.atk === 'slash' && (winding || acting) ? Math.cos(mk.ang || 0) < 0 : hero.x < g.x;
+  const ops = hs.flash || flashP ? 'white' : statusOps(g, '');
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.05, Math.min(1, alpha));
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(x, foot, 20 * (lift ? 0.8 : 1), 4, 0, 0, Math.PI * 2); ctx.fill();
+  // a dark aura while winding up the magic attacks
+  if (winding && mk.atk !== 'slash') {
+    const col = mk.atk === 'nova' ? '255,220,120' : '170,80,255';
+    const gr = ctx.createRadialGradient(x, foot - 34 - lift, 4, x, foot - 34 - lift, 46);
+    gr.addColorStop(0, 'rgba(' + col + ',' + (0.45 * wk).toFixed(2) + ')'); gr.addColorStop(1, 'rgba(' + col + ',0)');
+    ctx.fillStyle = gr; ctx.fillRect(x - 50, foot - 84 - lift, 100, 100);
+  }
+  // afterimages while dashing
+  if (acting && mk.atk === 'slash') {
+    for (let k = 1; k <= 2; k++) {
+      ctx.globalAlpha = 0.25 / k;
+      drawSpriteFoot(ctx, 'final_boss', SRC.boss.malrek, x - Math.cos(mk.ang) * 14 * k, foot - Math.sin(mk.ang) * 14 * k, 66, { flip, sx, sy, ops: 'tint:#8040c0' });
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (!drawSpriteFoot(ctx, 'final_boss', SRC.boss.malrek, x, foot + bob - lift, 66, { flip, sx, sy, ops })) {
+    ctx.fillStyle = flashP ? '#ffffff' : '#2a1a2a';
+    ctx.fillRect(g.x - 18, g.y - 22 - lift, 36, 40);
+  }
+  ctx.restore();
+  drawStatusFx(g, x, foot + bob - 66 - lift);
+  // orbs gathering around him before the volley
+  if (winding && mk.atk === 'orbs') {
+    for (let k = 0; k < 5; k++) {
+      const a = now * 5 + k * Math.PI * 2 / 5, r = 30 - 18 * wk;
+      ctx.fillStyle = '#c070ff'; ctx.beginPath(); ctx.arc(x + Math.cos(a) * r, foot - 40 - lift + Math.sin(a) * r * 0.6, 3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  // the slash arc
+  if (acting && mk.atk === 'slash') {
+    ctx.strokeStyle = 'rgba(230,200,255,0.85)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x + Math.cos(mk.ang) * 10, foot - 26 + Math.sin(mk.ang) * 10, 24, mk.ang - 1.1, mk.ang + 1.1); ctx.stroke();
+  }
   for (const p of g.projectiles) {
     ctx.save(); ctx.translate(Math.round(p.x), Math.round(p.y)); ctx.rotate(Math.floor(now * 12) * Math.PI / 2);
     if (!drawSpriteFoot(ctx, 'attack_fx', SRC.fx.fireballSwirl, 0, 6, 12, { ops: 'tint:#b060ff' })) {
       ctx.fillStyle = '#c060ff'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
+  }
+  // meteors falling onto their shadows
+  for (const h of g.hazards) {
+    if (h.kind !== 'meteor' || h.done) continue;
+    const k = 1 - Math.max(0, h.t) / h.warn;
+    if (k < 0.55) continue;
+    const fy = h.y - 100 * (1 - (k - 0.55) / 0.45);
+    ctx.fillStyle = '#4a2a5a'; ctx.beginPath(); ctx.arc(h.x, fy, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff9a40'; ctx.beginPath(); ctx.arc(h.x - 2, fy - 2, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,150,60,0.4)'; ctx.fillRect(h.x - 2, fy - 18, 4, 12);
+  }
+}
+// markings on the floor: the slash lane, spike warnings / spikes, meteor
+// shadows, the nova's safe runes and its expanding ring
+function drawMalrekFloorFx(g, now, wk) {
+  const mk = g.mk || {};
+  if (mk.st === 'wind' && mk.atk === 'slash') {
+    ctx.save(); ctx.translate(g.x, g.y + 10); ctx.rotate(mk.ang);
+    ctx.fillStyle = 'rgba(255,40,40,' + (0.12 + 0.2 * wk).toFixed(2) + ')'; ctx.fillRect(0, -14, 150, 28);
+    ctx.strokeStyle = 'rgba(255,80,80,0.6)'; ctx.lineWidth = 1; ctx.strokeRect(0.5, -13.5, 150, 27);
+    ctx.restore();
+  }
+  for (const h of g.hazards) {
+    if (!h.done) { // warning mark
+      const k = 1 - Math.max(0, h.t) / h.warn, r = h.r * (h.kind === 'meteor' ? 0.4 + 0.6 * k : 1);
+      ctx.fillStyle = h.kind === 'meteor' ? 'rgba(0,0,0,' + (0.15 + 0.3 * k).toFixed(2) + ')' : 'rgba(160,40,200,' + (0.15 + 0.25 * k).toFixed(2) + ')';
+      ctx.beginPath(); ctx.ellipse(h.x, h.y, r, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,60,60,' + (0.4 + 0.4 * k).toFixed(2) + ')'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(h.x, h.y, h.r, h.r * 0.6, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (h.kind === 'spike') { // dark spikes burst from the floor
+      const up = Math.min(1, (0.45 - h.life) / 0.1), hh = 16 * up;
+      for (const ox of [-6, 0, 6]) {
+        ctx.fillStyle = '#2a0a3a'; ctx.beginPath(); ctx.moveTo(h.x + ox - 4, h.y + 3); ctx.lineTo(h.x + ox, h.y + 3 - hh - (ox ? 0 : 4)); ctx.lineTo(h.x + ox + 4, h.y + 3); ctx.fill();
+        ctx.fillStyle = '#9a50d0'; ctx.fillRect(h.x + ox - 1, h.y + 3 - hh * 0.8, 1, hh * 0.6);
+      }
+    }
+  }
+  if (mk.runes) for (const r of mk.runes) { // golden safe runes
+    const pu = 0.6 + 0.4 * Math.sin(now * 8);
+    ctx.fillStyle = 'rgba(255,230,120,' + (0.25 + 0.2 * pu).toFixed(2) + ')'; ctx.beginPath(); ctx.ellipse(r.x, r.y + 4, 15, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#ffe066'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(r.x, r.y + 4, 15, 9, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#fff6b0'; ctx.fillRect(r.x - 1, r.y - 1, 3, 9); ctx.fillRect(r.x - 4, r.y + 2, 9, 3);
+  }
+  if (mk.st === 'wind' && mk.atk === 'nova') {
+    ctx.strokeStyle = 'rgba(200,120,255,' + (0.3 + 0.5 * wk).toFixed(2) + ')'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(g.x, g.y, 20 + 8 * Math.sin(now * 14), 0, Math.PI * 2); ctx.stroke();
+  }
+  if (mk.st === 'act' && mk.atk === 'nova') {
+    ctx.strokeStyle = 'rgba(190,100,255,0.9)'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(g.x, g.y, mk.ring, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(g.x, g.y, mk.ring, 0, Math.PI * 2); ctx.stroke();
   }
 }
 
@@ -7312,7 +8010,7 @@ function drawBossHPBar(g) {
   const w = 270, h = 14, x = 244, y = 24;
   ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 4, y - 20, w + 8, h + 26);
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('MALREK - Phase ' + g.phase, x + w / 2, y - 6);
+  ctx.fillText('MALREK  Lv ' + (player.level + (g.bonus || 5)) + '  - Phase ' + g.phase, x + w / 2, y - 6);
   ctx.fillStyle = '#3a0a0a'; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = g.phase === 3 ? '#ff8020' : g.phase === 2 ? '#c020c0' : '#e02020';
   ctx.fillRect(x, y, w * Math.max(0, g.hp / g.maxHp), h);
@@ -7964,6 +8662,7 @@ function buildSaveData() {
       bossDefeated: d.bossDefeated, chestOpened: d.chestOpened, heartPieceGiven: d.heartPieceGiven,
     })),
     castleDefeated: castle.defeated,
+    castleProgress: castleSaveData(),
   };
 }
 
@@ -8037,6 +8736,7 @@ function applySaveData(data) {
       }
     }
     castle.defeated = !!data.castleDefeated;
+    applyCastleSave(data.castleProgress);
     player.secretHeartTaken = !!data.secretHeartTaken;
     if (data.world && typeof data.world === 'object') {
       for (const k of ['chests', 'lifted', 'bombed', 'bridges']) {

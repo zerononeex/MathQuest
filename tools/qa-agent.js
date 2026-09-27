@@ -1448,7 +1448,7 @@
   function finePath(tx, ty, avoid) {
     const map = currentMap(), C = 4, W = Math.ceil(map.w * TS() / C), H = Math.ceil(map.h * TS() / C), N = W * H;
     const ok = (i) => { const x = (i % W) * C + C / 2, y = ((i / W) | 0) * C + C / 2;
-      return hitboxFree(map, x, y) && !(avoid && Math.hypot(x - avoid.x, y - avoid.y) < avoid.r) && !zoneAtPoint(map, x, y); };
+      return hitboxFree(map, x, y) && !(avoid && [].concat(avoid).some(a => Math.hypot(x - a.x, y - a.y) < a.r)) && !zoneAtPoint(map, x, y); };
     const cell = (x, y) => Math.max(0, Math.min(H - 1, Math.floor(y / C))) * W + Math.max(0, Math.min(W - 1, Math.floor(x / C)));
     const s = cell(hero.x, hero.y), g = cell(tx, ty);
     const prev = new Int32Array(N).fill(-2), q = new Int32Array(N);
@@ -1666,20 +1666,115 @@
     }
     if (world.mode !== 'castle') { report('CRITICAL', 'transition', 'Castle gate did not open with 4/4 medallions (' + r + ')'); return; }
     milestone('Entered the castle');
-    yield* roomClear();
-    const map = currentMap();
-    yield* navTo(map.w - 1, Math.floor(map.h / 2), { allowZone: true, expectTransition: true, label: 'castle hallway -> arena' });
-    yield* waitUntil(() => !fading() && castle.roomIndex === 1 && castle.ganon, 3000);
-    if (!castle.ganon) { report('CRITICAL', 'transition', 'Castle arena / final boss did not load'); return; }
+    for (let ri = 0; ri < CASTLE_ARENA; ri++) {
+      if (!(yield* castleRoomGen(ri))) return;
+    }
+    if (!castle.ganon) { report('CRITICAL', 'transition', 'Castle throne room / final boss did not load'); return; }
     const g = castle.ganon, t0 = QA.gameMs;
-    milestone('Final boss fight (hp ' + g.hp + ')');
-    while (g.alive && QA.gameMs - t0 < 900000 && world.mode === 'castle') { QA.goal = 'final boss hp ' + g.hp + ' phase ' + g.phase; yield* fight(g, { timeoutMs: 900000 }); yield; }
+    milestone('Final boss fight vs Malrek (hp ' + g.hp + ', Lv ' + (player.level + g.bonus) + ', hits for ' + g.dmg + ')');
+    const seenAtk = new Set();
+    while (g.alive && QA.gameMs - t0 < 900000 && world.mode === 'castle') {
+      QA.goal = 'final boss hp ' + g.hp + ' phase ' + g.phase;
+      yield* fight(g, { timeoutMs: 900000 });
+      if (g.mk && g.mk.atk) seenAtk.add(g.mk.atk);
+      yield;
+    }
     if (g.alive) { agentIssue('final boss not defeated in time'); return; }
     milestone('Final boss defeated in ' + ((QA.gameMs - t0) / 1000).toFixed(1) + 's (game)');
     // the game switches to the victory screen via a wall-clock setTimeout, so wait in wall time
     const end = now() + 6000;
     while (now() < end && gameState !== STATE.VICTORY) yield;
     if (gameState !== STATE.VICTORY) report('CRITICAL', 'progression', 'Final boss defeated but the victory screen never appeared (waited 6s wall time)');
+  }
+  // one castle room: its puzzle, its Small Key, then through the east door
+  function* castleRoomGen(ri) {
+    const r = castle.rooms[ri], p = r.puz, map = r.map, midY = Math.floor(map.h / 2);
+    QA.state = 'CASTLE';
+    if (castle.roomIndex !== ri) { report('CRITICAL', 'transition', 'Castle: expected room ' + ri + ' but the hero is in room ' + castle.roomIndex); return false; }
+    const t0 = QA.gameMs;
+    if (p && (p.type === 'guards' || p.type === 'waves')) {
+      while (!p.solved && QA.gameMs - t0 < 180000 && castle.roomIndex === ri) { yield* roomClear(); yield* wait(300); }
+    } else if (p && p.type !== 'crystal') yield* roomClear();
+    if (p && p.type === 'weights') {
+      for (let k = 0; k < p.blocks.length; k++) if (!(yield* castlePushBlock(p, p.blocks[k], p.plates[k]))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': could not push block ' + (k + 1) + ' onto its plate'); return false; }
+    } else if (p && p.type === 'braziers') {
+      for (const i of p.order) {
+        const t = p.torches[i]; let lit = false;
+        for (let a = 0; a < 3 && !lit; a++) {
+          yield* navTo(t.x, t.y, { label: 'walk to brazier ' + (p.lit.length + 1) });
+          const n0 = p.lit.length; Inp.press('e');
+          lit = yield* waitUntil(() => p.lit.length > n0 || p.solved, 500);
+        }
+        if (!lit) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': brazier ' + i + ' would not light with E'); return false; }
+      }
+    } else if (p && p.type === 'crystal') {
+      // west crystal (red up, blue down), then the middle one (red down), grab the key
+      for (const [ci, want] of [[0, 'red'], [1, 'blue']]) {
+        const c = p.crystals[ci];
+        if (p.raised === want) continue;
+        yield* navTo(c.x, c.y + 1, { label: 'walk to crystal ' + (ci + 1) });
+        yield* waitUntil(() => p.t <= 0, 800);
+        Inp.press('e');
+        if (!(yield* waitUntil(() => p.raised === want, 800))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': striking crystal ' + (ci + 1) + ' did not swap the pegs (raised ' + p.raised + ')'); return false; }
+        milestone('Castle: struck crystal ' + (ci + 1) + ' - ' + want + ' pegs up');
+      }
+    } else if (p && p.type === 'memory') {
+      for (let k = 0; k < p.order.length && !p.solved; k++) {
+        const s = p.switches[p.order[k]];
+        const avoid = new Set(p.switches.filter((_, i) => i !== p.order[k]).map(q => q.y * map.w + q.x));
+        const n0 = p.stepped.length;
+        yield* navTo(s.x, s.y, { avoid, label: 'memory orb ' + (k + 1) });
+        if (!(yield* waitUntil(() => p.stepped.length > n0 || p.solved, 800))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': orb ' + (k + 1) + ' did not register (stepped ' + JSON.stringify(p.stepped) + ')'); return false; }
+        yield* navTo(s.x, s.y + 1, { avoid, label: 'step off orb' });
+      }
+    }
+    if (p && p.type !== 'crystal' && !(yield* waitUntil(() => p.solved, 2000))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': ' + p.type + ' puzzle not solved'); return false; }
+    if (p) milestone('Castle ' + r.name + ': solved the ' + p.type + ' puzzle');
+    const k = r.keyDrop;
+    if (k && !k.taken) {
+      yield* waitUntil(() => k.shown, 1500);
+      const keys0 = castle.keys;
+      yield* navTo(Math.floor(k.x / TS()), Math.floor(k.y / TS()), { label: 'pick up the Small Key' });
+      yield* steerToPoint(k.x, k.y, 3, 3000);
+      if (!(yield* waitUntil(() => k.taken, 800))) { report('CRITICAL', 'progression', 'Castle ' + r.name + ': Small Key could not be picked up'); return false; }
+      milestone('Castle ' + r.name + ': got a Small Key (' + (keys0 + 1) + ' held)');
+    }
+    // east door (a locked one uses the key; the antechamber's needs the math seal)
+    let res = yield* navTo(map.w - 2, midY, { label: 'approach castle door ' + ri, timeoutMs: 60000 });
+    const open = yield* waitUntil(() => map.grid[midY][map.w - 1] === T.FLOOR, ri === 5 ? 15000 : 2000);
+    if (!open) { report('CRITICAL', 'progression', 'Castle ' + r.name + ': east door stayed ' + tileName(map.grid[midY][map.w - 1]) + ' (keys ' + castle.keys + ')'); return false; }
+    res = yield* navTo(map.w - 1, midY, { allowZone: true, expectTransition: true, label: 'through castle door ' + ri, timeoutMs: 20000 });
+    yield* waitUntil(() => !fading(), 1500);
+    if (castle.roomIndex !== ri + 1) { report('CRITICAL', 'transition', 'Castle: walking through the ' + r.name + ' east door did not reach the next room (' + res + ')'); return false; }
+    milestone('Castle: entered ' + castle.rooms[ri + 1].name);
+    return true;
+  }
+  function* castlePushBlock(p, b, plate) {
+    const sx = (plate.x + 0.5) * TS(), sy = (plate.y + 0.5) * TS(), end = QA.gameMs + 90000;
+    while (!b.locked && QA.gameMs < end && world.mode === 'castle') {
+      const ex = sx - b.x, ey = sy - b.y;
+      const dir = Math.abs(ey) >= 6 ? (ey > 0 ? 'down' : 'up') : (ex > 0 ? 'right' : 'left');
+      const v = DIRVEC[dir], ax = b.x - v[0] * 24, ay = b.y - v[1] * 24;
+      QA.goal = 'push castle block ' + dir;
+      const avoid = p.blocks.map(o => ({ x: o.x, y: o.y, r: 19 }));
+      const route = finePath(ax, ay, avoid);
+      if (!route) { agentIssue('castle push: no route to the push position'); return false; }
+      for (const wp of route) { if (!(yield* steerToPoint(wp.x, wp.y, 1.5, 3000))) break; }
+      if (!(yield* steerToPoint(ax, ay, 1.5, 3000))) { agentIssue('castle push: could not reach push position'); return false; }
+      let last = { x: b.x, y: b.y }, stall = 0;
+      for (let i = 0; i < 500 && !b.locked; i++) {
+        const err = (dir === 'left' || dir === 'right') ? sx - b.x : sy - b.y;
+        if (Math.sign(err) !== v[0] + v[1] || Math.abs(err) < 2.5) break;
+        Inp.setMove([DIRKEY[dir]]);
+        yield;
+        if (Math.hypot(b.x - last.x, b.y - last.y) < 0.05) { if (++stall > 40) break; } else stall = 0;
+        last = { x: b.x, y: b.y };
+      }
+      Inp.setMove([]);
+      if (stall > 40) return false;
+      yield;
+    }
+    return b.locked;
   }
 
   function buildPhases() {

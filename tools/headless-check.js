@@ -345,7 +345,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       world.interior = null; world.mode = 'dungeon'; world.dungeon = dungeons[0];
       dungeons[0].roomIndex = 0; out.dungeonRoom = musicForState();
       dungeons[0].roomIndex = 2; out.bossRoom = musicForState(); dungeons[0].roomIndex = 0;
-      world.dungeon = null; world.mode = 'castle'; castle.roomIndex = 1; out.finalBoss = musicForState();
+      world.dungeon = null; world.mode = 'castle'; castle.roomIndex = CASTLE_ARENA; out.finalBoss = musicForState();
       castle.roomIndex = 0;
       world.mode = 'overworld'; hero.x = (overworld.w / 2 + 40) * T; hero.y = (overworld.h / 2) * T;
       return out;

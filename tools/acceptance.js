@@ -474,17 +474,16 @@ function check(name, ok, detail) {
       const progressText = medallionCount() + '/4';
       Object.keys(player.medallions).forEach(k => player.medallions[k] = true);
       enterCastle(); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
-      hero.x = (castle.rooms[0].map.w - 1) * 16 - 2;
-      updateCastleRoom(0.016, castle.rooms[0].map);
+      castleGoRoom(CASTLE_ARENA, 'west');
       fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
       const g = castle.ganon;
-      g.hp = g.maxHp; updateGanon(0.016, castle.rooms[1].map);
+      g.hp = g.maxHp; updateGanon(0.016, castle.rooms[CASTLE_ARENA].map);
       const phase1 = g.phase;
-      g.hp = Math.floor(g.maxHp * 0.5); updateGanon(0.016, castle.rooms[1].map);
+      g.hp = Math.floor(g.maxHp * 0.5); updateGanon(0.016, castle.rooms[CASTLE_ARENA].map);
       const phase2 = g.phase;
-      player.ap = 5; g.siphonTimer = 0; const apBefore = player.ap; updateGanon(0.016, castle.rooms[1].map);
+      player.ap = 5; g.siphonTimer = 0; const apBefore = player.ap; updateGanon(0.016, castle.rooms[CASTLE_ARENA].map);
       const siphonWorked = player.ap < apBefore;
-      g.hp = Math.floor(g.maxHp * 0.2); updateGanon(0.016, castle.rooms[1].map);
+      g.hp = Math.floor(g.maxHp * 0.2); updateGanon(0.016, castle.rooms[CASTLE_ARENA].map);
       const phase3 = g.phase;
       damageEnemy(g, 'heroSword'); g.hp = 0; ganonDefeated(g);
       return { progressText, phase1, phase2, phase3, siphonWorked, defeated: castle.defeated };
@@ -1158,6 +1157,91 @@ function check(name, ok, detail) {
     check('Temple bosses: Grovak, Voltuga and Puffling use 3 telegraphed attacks; big fight-start HP; Cindermaw alternates lunge and flame ring',
       !r.exception && ok3('forest') && ok3('water') && ok3('shadow') && r.cinder.first === 1 && r.cinder.second >= 6, JSON.stringify(r));
     await bp.close();
+  }
+
+  // --- the castle: 7 rooms, 4 Small Keys for 4 locked doors, a puzzle in
+  // every room, a way back out, and Malrek's 5 attacks scaled to the hero ---
+  {
+    const cp = await browser.newPage();
+    cp.on('pageerror', e => errorsAll.push('castle: ' + e.message));
+    await cp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await cp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      const TS = CONFIG.TILE;
+      try {
+        CONFIG.DIFFICULTY = 'ADVENTURER'; localStorage.removeItem(SAVE_KEY); startNewGame(); player.invincibleT = 999;
+        Object.keys(player.medallions).forEach(k => player.medallions[k] = true);
+        const gx = castleGate.zone; hero.x = (gx.minX + gx.maxX) / 2; hero.y = (gx.minY + gx.maxY) / 2;
+        enterCastle(); flush();
+        out.rooms = castle.rooms.length;
+        out.locked = castle.rooms.filter(q => q.map.grid[Math.floor(q.map.h / 2)][q.map.w - 1] === T.LOCKDOOR).length;
+        // the way out
+        hero.x = TS * 0.9; hero.y = Math.floor(castle.rooms[0].map.h / 2) * TS; updateCastleRoom(0.016, currentMap()); flush();
+        out.exitWorks = world.mode === 'overworld';
+        enterCastle(); flush();
+        const room = () => castle.rooms[castle.roomIndex], map = () => currentMap();
+        const openEast = () => { const m = map(), my = Math.floor(m.h / 2); hero.x = (m.w - 1) * TS - 6; hero.y = (my + 0.5) * TS; updateCastleRoom(0.016, m); return m.grid[my][m.w - 1] === T.FLOOR; };
+        const takeKey = () => { const k = room().keyDrop; hero.x = k.x; hero.y = k.y; updateCastleRoom(0.016, map()); return k.taken; };
+        const next = () => { castleGoRoom(castle.roomIndex + 1, 'west'); flush(); };
+        // 0: guards -> key -> door
+        out.lockedNoKey = !openEast();
+        room().enemies.forEach(e => e.alive = false); updateCastleRoom(0.016, map());
+        out.k0 = takeKey() && castle.keys === 1; out.d0 = openEast() && castle.keys === 0; next();
+        // 1: blocks onto plates
+        const p1 = room().puz;
+        out.p1closed = !openEast();
+        p1.blocks.forEach((b, i) => { b.x = (p1.plates[i].x + 0.5) * TS + 3; b.y = (p1.plates[i].y + 0.5) * TS; });
+        updateCastleRoom(0.016, map()); out.p1 = p1.solved && openEast(); next();
+        // 2: braziers in dot order
+        const p2 = room().puz, r2 = room();
+        lightCastleBrazier(r2, p2.order[1]); out.wrongResets = p2.lit.length === 0;
+        p2.order.forEach(i => lightCastleBrazier(r2, i));
+        out.k2 = p2.solved && takeKey(); out.d2 = openEast(); next();
+        // 3: crystal swaps the pegs
+        const m3 = map(), my3 = Math.floor(m3.h / 2);
+        const before = [m3.grid[my3][7], m3.grid[my3][14]];
+        room().puz.t = 0; strikeCrystal(room());
+        const after = [m3.grid[my3][7], m3.grid[my3][14]];
+        out.pegs = before[0] === T.PEGUP && before[1] === T.PEGDOWN && after[0] === T.PEGDOWN && after[1] === T.PEGUP;
+        room().puz.t = 0; strikeCrystal(room());
+        out.k3 = takeKey(); out.d3 = openEast(); next();
+        // 4: two waves
+        const first = room().enemies.filter(e => e.alive).length;
+        room().enemies.forEach(e => e.alive = false);
+        for (let i = 0; i < 70; i++) updateCastleRoom(1 / 60, map());
+        const second = room().enemies.filter(e => e.alive).length;
+        room().enemies.forEach(e => e.alive = false); updateCastleRoom(0.016, map());
+        out.waves = [first, second]; out.k4 = takeKey(); out.d4 = openEast(); next();
+        // 5: memory orbs -> sealed boss door -> math seal
+        const p5 = room().puz;
+        for (const i of p5.order) { const s = p5.switches[i]; hero.x = (s.x + 0.5) * TS; hero.y = (s.y + 0.5) * TS; updateCastleRoom(0.016, map()); hero.x = 3 * TS; hero.y = 5 * TS; updateCastleRoom(0.016, map()); }
+        const m5 = map(); out.seal = m5.grid[Math.floor(m5.h / 2)][m5.w - 1] === T.BOSSDOOR;
+        castleBreakSeal(); out.sealOpen = openEast(); next();
+        out.arena = castle.roomIndex === CASTLE_ARENA && !!castle.ganon && map().grid[Math.floor(map().h / 2)][0] === T.BOSSDOOR;
+        out.save = JSON.stringify(castleSaveData());
+        // Malrek scaling: +5 levels, then 4 / 3 / 2 after 10 / 20 / 30 revives
+        const g = castle.ganon, sc = [];
+        for (const rv of [0, 10, 20, 30]) { player.revivesUsed = rv; malrekScale(g); sc.push({ b: g.bonus, dmg: g.dmg, tempo: +g.tempo.toFixed(2), hp: g.maxHp }); }
+        out.scale = sc; player.revivesUsed = 0; malrekScale(g);
+        const strong = g.maxHp; player.attack += 10; malrekScale(g); out.hpFollowsHero = g.maxHp > strong;
+        // five attacks by phase 3
+        g.hp = Math.floor(g.maxHp * 0.2); const seen = new Set(), am = map();
+        for (let i = 0; i < 60 * 120 && seen.size < 5; i++) { updateGanon(1 / 60, am); if (g.mk.atk) seen.add(g.mk.atk); g.hp = Math.max(g.hp, 5); }
+        out.attacks = [...seen].sort().join(',');
+        g.hp = 0; ganonDefeated(g); out.doorOpensAfter = am.grid[Math.floor(am.h / 2)][0] === T.FLOOR;
+      } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+      return out;
+    });
+    const sc = r.scale || [];
+    check('Castle: 7 rooms, a way out, 4 Small Keys for 4 locked doors, a puzzle in each room (guards, blocks, braziers, crystal pegs, waves, memory orbs)',
+      !r.exception && r.rooms === 7 && r.locked === 4 && r.exitWorks && r.lockedNoKey && r.k0 && r.d0 && r.p1closed && r.p1 && r.wrongResets && r.k2 && r.d2 &&
+      r.pegs && r.k3 && r.d3 && r.waves[0] === 3 && r.waves[1] === 4 && r.k4 && r.d4 && r.seal && r.sealOpen && r.arena, JSON.stringify(r));
+    check('Malrek: 5 attacks; scaled to the hero +5 levels (+4/+3/+2 after 10/20/30 revives); arena door opens when he falls',
+      !r.exception && r.attacks === 'meteors,nova,orbs,slash,spikes' && sc.map(x => x.b).join() === '5,4,3,2' &&
+      sc[0].tempo > sc[3].tempo && sc[0].hp > sc[3].hp && sc[0].dmg >= sc[3].dmg && r.hpFollowsHero && r.doorOpensAfter, JSON.stringify({ attacks: r.attacks, scale: sc, hpFollowsHero: r.hpFollowsHero, door: r.doorOpensAfter }));
+    await cp.close();
   }
 
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
