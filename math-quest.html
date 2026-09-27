@@ -5354,6 +5354,120 @@ function drawQButton() {
   ctx.fillText('AP', r.x + r.w / 2, r.y + r.h - 4);
 }
 
+// ---------------------------------------------------------------------------
+// World map: a map button (top-right, beside the AP button) or M opens a
+// parchment map of the overworld drawn from the real terrain (1 tile = 2px),
+// with the temples (a check once cleared), towns, caves, the castle and a
+// blinking hero marker. Inside a building / temple the marker sits at its
+// entrance. The world is paused while it is open; any tap / key closes it.
+// ---------------------------------------------------------------------------
+const mapScreen = { active: false, canvas: null, openedAt: 0 };
+function mapButtonRect() { return { x: CONFIG.GAME_W - 112, y: 8, w: 48, h: 48 }; }
+function tapMapButton(sx, sy) { return pointInRect(sx, sy, mapButtonRect()); }
+function drawMapButton() {
+  const r = mapButtonRect();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  // a little parchment with a dotted path and a red X
+  const x = r.x + 9, y = r.y + 8;
+  ctx.fillStyle = '#8a6a3a'; ctx.fillRect(x - 1, y - 1, 32, 24);
+  ctx.fillStyle = '#ecd9a6'; ctx.fillRect(x, y, 30, 22);
+  ctx.fillStyle = '#5aa04a'; ctx.fillRect(x + 2, y + 2, 9, 7); ctx.fillStyle = '#4a86c8'; ctx.fillRect(x + 19, y + 13, 9, 7);
+  ctx.fillStyle = '#7a5a3a'; for (let i = 0; i < 5; i++) ctx.fillRect(x + 5 + i * 4, y + 12 - (i % 2) * 2, 2, 2);
+  ctx.fillStyle = '#d02020'; ctx.fillRect(x + 23, y + 3, 2, 6); ctx.fillRect(x + 21, y + 5, 6, 2);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('MAP', r.x + r.w / 2, r.y + r.h - 4);
+}
+function mapTileColor(x, y) {
+  const t = overworld.grid[y][x], rl = overworld.role[y][x], reg = regionAt(x, y);
+  if (rl && rl !== 'stT' && rl !== 'stB') return reg === 'darkness' ? [58, 54, 72] : reg === 'desert' ? [168, 104, 56] : [112, 82, 54];
+  switch (t) {
+    case T.WATER: return [66, 120, 200];
+    case T.BRIDGE: return [160, 112, 60];
+    case T.DIRT: return [196, 156, 98];
+    case T.SAND: return [228, 214, 160];
+    case T.DARKGRASS: return [70, 92, 80];
+    case T.STAIRS: return [210, 204, 190];
+    case T.WALL: case T.DOOR: return [176, 70, 52];
+    case T.TREE: return reg === 'darkness' ? [36, 58, 50] : reg === 'desert' ? [196, 170, 110] : [44, 104, 50];
+    case T.PROP: case T.SIGNPOST: return [236, 214, 120];
+    default: {
+      const g = overworldGroundKind(x, y);
+      return g === 'rock' ? [150, 120, 90] : g === 'sand' ? [228, 214, 160] : g === 'dark' ? [70, 92, 80] : [96, 170, 72];
+    }
+  }
+}
+function buildMapCanvas() {
+  const W = overworld.w, H = overworld.h, c = makeCanvas(W, H), x = c.getContext('2d'), img = x.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) {
+    const [r, g, b] = mapTileColor(xx, y), k = (y * W + xx) * 4;
+    // a faint parchment wash so it reads as a drawn map, not a screenshot
+    img.data[k] = Math.round(r * 0.82 + 236 * 0.18); img.data[k + 1] = Math.round(g * 0.82 + 214 * 0.18); img.data[k + 2] = Math.round(b * 0.82 + 160 * 0.18); img.data[k + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  return c;
+}
+function openMapScreen() {
+  mapScreen.canvas = buildMapCanvas(); // rebuilt each time: lowered bridges, lifted boulders show up
+  mapScreen.active = true; mapScreen.openedAt = performance.now();
+  clearHeroIntent();
+}
+// where the hero is, in overworld tiles (inside: the entrance they came in by)
+function heroMapTile() {
+  const TS = CONFIG.TILE;
+  if (world.mode === 'overworld') return { x: hero.x / TS, y: hero.y / TS };
+  if (world.mode === 'dungeon' && world.dungeon) { const [dx, dy] = OW_LAYOUT.dungeons[world.dungeon.def.id]; return { x: dx + 0.5, y: dy + 0.5, inside: world.dungeon.def.name }; }
+  if (world.mode === 'castle') return { x: OW_LAYOUT.castleGate[0] + 0.5, y: OW_LAYOUT.castleGate[1] + 0.5, inside: "Malrek's Castle" };
+  if (world.returnSpot) return { x: world.returnSpot.x / TS, y: world.returnSpot.y / TS, inside: world.interior && world.interior.label };
+  return { x: hero.x / TS, y: hero.y / TS };
+}
+function drawMapScreen() {
+  const S = 2, W = overworld.w * S, H = overworld.h * S; // 480 x 352
+  const ox = Math.round((CONFIG.GAME_W - W) / 2), oy = Math.round((CONFIG.GAME_H - H) / 2) + 2;
+  const now = performance.now() / 1000;
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  // parchment frame
+  ctx.fillStyle = '#6a4a26'; ctx.fillRect(ox - 10, oy - 8, W + 20, H + 12);
+  ctx.fillStyle = '#e8d4a0'; ctx.fillRect(ox - 7, oy - 5, W + 14, H + 6);
+  ctx.fillStyle = '#c8a860'; ctx.fillRect(ox - 7, oy - 5, W + 14, 2); ctx.fillRect(ox - 7, oy + H - 1, W + 14, 2);
+  ctx.imageSmoothingEnabled = false;
+  if (mapScreen.canvas) ctx.drawImage(mapScreen.canvas, ox, oy, W, H);
+  const P = (tx, ty) => [ox + tx * S, oy + ty * S];
+  const pin = (tx, ty, fill, done) => {
+    const [px, py] = P(tx, ty);
+    ctx.fillStyle = '#1a1208'; ctx.fillRect(px - 5, py - 5, 11, 11);
+    ctx.fillStyle = fill; ctx.fillRect(px - 4, py - 4, 9, 9);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(px - 4, py - 4, 9, 2);
+    if (done) { ctx.fillStyle = '#20c040'; ctx.fillRect(px - 1, py + 1, 2, 2); ctx.fillRect(px + 1, py - 1, 2, 2); ctx.fillRect(px + 3, py - 3, 2, 2); ctx.fillRect(px - 3, py - 1, 2, 2); }
+  };
+  const TEMPLE_COL = { forest: '#3cb04a', fire: '#e0502a', water: '#3a8ae0', shadow: '#40b0b0' };
+  for (const d of dungeons) { const [dx, dy] = OW_LAYOUT.dungeons[d.def.id]; pin(dx + 0.5, dy + 0.5, TEMPLE_COL[d.def.id], d.chestOpened); }
+  pin(OW_LAYOUT.castleGate[0] + 0.5, OW_LAYOUT.castleGate[1] + 0.5, '#6a3a8a', castle.defeated);
+  for (const t of owTowns()) { const [px, py] = P(t.x, t.y); ctx.fillStyle = '#1a1208'; ctx.fillRect(px - 6, py - 4, 13, 9); ctx.fillStyle = '#c84a32'; ctx.fillRect(px - 5, py - 3, 5, 7); ctx.fillRect(px + 1, py - 3, 5, 7); }
+  for (const c of overworld.caves) { const [px, py] = P(c.x + 0.5, c.y); ctx.fillStyle = '#1a1208'; ctx.fillRect(px - 3, py - 3, 7, 6); }
+  // the hero: a blinking red-haired head marker
+  const hm = heroMapTile(), [hx, hy] = P(hm.x, hm.y), blink = Math.floor(now * 3) % 2 === 0;
+  ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(hx, hy, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = blink ? '#d84a2a' : '#ff8a4a'; ctx.beginPath(); ctx.arc(hx, hy - 1, 5, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#f0c090'; ctx.fillRect(hx - 4, hy - 1, 8, 4);
+  ctx.fillStyle = '#1a1208'; ctx.fillRect(hx - 2, hy, 1, 1); ctx.fillRect(hx + 2, hy, 1, 1);
+  ctx.strokeStyle = '#1a1208'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(hx, hy, 7, 0, Math.PI * 2); ctx.stroke();
+  // title + where you are
+  ctx.fillStyle = 'rgba(40,26,10,0.85)'; ctx.fillRect(ox + W / 2 - 150, oy + 2, 300, 18);
+  ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(hm.inside ? 'You are in: ' + hm.inside : 'World Map  -  you are here', ox + W / 2, oy + 15);
+  ctx.fillStyle = 'rgba(40,26,10,0.85)'; ctx.fillRect(ox + W / 2 - 110, oy + H - 18, 220, 15);
+  ctx.fillStyle = '#e8d4a0'; ctx.font = '10px monospace';
+  ctx.fillText('Tap anywhere or press M to close', ox + W / 2, oy + H - 7);
+}
+// towns on the map: Willowbrook (centre) + every outpost with a shop
+function owTowns() {
+  const out = [{ x: overworld.w / 2, y: overworld.h / 2 - 5 }];
+  if (typeof desertTownSpot !== 'undefined') out.push({ x: desertTownSpot.x + 0.5, y: desertTownSpot.y - 1 });
+  if (typeof OW_TOWNS !== 'undefined') for (const t of OW_TOWNS) out.push({ x: t.x + 0.5, y: t.y - 1 });
+  return out;
+}
+
 // Bomb button (bottom-right, big for small fingers): only once the Bomb
 // Bag is owned. Bombs cost no AP; a short cooldown stops accidental spam.
 function bombButtonRect() { return { x: CONFIG.GAME_W - 60, y: CONFIG.GAME_H - 60, w: 50, h: 50 }; }
@@ -5433,6 +5547,17 @@ function updatePlaying(dt) {
 
   // pause menu (Escape) and the manual Save HUD button
   if (pauseMenu.active) { updatePauseMenuInput(); return; }
+  // world map: open with the map button or M, close with any tap / key
+  if (mapScreen.active) {
+    const anyKey = Object.keys(Input.keys).some(k => Input.keys[k]);
+    if ((Input.tapped || anyKey) && performance.now() - mapScreen.openedAt > 250) {
+      mapScreen.active = false; Input.tapped = false;
+      for (const k of Object.keys(Input.keys)) Input.keys[k] = false;
+    }
+    return;
+  }
+  if (Input.keys['m'] || Input.keys['M']) { Input.keys['m'] = Input.keys['M'] = false; openMapScreen(); return; }
+  if (Input.tapped && tapMapButton(Input.tapX, Input.tapY)) { Input.tapped = false; openMapScreen(); return; }
   if (Input.keys['Escape']) { Input.keys['Escape'] = false; pauseMenu.active = true; return; }
   if (Input.tapped && tapBombButton(Input.tapX, Input.tapY)) { Input.tapped = false; throwBomb(); }
   if (Input.tapped && tapSaveButton(Input.tapX, Input.tapY)) {
@@ -6330,6 +6455,7 @@ function drawPlaying() {
   drawWardrobeButton();
   drawSaveButton();
   drawQButton();
+  drawMapButton();
   drawBombButton();
 
   // named dungeon boss banner + HP bar (screen space so it never drifts
@@ -6359,6 +6485,9 @@ function drawPlaying() {
 
   // math popup (blocking box; correct-answer celebration itself never blocks)
   if (mathPopup.active) drawMathPopup();
+
+  // world map (blocking)
+  if (mapScreen.active) drawMapScreen();
 
   // hint text
   if (hud.hintTimer > 0 && hud.hintText && !shop.active) {

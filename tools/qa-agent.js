@@ -599,6 +599,7 @@
       if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; agentIssue('shop open outside a shopping session; closing'); Inp.tap(GW() - 25, 25, 'shop close X'); }
       return true;
     }
+    if (typeof mapScreen !== 'undefined' && mapScreen.active) { if (QA.gameMs - UI.lastPress > 400) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
     if (typeof wardrobe !== 'undefined' && wardrobe.active) { if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
     if (typeof pauseMenu !== 'undefined' && pauseMenu.active) { if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
     if (dialogue.active) {

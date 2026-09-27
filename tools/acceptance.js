@@ -997,6 +997,36 @@ function check(name, ok, detail) {
     await sp.close();
   }
 
+  // --- world map: the map button / M opens it (world paused), a tap closes it ---
+  {
+    const mp = await browser.newPage();
+    mp.on('pageerror', e => errorsAll.push('map: ' + e.message));
+    await mp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await mp.evaluate(() => {
+      const out = {};
+      try {
+        startNewGame(); player.invincibleT = 999;
+        const m = mapButtonRect();
+        Input.tapX = m.x + m.w / 2; Input.tapY = m.y + m.h / 2; Input.tapped = true; updatePlaying(1 / 60);
+        out.openedByTap = mapScreen.active;
+        const hx = hero.x; Input.keys['ArrowRight'] = true; updatePlaying(1 / 60); Input.keys['ArrowRight'] = false;
+        out.paused = hero.x === hx || !mapScreen.active;
+        mapScreen.openedAt = 0; Input.tapX = 100; Input.tapY = 200; Input.tapped = true; updatePlaying(1 / 60);
+        out.closedByTap = !mapScreen.active;
+        Input.keys['m'] = true; updatePlaying(1 / 60); out.openedByM = mapScreen.active;
+        drawMapScreen(); // draws without throwing
+        const d = dungeons[0]; world.mode = 'dungeon'; world.dungeon = d;
+        const hm = heroMapTile(); out.insideMarker = hm.inside === d.def.name && Math.abs(hm.x - OW_LAYOUT.dungeons[d.def.id][0] - 0.5) < 0.01;
+        world.mode = 'overworld'; world.dungeon = null; mapScreen.active = false;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('World map: opens from the map button or M, pauses play, closes on tap; marks the hero (at the temple door when inside)',
+      !r.exception && r.openedByTap && r.paused && r.closedByTap && r.openedByM && r.insideMarker, JSON.stringify(r));
+    await mp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
