@@ -1,5 +1,5 @@
 """Builds art-src/boss_poses.png (pose sheets for Malrek (two sheets), Puffling,
-Voltuga and Grovak), art-src/map_symbols.png and art-src/castle_props.png from the Gemini sheets
+Voltuga, Grovak and Cindermaw), art-src/map_symbols.png and art-src/castle_props.png from the Gemini sheets
 art-src/<name>_raw.jpg (green or magenta backgrounds).
 
 The background and its JPEG fringe are keyed out; the sheet is cut into
@@ -24,6 +24,7 @@ SHEETS = [  # name, background, expected poses per band, target idle height (px)
     ('map_symbols', 'magenta', [4, 4, 4], 64),
     ('malrek2', 'green', [4, 4], 150),       # second Malrek sheet (orbs, ground slam, nova aura)
     ('castle_props', 'green', [6, 6], 64),   # crystals on pedestals, red/blue barrier pegs, brazier
+    ('cindermaw', 'green', [3, 3], 90),      # walk, lunge, spit, rear + fire ring, stunned, hurt
 ]
 def key(A, bg):
     r, g, b = A[..., 0], A[..., 1], A[..., 2]
@@ -46,12 +47,56 @@ def dilate(m, k):
     for d in range(1, k + 1):
         o[d:] |= m[:-d]; o[:-d] |= m[d:]; o[:, d:] |= m[:, :-d]; o[:, :-d] |= m[:, d:]
     return o
+def scale_poses(A, fg, poses, name, target):
+    ih = poses[0][3] - poses[0][1]
+    sc = target / ih if name != 'map_symbols' else None
+    imgs = []
+    for (x0, y0, x1, y1) in poses:
+        rgba = np.dstack([A[y0:y1, x0:x1], fg[y0:y1, x0:x1] * 255.0]).astype(np.uint8)
+        im = Image.fromarray(rgba, 'RGBA')
+        s = sc if sc else target / max(x1 - x0, y1 - y0)
+        im = im.resize((max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s))), Image.BOX)
+        a = np.array(im); a[..., 3] = np.where(a[..., 3] > 110, 255, 0)
+        imgs.append(Image.fromarray(a, 'RGBA'))
+    return imgs
+def blob_poses(fg, n):
+    # connected components on a 4x-downsampled dilated mask; the n biggest
+    # are the poses, smaller bits (sparks, steam, a fireball) join the nearest
+    H, W = fg.shape; f = 4
+    m = dilate(fg, 2)[:H // f * f, :W // f * f].reshape(H // f, f, W // f, f).any(axis=(1, 3))
+    lab = np.zeros(m.shape, int); cur = 0; boxes = []
+    for sy, sx in zip(*np.where(m)):
+        if lab[sy, sx]: continue
+        cur += 1; st = [(sy, sx)]; lab[sy, sx] = cur; bx = [sx, sy, sx, sy, 0]
+        while st:
+            y, x = st.pop(); bx[0] = min(bx[0], x); bx[1] = min(bx[1], y); bx[2] = max(bx[2], x); bx[3] = max(bx[3], y); bx[4] += 1
+            for yy, xx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= yy < m.shape[0] and 0 <= xx < m.shape[1] and m[yy, xx] and not lab[yy, xx]: lab[yy, xx] = cur; st.append((yy, xx))
+        boxes.append(bx)
+    boxes.sort(key=lambda b: -b[4])
+    big, small = [list(b) for b in boxes[:n]], boxes[n:]
+    for b in small:
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        t = min(big, key=lambda g: max(0, g[0] - cx, cx - g[2]) + max(0, g[1] - cy, cy - g[3]))
+        t[0] = min(t[0], b[0]); t[1] = min(t[1], b[1]); t[2] = max(t[2], b[2]); t[3] = max(t[3], b[3])
+    rows = sorted(big, key=lambda b: (b[1] + b[3]) / 2)
+    top, bot = sorted(rows[:n // 2], key=lambda b: b[0]), sorted(rows[n // 2:], key=lambda b: b[0])
+    out = []
+    for b in top + bot:
+        x0, y0, x1, y1 = b[0] * f, b[1] * f, (b[2] + 1) * f, (b[3] + 1) * f
+        sub = fg[y0:y1, x0:x1]; ys = np.where(sub.sum(1) > 0)[0]; xs = np.where(sub.sum(0) > 0)[0]
+        out.append((x0 + xs[0], y0 + ys[0], x0 + xs[-1] + 1, y0 + ys[-1] + 1))
+    return out
 tables = {}
 atl_rows = []
 for name, bg, per, target in SHEETS:
     A = np.array(Image.open(os.path.join(ART, (name if name == 'map_symbols' else name + '_poses') + '_raw.jpg')).convert('RGB')).astype(float)
     fg = key(A, bg)
     fgd = dilate(fg, 3)
+    if name == 'cindermaw': # rows overlap vertically: split by connected blobs instead
+        poses = blob_poses(fg, sum(per))
+        atl_rows.append((name, scale_poses(A, fg, poses, name, target)))
+        continue
     bands = runs(fgd.sum(1) > 2, 6, 60 if name != 'map_symbols' else 40)
     # drop text-label bands (short, wide rows of letters)
     bands = [bd for bd in bands if bd[1] - bd[0] > (70 if name != 'map_symbols' else 40)]
@@ -75,17 +120,7 @@ for name, bg, per, target in SHEETS:
             ys = np.where(sub.sum(1) > 0)[0]; xs = np.where(sub.sum(0) > 0)[0]
             bx0, by0, bx1, by1 = x0 + xs[0], y0 + ys[0], x0 + xs[-1] + 1, y0 + ys[-1] + 1
             poses.append((bx0, by0, bx1, by1))
-    ih = poses[0][3] - poses[0][1]
-    sc = target / ih if name != 'map_symbols' else None
-    imgs = []
-    for (x0, y0, x1, y1) in poses:
-        rgba = np.dstack([A[y0:y1, x0:x1], fg[y0:y1, x0:x1] * 255.0]).astype(np.uint8)
-        im = Image.fromarray(rgba, 'RGBA')
-        s = sc if sc else target / max(x1 - x0, y1 - y0)
-        im = im.resize((max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s))), Image.BOX)
-        a = np.array(im); a[..., 3] = np.where(a[..., 3] > 110, 255, 0)
-        imgs.append(Image.fromarray(a, 'RGBA'))
-    atl_rows.append((name, imgs))
+    atl_rows.append((name, scale_poses(A, fg, poses, name, target)))
 # pack: boss poses in one atlas (a row per boss), map symbols in their own
 def pack(rows, fname):
     W = max(sum(i.width + 2 for i in imgs) for _, imgs in rows)
