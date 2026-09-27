@@ -961,6 +961,7 @@ function musicForState() {
   if (world.mode === 'castle') {
     return (castle.roomIndex === CASTLE_ARENA && castle.ganon && castle.ganon.alive) ? 'final_boss' : 'dungeon';
   }
+  if (world.mode === 'mirage') return mirage.mode === 'rush' ? (mirage.rushIndex === 4 ? 'final_boss' : 'boss') : mirage.mode === 'waves' ? 'boss' : 'dungeon';
   return heroInVillage() ? 'village' : 'overworld';
 }
 const MUSIC_FADE = 0.8;
@@ -3358,7 +3359,7 @@ function inZoneRect(px, py, z) { return !!z && px >= z.minX && px <= z.maxX && p
 // true if (px, py) is inside a building / dungeon / castle entrance trigger
 function overworldTriggerAt(px, py) {
   return dungeons.some(d => inZoneRect(px, py, d.entranceZone)) ||
-    buildings.some(b => inZoneRect(px, py, b.activation)) || inZoneRect(px, py, castleGate.zone);
+    buildings.some(b => inZoneRect(px, py, b.activation)) || inZoneRect(px, py, castleGate.zone) || (mirageGate.open && inZoneRect(px, py, mirageGate.zone));
 }
 // true if a w x h box centred on (px, py) touches a solid tile (the same
 // corner test moveWithCollision uses)
@@ -3696,7 +3697,7 @@ function doorTargets() {
   } else if (world.mode === 'interior') {
     const ex = world.interior.exit;
     add(ex.x * TS, ex.y * TS, [(ex.x - 1.5) * TS, (ex.y - 1) * TS, (ex.x + 1.5) * TS, (ex.y + 1.5) * TS], 'exit');
-  } else if (world.mode === 'dungeon' || world.mode === 'castle') {
+  } else if (world.mode === 'dungeon' || world.mode === 'castle' || world.mode === 'mirage') {
     const midY = Math.floor(map.h / 2), cy = (midY + 0.5) * TS;
     for (const [edge, ex] of [['west', 0], ['east', map.w - 1]]) {
       const t = map.grid[midY][ex], inward = edge === 'west' ? 1 : -1;
@@ -4857,8 +4858,8 @@ function malrekPick(g) {
   return a;
 }
 function ganonProjectileSpeed() { return castle.ganon.phase >= 3 ? 130 : 105; }
-function updateGanon(dt, map) {
-  const g = castle.ganon;
+function updateGanon(dt, map, g) {
+  g = g || castle.ganon;
   if (!g || !g.alive) return;
   malrekScale(g); // re-tunes if a revive milestone was just crossed
   const frac = g.hp / g.maxHp;
@@ -5030,9 +5031,11 @@ function damageGanon(g, weaponKind) {
 }
 
 function ganonDefeated(g) {
+  if (g.rush) { if (g.alive) { g.alive = false; g.hazards = []; g.projectiles = []; mirageBossDown(); } return; } // Mirage Keep boss rush
   if (!g.alive) return;
   g.alive = false;
   castle.defeated = true;
+  openMirageGate();
   g.hazards = []; g.projectiles = [];
   castleArenaDoor(false);
   screenShake(8, 0.5);
@@ -5054,6 +5057,293 @@ function ganonDefeated(g) {
 const victoryStats = { timeMs: 0, gold: 0, questionsAnswered: 0, revivesUsed: 0, level: 1 };
 
 // =========================================================================
+// MIRAGE KEEP - the post-game desert dungeon (opens once Malrek is beaten;
+// Sol the Dune Keeper in Willowbrook tells you about it). Golden Knight
+// powers don't work here. A big hall holds two challenge pads and a wall of
+// records:
+//   Endless Waves - wave after wave, only 1 revive; the record is the most
+//                   waves beaten
+//   Boss Rush     - Grovak, Cindermaw, Voltuga, Puffling and Malrek back to
+//                   back in 5 rooms, 2 revives in all; the record is the time
+// Records are kept on this device (and in the save).
+// =========================================================================
+const MIRAGE_RUSH = ['grovak', 'cindermaw', 'voltuga', 'puffling', 'malrek'];
+function mirageRecords() {
+  try { const r = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); return { waves: r.mirageWaves | 0, rushMs: +r.mirageRushMs || 0 }; } catch (e) { return { waves: 0, rushMs: 0 }; }
+}
+function mirageSaveRecord(key, value, better) {
+  try {
+    const all = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}');
+    if (!(key in all) || better(value, all[key])) { all[key] = value; localStorage.setItem(RECORDS_KEY, JSON.stringify(all)); return true; }
+  } catch (e) {}
+  return false;
+}
+function fmtTime(ms) {
+  const s = ms / 1000, m = Math.floor(s / 60);
+  return m + ':' + (s - m * 60).toFixed(1).padStart(4, '0');
+}
+function buildMirage() {
+  const TS = CONFIG.TILE, rooms = [];
+  const room = (w, h, theme) => { const m = makeRoom(w, h, theme); m.role = 'castle'; m.seed = 11 + rooms.length * 5; return { map: m, enemies: [], pots: [] }; };
+  const hub = room(24, 14, '#6a5430');
+  carveDoorGap(hub.map, 'west', T.FLOOR); // back out to the desert
+  for (const [x, y] of [[5, 3], [5, 10], [18, 3], [18, 10]]) hub.map.grid[y][x] = T.WALL; // pillars
+  hub.pads = [
+    { id: 'waves', x: 8, y: 8, label: 'ENDLESS WAVES', color: '#ff9a3a' },
+    { id: 'rush', x: 15, y: 8, label: 'BOSS RUSH', color: '#8fb0ff' },
+  ];
+  rooms.push(hub);
+  rooms.push(room(22, 13, '#5a3a2a')); // 1: the wave arena (closed; a Leave pad quits)
+  rooms[1].pads = [{ id: 'leave', x: 2, y: 11, label: 'LEAVE', color: '#dddddd' }];
+  for (let i = 0; i < MIRAGE_RUSH.length; i++) rooms.push(room(20, 12, i === 4 ? '#1a1a28' : '#3a2a4a')); // 2..6: boss rush
+  for (const r of rooms) r.map.canvas = prerenderMap(r.map);
+  return { roomIndex: 0, rooms, mode: null, wave: 0, best: 0, revives: 0, delay: 0, rushIndex: 0, rushT: 0, padArmed: {}, boss: null };
+}
+const mirage = buildMirage();
+// where the entrance appears in the desert once Malrek falls
+const mirageGate = { x: 0, y: 0, zone: null, open: false };
+(function placeMirageGate() {
+  const [tx, ty] = OW_LAYOUT.desertTown;
+  let best = null, bd = 1e9;
+  for (let y = ty - 18; y <= ty + 18; y++) for (let x = tx + 6; x <= Math.min(overworld.w - 5, tx + 40); x++) {
+    if (y < 4 || y >= overworld.h - 4 || regionAt(x, y) !== 'desert') continue;
+    let ok = true;
+    for (let oy = -2; oy <= 2 && ok; oy++) for (let ox = -2; ox <= 2 && ok; ox++) {
+      const t = overworld.grid[y + oy][x + ox];
+      if (!(t === T.SAND || t === T.GRASS) || overworld.role[y + oy][x + ox] || overworld.keep[y + oy][x + ox]) ok = false;
+    }
+    const dd = Math.abs(x - tx - 16) + Math.abs(y - ty);
+    if (ok && dd < bd) { bd = dd; best = [x, y]; }
+  }
+  if (!best) best = [tx + 10, ty];
+  mirageGate.x = best[0]; mirageGate.y = best[1];
+})();
+function mirageUnlocked() { return !!castle.defeated; }
+// show the stairs + sign in the sand (idempotent)
+function openMirageGate() {
+  if (mirageGate.open || !mirageUnlocked()) return;
+  mirageGate.open = true;
+  const x = mirageGate.x, y = mirageGate.y;
+  overworld.grid[y][x] = T.STAIRS;
+  overworld.grid[y - 1][x] = T.SIGNPOST;
+  owSigns.push({ x, y: y - 1, lines: ['Mirage Keep - it only appears to true heroes.', 'Inside: Endless Waves and the Boss Rush. Golden armor has no power here!'] });
+  mirageGate.zone = { minX: (x - 1) * CONFIG.TILE, maxX: (x + 2) * CONFIG.TILE, minY: y * CONFIG.TILE, maxY: (y + 1) * CONFIG.TILE };
+  owRebake(x, y - 1, x, y);
+}
+const solNPC = makeNPC((overworld.w / 2 + 3) * CONFIG.TILE, (overworld.h / 2 + 2) * CONFIG.TILE, '#d8a860', [], { sprite: 'sol', name: 'Sol the Dune Keeper' });
+solNPC.stationary = true;
+function solLines() {
+  const r = mirageRecords(), dir = compassWord(mirageGate.x - overworld.w / 2, mirageGate.y - overworld.h / 2);
+  return ['Greetings, hero who beat Malrek! I am Sol, keeper of the dunes.',
+    'Far to the ' + dir + ', past the desert town, Mirage Keep has risen from the sand.',
+    'Inside wait two trials: Endless Waves - with only ONE revive - and the Boss Rush against all five bosses.',
+    'Your golden armor will not protect you there. Your records are carved on its walls!',
+    r.waves || r.rushMs ? 'Your best so far: ' + r.waves + ' waves, and a Boss Rush of ' + (r.rushMs ? fmtTime(r.rushMs) : '--') + '.' : 'No records yet... will you be the first?'];
+}
+function enterMirage() {
+  if (world.mode !== 'overworld') return;
+  fadeTo(() => {
+    world.mode = 'mirage';
+    world.returnSpot = overworldReturnSpot(hero.x, hero.y + CONFIG.TILE);
+    mirageGoRoom(0, 'west');
+    SFX.door();
+    saveGame();
+  });
+}
+function mirageGoRoom(ri, from) {
+  mirage.roomIndex = ri;
+  const m = mirage.rooms[ri].map;
+  if (from === 'west') { hero.x = 2 * CONFIG.TILE; hero.y = Math.floor(m.h / 2) * CONFIG.TILE; }
+  else { hero.x = Math.floor(m.w / 2) * CONFIG.TILE; hero.y = (m.h - 3) * CONFIG.TILE; }
+  mirage.padArmed = {};
+}
+function exitMirage() {
+  fadeTo(() => {
+    world.mode = 'overworld'; mirage.mode = null;
+    hero.x = world.returnSpot.x; hero.y = world.returnSpot.y;
+    saveGame();
+  });
+}
+// a temple boss made fresh for the rush (same build as in its temple)
+function makeRushBoss(kind, x, y) {
+  if (kind === 'malrek') { const g = makeGanon(x, y); g.rush = true; malrekScale(g); return g; }
+  const def = DUNGEON_DEFS.find(d => d.bossKind === kind);
+  const e = Object.assign(makeDungeonEnemy(def.enemyType, x, y), {
+    hp: 12, maxHp: 12, xp: 0, isMiniboss: true, dashTimer: 2, w: 22, h: 20, bossKind: kind, zapTelegraph: 0, sporeZone: null, sporeTimer: 0, pulseTimer: 7, pulseTelegraph: 0,
+  });
+  if (kind === 'cindermaw') Object.assign(e, { hp: 14, maxHp: 14, cmState: 'idle', cmT: 2 });
+  scaleBossForFight(e);
+  return e;
+}
+function startMirageChallenge(id) {
+  if (id === 'waves') {
+    mirage.mode = 'waves'; mirage.wave = 0; mirage.revives = 1; mirage.delay = 1.2;
+    mirage.rooms[1].enemies = [];
+    fadeTo(() => { mirageGoRoom(1, 'center'); player.hearts = player.maxHearts; showHint('Endless Waves! Only 1 revive. How far can you go?', 2.5); });
+  } else {
+    mirage.mode = 'rush'; mirage.rushIndex = 0; mirage.rushT = 0; mirage.revives = 2;
+    fadeTo(() => { player.hearts = player.maxHearts; mirageRushRoom(0); });
+  }
+}
+function mirageRushRoom(i) {
+  mirage.rushIndex = i;
+  const ri = 2 + i, r = mirage.rooms[ri], m = r.map, TS = CONFIG.TILE;
+  mirageGoRoom(ri, 'west');
+  const b = makeRushBoss(MIRAGE_RUSH[i], (m.w - 5) * TS, Math.floor(m.h / 2) * TS);
+  r.enemies = [b]; mirage.boss = b; r.pads = [];
+  const nm = MIRAGE_RUSH[i] === 'malrek' ? 'Malrek' : NEW_BOSS_DEFS[MIRAGE_RUSH[i]].name;
+  showHint('Boss ' + (i + 1) + ' of 5: ' + nm, 1.8);
+  if (MIRAGE_RUSH[i] === 'malrek') SFX.ganonLaugh(); else SFX.bossTell();
+}
+function mirageSpawnWave() {
+  const r = mirage.rooms[1], m = r.map, TS = CONFIG.TILE;
+  mirage.wave++;
+  const n = mirage.wave, cnt = Math.min(8, 2 + Math.floor(n / 2));
+  const pool = ['wolf', 'beetle', 'fireImp', 'octorok', 'wraith', 'grimshade', 'wisp', 'ironclamp', 'thornling', 'spitter'];
+  for (let k = 0; k < cnt; k++) {
+    const ang = (k / cnt) * Math.PI * 2 + n, rx = m.w / 2 + Math.cos(ang) * (m.w / 2 - 3), ry = m.h / 2 + Math.sin(ang) * (m.h / 2 - 3);
+    const e = makeDungeonEnemy(pool[(k + n * 3) % Math.min(pool.length, 4 + n)], rx * TS, ry * TS);
+    settleSpawn(e, m);
+    castleScaleEnemy(e);
+    e.hp = e.maxHp = Math.ceil(e.maxHp * (1 + 0.1 * n));
+    r.enemies.push(e);
+    spawnVisualFx('burst', e.x, e.y, 0.35);
+  }
+  SFX.bossTell();
+  showHint('Wave ' + n + '!', 1.2);
+}
+function endMirageWaves() {
+  const beaten = Math.max(0, mirage.wave - 1);
+  const rec = mirageSaveRecord('mirageWaves', beaten, (a, b) => a > b);
+  mirage.mode = null;
+  mirage.rooms[1].enemies = [];
+  player.downed = false; player.hearts = player.maxHearts; player.invincibleT = 2;
+  fadeTo(() => mirageGoRoom(0, 'center'));
+  showLivesScreen('Endless Waves over!', ['You beat ' + beaten + (beaten === 1 ? ' wave.' : ' waves.'), rec && beaten > 0 ? 'NEW RECORD! It is carved on the wall.' : 'Best: ' + mirageRecords().waves + ' waves.', 'Try again any time!', '']);
+}
+function endMirageRush(done) {
+  const ms = Math.round(mirage.rushT * 1000);
+  const rec = done && mirageSaveRecord('mirageRushMs', ms, (a, b) => !b || a < b);
+  mirage.mode = null; mirage.boss = null;
+  for (let i = 2; i < mirage.rooms.length; i++) mirage.rooms[i].enemies = [];
+  player.downed = false; player.hearts = player.maxHearts; player.invincibleT = 2;
+  fadeTo(() => mirageGoRoom(0, 'center'));
+  const best = mirageRecords().rushMs;
+  showLivesScreen(done ? 'Boss Rush complete!' : 'Boss Rush failed', done
+    ? ['All five bosses beaten in ' + fmtTime(ms) + '!', rec ? 'NEW RECORD! It is carved on the wall.' : 'Best: ' + (best ? fmtTime(best) : '--'), '', '']
+    : ['You were beaten at boss ' + (mirage.rushIndex + 1) + ' of 5.', 'Best: ' + (best ? fmtTime(best) : '--'), 'Try again any time!', '']);
+}
+// a death in Mirage Keep: use a revive if one is left, else the challenge ends
+function mirageOnDeath() {
+  if (mirage.mode && mirage.revives > 0) {
+    mirage.revives--;
+    player.hearts = player.maxHearts; player.invincibleT = 3;
+    spawnFloatingText(hero.x, hero.y - 24, mirage.revives ? 'REVIVED! ' + mirage.revives + ' left' : 'REVIVED! No revives left!', '#ffe066');
+    return;
+  }
+  player.hearts = player.maxHearts; player.invincibleT = 3;
+  if (mirage.mode === 'waves') endMirageWaves();
+  else if (mirage.mode === 'rush') endMirageRush(false);
+}
+// the rush boss fell: on to the next room, or the finish
+function mirageBossDown() {
+  SFX.defeat(); screenShake(6, 0.4);
+  if (mirage.rushIndex >= MIRAGE_RUSH.length - 1) { endMirageRush(true); return; }
+  const next = mirage.rushIndex + 1;
+  showHint('Down! On to the next boss...', 1.2);
+  setTimeout(() => { if (mirage.mode === 'rush') fadeTo(() => mirageRushRoom(next)); }, 700);
+}
+function updateMirage(dt, map) {
+  const ri = mirage.roomIndex, r = mirage.rooms[ri], TS = CONFIG.TILE, midY = Math.floor(map.h / 2);
+  // pads: stand on one to start / leave (re-arms once you step off)
+  for (const pd of r.pads || []) {
+    const on = Math.hypot(hero.x - (pd.x + 0.5) * TS, hero.y - (pd.y + 0.5) * TS) < 10;
+    if (on && !mirage.padArmed[pd.id] && fadeDir === 0) {
+      mirage.padArmed[pd.id] = true;
+      if (pd.id === 'leave') { if (mirage.mode === 'waves') endMirageWaves(); }
+      else startMirageChallenge(pd.id);
+    } else if (!on) mirage.padArmed[pd.id] = false;
+  }
+  if (ri === 0 && hero.x < TS * 1.2 && map.grid[midY][0] === T.FLOOR) exitMirage();
+  if (mirage.mode === 'waves' && ri === 1) {
+    if (!r.enemies.some(e => e.alive)) { mirage.delay -= dt; if (mirage.delay <= 0) { mirage.delay = 1.2; mirageSpawnWave(); } }
+  }
+  if (mirage.mode === 'rush' && ri >= 2) {
+    mirage.rushT += dt;
+    const b = mirage.boss;
+    if (b && b.type === 'ganon') updateGanon(dt, map, b);
+    else if (b && b.alive) {
+      if (b.bossKind === 'cindermaw') {
+        if (b.hitFlash > 0) b.hitFlash -= dt;
+        updateCindermaw(b, dt);
+        b.hopDx *= 0.92; b.hopDy *= 0.92;
+        const sf = enemySlowFactor(b);
+        moveWithCollision(b, b.hopDx * dt * sf, b.hopDy * dt * sf, map);
+        if (b.alive && b.cmState !== 'stun' && Math.hypot(hero.x - b.x, hero.y - b.y) < (b.w + hero.w) / 2 - 2) damageHero(1, b.x, b.y);
+      } else updateBossAI(b, dt, map, { roomIndex: 0, enemies: [r.enemies] });
+    }
+    if (b && !b.alive && !b.downNoted) { b.downNoted = true; if (b.type !== 'ganon') mirageBossDown(); }
+  }
+}
+// hall decor: the two pads, the records carved on the north wall
+function mirageGroundItems() {
+  const r = mirage.rooms[mirage.roomIndex], TS = CONFIG.TILE, now = performance.now() / 1000;
+  for (const pd of r.pads || []) {
+    const x = (pd.x + 0.5) * TS, y = (pd.y + 0.5) * TS, pu = 0.6 + 0.4 * Math.sin(now * 3 + pd.x);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.ellipse(x, y + 2, 15, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = pd.color; ctx.globalAlpha = 0.35 + 0.35 * pu; ctx.beginPath(); ctx.ellipse(x, y, 13, 8, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = pd.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(x, y, 13, 8, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center'; const tw = ctx.measureText(pd.label).width + 6;
+    ctx.fillStyle = 'rgba(10,10,20,0.8)'; ctx.fillRect(x - tw / 2, y + 11, tw, 11);
+    ctx.fillStyle = pd.color; ctx.fillText(pd.label, x, y + 19);
+  }
+  if (mirage.roomIndex === 0) { // the records wall
+    const rec = mirageRecords();
+    const plaque = (cx, title, line1, line2, col) => {
+      const w = 104, h = 40, x = cx - w / 2, y = TS * 1 + 4;
+      ctx.fillStyle = '#3a2a16'; ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#c8a86a'; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = '#a8884a'; ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#2a1a08'; ctx.font = 'bold 9px monospace'; ctx.fillText(title, cx, y + 13);
+      ctx.fillStyle = col; ctx.font = 'bold 10px monospace'; ctx.fillText(line1, cx, y + 26);
+      ctx.fillStyle = '#3a2a16'; ctx.font = '8px monospace'; ctx.fillText(line2, cx, y + 36);
+    };
+    plaque(7.5 * TS, 'ENDLESS WAVES', 'Best: ' + rec.waves + ' waves', 'Only 1 revive!', '#8a2a0a');
+    plaque(16.5 * TS, 'BOSS RUSH', 'Best: ' + (rec.rushMs ? fmtTime(rec.rushMs) : '--:--'), '5 bosses, 2 revives', '#1a2a8a');
+  }
+}
+// HUD while a challenge runs
+function drawMirageHud() {
+  if (world.mode !== 'mirage' || !mirage.mode) return;
+  ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+  const t = mirage.mode === 'waves' ? 'Wave ' + mirage.wave + '   Best ' + mirageRecords().waves + '   Revives ' + mirage.revives
+    : 'Boss ' + (mirage.rushIndex + 1) + '/5   ' + fmtTime(mirage.rushT * 1000) + '   Revives ' + mirage.revives;
+  const w = ctx.measureText(t).width + 16, x = CONFIG.GAME_W / 2, y = CONFIG.GAME_H - 68; // above the bottom button row
+  ctx.fillStyle = 'rgba(10,10,20,0.8)'; ctx.fillRect(x - w / 2, y - 13, w, 19);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 1; ctx.strokeRect(x - w / 2 + 0.5, y - 12.5, w - 1, 18);
+  ctx.fillStyle = '#ffe9a8'; ctx.fillText(t, x, y + 1);
+}
+// Sol: a small hooded desert wanderer with a glowing lantern (code-drawn)
+function drawSol(x, y) {
+  const t = performance.now() / 1000, bob = Math.floor(t * 1.2) % 2 ? -1 : 0, fx = Math.round(x), fy = Math.round(y) + 7;
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(fx - 6, fy - 1, 12, 2);
+  ctx.fillStyle = '#5a3a1a'; ctx.fillRect(fx - 6, fy - 12 + bob, 12, 12);            // cloak outline
+  ctx.fillStyle = '#d8a860'; ctx.fillRect(fx - 5, fy - 11 + bob, 10, 11);            // sand cloak
+  ctx.fillStyle = '#b88840'; ctx.fillRect(fx - 5, fy - 4 + bob, 10, 1); ctx.fillRect(fx, fy - 11 + bob, 1, 11);
+  ctx.fillStyle = '#5a3a1a'; ctx.fillRect(fx - 5, fy - 20 + bob, 10, 9);             // hood
+  ctx.fillStyle = '#e8c070'; ctx.fillRect(fx - 4, fy - 19 + bob, 8, 8);
+  ctx.fillStyle = '#2a1a0a'; ctx.fillRect(fx - 3, fy - 16 + bob, 6, 4);              // shadowed face
+  ctx.fillStyle = '#ffe890'; ctx.fillRect(fx - 2, fy - 15 + bob, 1, 1); ctx.fillRect(fx + 1, fy - 15 + bob, 1, 1); // glowing eyes
+  ctx.fillStyle = '#7a5a2a'; ctx.fillRect(fx + 6, fy - 12 + bob, 1, 6);              // lantern pole
+  const g = 0.6 + 0.4 * Math.sin(t * 5);
+  ctx.fillStyle = 'rgba(255,200,90,' + (0.25 * g).toFixed(2) + ')'; ctx.beginPath(); ctx.arc(fx + 7, fy - 5 + bob, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3a2a16'; ctx.fillRect(fx + 5, fy - 7 + bob, 5, 5);
+  ctx.fillStyle = '#ffd060'; ctx.fillRect(fx + 6, fy - 6 + bob, 3, 3);
+}
+
+
+// =========================================================================
 // Hero
 // =========================================================================
 const hero = {
@@ -5071,12 +5361,14 @@ function currentMap() {
   if (world.mode === 'interior') return world.interior;
   if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex];
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].map;
+  if (world.mode === 'mirage') return mirage.rooms[mirage.roomIndex].map;
   return overworld;
 }
 function currentCanvas() {
   if (world.mode === 'interior') return world.interior.canvas;
   if (world.mode === 'dungeon') return world.dungeon.rooms[world.dungeon.roomIndex].canvas;
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].map.canvas;
+  if (world.mode === 'mirage') return mirage.rooms[mirage.roomIndex].map.canvas;
   return overworldCanvas;
 }
 
@@ -5226,6 +5518,7 @@ function allNPCs() {
   if (world.mode === 'interior' && world.interior === houseInterior) return houseNPCs;
   if (world.mode === 'interior' && world.interior === shopInterior) return shopNPCs;
   if (world.mode === 'interior' && world.interior === desertShopInterior) return desertShopNPCs;
+  if (castle.defeated) list.push(solNPC); // appears once Malrek is beaten
   return world.mode === 'overworld' ? list : [];
 }
 
@@ -5236,6 +5529,7 @@ const dialogue = { active: false, npc: null, lineIndex: 0 };
 function openDialogue(npc) {
   if (npc.isShopkeeper) { openShop(); return; }
   if (npc.hintGuide) npc.lines = guideLines(npc); // always up to date
+  if (npc === solNPC) npc.lines = solLines();
   dialogue.active = true; dialogue.npc = npc; dialogue.lineIndex = 0;
 }
 function advanceDialogue() {
@@ -5384,7 +5678,7 @@ function noteStreakRecord() {
 }
 // The Golden Knight outfit (won by beating Malrek, kept on this device for
 // every new game) can't be hurt and needs no AP.
-function goldenPowers() { return player.skin === 'golden' && !!player.unlockedSkins.golden; }
+function goldenPowers() { return player.skin === 'golden' && !!player.unlockedSkins.golden && world.mode !== 'mirage'; } // no golden powers in Mirage Keep
 function spendAP(n) {
   if (goldenPowers()) return true;
   if (player.ap < n) return false;
@@ -5462,6 +5756,7 @@ let cachedOverworldPots = null;
 function currentPots() {
   if (world.mode === 'dungeon') return world.dungeon.pots[world.dungeon.roomIndex];
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].pots;
+  if (world.mode === 'mirage') return mirage.rooms[mirage.roomIndex].pots;
   if (world.mode !== 'overworld') return [];
   if (!cachedOverworldPots) cachedOverworldPots = overworldPots.concat(wildsPots, wildsBushes);
   return cachedOverworldPots;
@@ -5470,6 +5765,7 @@ let cachedOverworldEnemies = null;
 function currentEnemies() {
   if (world.mode === 'dungeon') return world.dungeon.enemies[world.dungeon.roomIndex];
   if (world.mode === 'castle') return castle.rooms[castle.roomIndex].enemies;
+  if (world.mode === 'mirage') return mirage.rooms[mirage.roomIndex].enemies;
   if (world.mode !== 'overworld') return [];
   if (!cachedOverworldEnemies) cachedOverworldEnemies = overworldEnemies.concat(wildsEnemies);
   return cachedOverworldEnemies;
@@ -5783,6 +6079,7 @@ function doRevive() {
   player.invincibleT = 3;
   player.revivesUsed++;
   SFX.revive();
+  if (world.mode === 'mirage') { mirageOnDeath(); return; } // Mirage Keep has its own revive rules
   // Lives: a boss fight gives 3 tries - the 3rd revive sends the hero out
   // to the dungeon's entrance. Elsewhere there are 5 revives; after that
   // the next revive happens at the start of the journey (or, inside a
@@ -5882,6 +6179,7 @@ function drawLivesScreen() {
 }
 // HUD: revives left (a boss fight shows its tries instead), below the panel
 function drawLivesHud() {
+  if (world.mode === 'mirage') return; // Mirage Keep shows its own revives
   const boss = inBossFight(), n = boss ? lives.boss : player.lives;
   const x = 14, y = 178, label = boss ? 'Tries x' + n : 'x' + n;
   ctx.font = 'bold 12px monospace';
@@ -5968,7 +6266,7 @@ const ENEMY_LUNGERS = new Set(['slime', 'wolf', 'wraith', 'thornling', 'ironclam
 const ENEMY_SHOOTERS = new Set(['octorok', 'fireImp']);
 function enemyAttackDamage(e) {
   if (littleHero()) return 1;
-  return world.mode === 'dungeon' || world.mode === 'castle' ? 2 : 1;
+  return world.mode === 'dungeon' || world.mode === 'castle' || world.mode === 'mirage' ? 2 : 1;
 }
 // returns true while the attack owns the enemy's movement this frame
 function updateEnemyAttack(e, dt, dist, map) {
@@ -6806,6 +7104,7 @@ function heroMapTile() {
   if (world.mode === 'overworld') return { x: hero.x / TS, y: hero.y / TS };
   if (world.mode === 'dungeon' && world.dungeon) { const [dx, dy] = OW_LAYOUT.dungeons[world.dungeon.def.id]; return { x: dx + 0.5, y: dy + 0.5, inside: world.dungeon.def.name }; }
   if (world.mode === 'castle') return { x: OW_LAYOUT.castleGate[0] + 0.5, y: OW_LAYOUT.castleGate[1] + 0.5, inside: "Malrek's Castle" };
+  if (world.mode === 'mirage') return { x: mirageGate.x + 0.5, y: mirageGate.y + 0.5, inside: 'Mirage Keep' };
   if (world.returnSpot) return { x: world.returnSpot.x / TS, y: world.returnSpot.y / TS, inside: world.interior && world.interior.label };
   return { x: hero.x / TS, y: hero.y / TS };
 }
@@ -6840,6 +7139,7 @@ function drawMapScreen() {
   for (const d of dungeons) { const [dx, dy] = OW_LAYOUT.dungeons[d.def.id]; if (!sym(d.def.id, dx + 0.5, dy + 0.5, 20, d.chestOpened && 'check')) pin(dx + 0.5, dy + 0.5, TEMPLE_COL[d.def.id], d.chestOpened); }
   if (!sym('castle', OW_LAYOUT.castleGate[0] + 0.5, OW_LAYOUT.castleGate[1] + 0.5, 24, castle.defeated && 'star')) pin(OW_LAYOUT.castleGate[0] + 0.5, OW_LAYOUT.castleGate[1] + 0.5, '#6a3a8a', castle.defeated);
   drawMapSym('compass', ox + W - 22, oy + H - 40, 30);
+  if (mirageGate.open) sym('star', mirageGate.x + 0.5, mirageGate.y + 0.5, 16);
   if (!imgReady('map_symbols')) for (const t of owTowns()) { const [px, py] = P(t.x, t.y); ctx.fillStyle = '#1a1208'; ctx.fillRect(px - 6, py - 4, 13, 9); ctx.fillStyle = '#c84a32'; ctx.fillRect(px - 5, py - 3, 5, 7); ctx.fillRect(px + 1, py - 3, 5, 7); }
   // the hero: a blinking red-haired head marker
   const hm = heroMapTile(), [hx, hy] = P(hm.x, hm.y), blink = Math.floor(now * 3) % 2 === 0;
@@ -7390,6 +7690,7 @@ function updatePlaying(dt) {
         break;
       }
     }
+    if (mirageGate.open && inZoneRect(hero.x, hero.y, mirageGate.zone)) enterMirage();
     {
       const z = castleGate.zone;
       if (hero.x >= z.minX && hero.x <= z.maxX && hero.y >= z.minY && hero.y <= z.maxY && !castleGate.hintShown) {
@@ -7409,6 +7710,8 @@ function updatePlaying(dt) {
     updateDungeonRoom(dt, map);
   } else if (world.mode === 'castle') {
     updateCastleRoom(dt, map);
+  } else if (world.mode === 'mirage') {
+    updateMirage(dt, map);
   }
   // the secret overworld heart piece (dungeon ones update in updateDungeonRoom)
   if (world.mode === 'overworld') updateHeartPieces(dt);
@@ -7423,7 +7726,7 @@ function updatePlaying(dt) {
     if (rippleMarkers[i].life <= 0) rippleMarkers.splice(i, 1);
   }
 
-  if (world.mode === 'overworld' || world.mode === 'dungeon' || world.mode === 'castle') {
+  if (world.mode === 'overworld' || world.mode === 'dungeon' || world.mode === 'castle' || world.mode === 'mirage') {
     updateEnemyStatus(dt);
     updateEnemies(dt, map);
   }
@@ -7677,6 +7980,7 @@ function drawHeroSprite(x, y, facing, frame) {
 const NPC_DRAW_H = { elder: 25, shopkeeper: 25, blacksmith: 27, child: 19 };
 const NPC_FALLBACK_ART = ['blacksmith', 'elder', 'child', 'shopkeeper'];
 function drawNpcSprite(x, y, color, facing, spriteKey, npc) {
+  if (spriteKey === 'sol') { drawSol(x, y); return; }
   if (!spriteKey && color) { // NPCs without dedicated art borrow a villager sprite
     let hsh = 0; for (const ch of color) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;
     spriteKey = NPC_FALLBACK_ART[hsh % NPC_FALLBACK_ART.length];
@@ -7868,7 +8172,8 @@ function drawPlaying() {
     }
   }
   if (world.mode === 'overworld') drawWaterShimmer(map, now);
-  if (world.mode === 'dungeon' || world.mode === 'castle') drawRoomDoors(map);
+  if (world.mode === 'dungeon' || world.mode === 'castle' || world.mode === 'mirage') drawRoomDoors(map);
+  if (world.mode === 'mirage') mirageGroundItems();
   if (world.mode === 'dungeon') drawDungeonGround(world.dungeon);
   if (world.mode === 'castle') drawCastleGround();
 
@@ -8055,6 +8360,10 @@ function drawPlaying() {
     for (const e of world.dungeon.enemies[world.dungeon.roomIndex]) if (e.isMiniboss && e.alive && e.bossKind) drawNewBossHPBar(e);
   }
   // boss HP bar (top of screen, Phase 5)
+  if (world.mode === 'mirage' && mirage.mode === 'rush' && mirage.boss && mirage.boss.alive) {
+    if (mirage.boss.type === 'ganon') drawBossHPBar(mirage.boss); else drawNewBossHPBar(mirage.boss);
+  }
+  drawMirageHud();
   if (world.mode === 'castle' && castle.roomIndex === CASTLE_ARENA && castle.ganon && castle.ganon.alive) {
     drawBossHPBar(castle.ganon);
   }
@@ -9340,6 +9649,7 @@ function applySaveData(data) {
     }
     castle.defeated = !!data.castleDefeated;
     applyCastleSave(data.castleProgress);
+    openMirageGate();
     player.secretHeartTaken = !!data.secretHeartTaken;
     if (data.world && typeof data.world === 'object') {
       for (const k of ['chests', 'lifted', 'bombed', 'bridges']) {
@@ -9442,6 +9752,7 @@ loadAtlas(() => {
       for (const r of dg.rooms) r.canvas = prerenderMap(r);
     }
     for (const r of castle.rooms) r.map.canvas = prerenderMap(r.map); // castle rooms wrap their map
+    for (const r of mirage.rooms) r.map.canvas = prerenderMap(r.map);
   } catch (e) { /* defensive: never let a re-bake failure block the game */ }
 });
 waitForAtlasThenStart();

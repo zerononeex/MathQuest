@@ -1372,6 +1372,61 @@ function check(name, ok, detail) {
     await xp.close();
   }
 
+  // --- Mirage Keep (post-game): Sol appears, the desert entrance opens, no
+  // golden powers inside, Endless Waves (1 revive) and the Boss Rush keep records ---
+  {
+    const mp = await browser.newPage();
+    mp.on('pageerror', e => errorsAll.push('mirage: ' + e.message));
+    await mp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await mp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      try {
+        localStorage.removeItem(SAVE_KEY); localStorage.removeItem(RECORDS_KEY); startNewGame();
+        out.lockedBefore = !mirageGate.open && !allNPCs().includes(solNPC);
+        castle.defeated = true; openMirageGate();
+        out.gate = mirageGate.open && overworld.grid[mirageGate.y][mirageGate.x] === T.STAIRS && regionAt(mirageGate.x, mirageGate.y) === 'desert';
+        out.sol = allNPCs().includes(solNPC) && /Mirage Keep/.test(solLines().join(' '));
+        player.unlockedSkins.golden = true; player.skin = 'golden';
+        hero.x = (mirageGate.x + 0.5) * 16; hero.y = (mirageGate.y + 0.5) * 16; enterMirage(); flush();
+        out.inside = world.mode === 'mirage' && mirage.roomIndex === 0;
+        out.noGolden = !goldenPowers();
+        // Endless Waves: walk onto its pad
+        const pad = mirage.rooms[0].pads[0]; hero.x = (pad.x + 0.5) * 16; hero.y = (pad.y + 0.5) * 16; updateMirage(0.016, currentMap()); flush();
+        for (let i = 0; i < 90; i++) updateMirage(1 / 60, currentMap());
+        out.wave1 = mirage.mode === 'waves' && mirage.wave === 1 && currentEnemies().some(e => e.alive);
+        for (let w = 0; w < 3; w++) { currentEnemies().forEach(e => e.alive = false); for (let i = 0; i < 90; i++) updateMirage(1 / 60, currentMap()); }
+        out.wave4 = mirage.wave === 4;
+        player.downed = true; doRevive(); out.afterFirstDeath = mirage.mode === 'waves' && mirage.revives === 0;
+        player.downed = true; doRevive(); flush();
+        out.wavesEnded = mirage.mode === null && mirage.roomIndex === 0 && livesScreen.active && mirageRecords().waves === 3;
+        livesScreen.active = false;
+        // Boss Rush: beat all five
+        const pad2 = mirage.rooms[0].pads[1]; hero.x = (pad2.x + 0.5) * 16; hero.y = (pad2.y + 0.5) * 16; mirage.padArmed = {}; updateMirage(0.016, currentMap()); flush();
+        out.rushStart = mirage.mode === 'rush' && mirage.roomIndex === 2;
+        const kinds = [];
+        for (let i = 0; i < 5; i++) {
+          const b = mirage.boss; kinds.push(b.bossKind || b.type);
+          for (let k = 0; k < 30; k++) updateMirage(1 / 60, currentMap());
+          if (b.type === 'ganon') { b.hp = 0; ganonDefeated(b); } else { b.hp = 0; b.alive = false; updateMirage(0.016, currentMap()); }
+          flush();
+          if (i < 4) { await0: { const t0 = performance.now(); } }
+          if (mirage.mode === 'rush' && i < 4) { mirageRushRoom(i + 1); }
+        }
+        out.kinds = kinds.join(',');
+        out.rushDone = mirage.mode === null && mirageRecords().rushMs > 0;
+        out.recordsShown = /Best: 3 waves/.test(JSON.stringify(mirageRecords())) || mirageRecords().waves === 3;
+        exitMirage(); flush(); out.out = world.mode === 'overworld';
+      } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+      return out;
+    });
+    check('Mirage Keep: unlocked after Malrek (Sol + desert gate), no golden powers, Endless Waves with 1 revive and a record, Boss Rush of all 5 bosses with a time record',
+      !r.exception && r.lockedBefore && r.gate && r.sol && r.inside && r.noGolden && r.wave1 && r.wave4 && r.afterFirstDeath && r.wavesEnded && r.rushStart &&
+      r.kinds === 'grovak,cindermaw,voltuga,puffling,ganon' && r.rushDone && r.out, JSON.stringify(r));
+    await mp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
