@@ -9,7 +9,7 @@ import os, json
 import numpy as np
 from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
-WIDTH = {'forest': 96, 'fire': 96, 'water': 96, 'shadow': 96, 'castle': 272}
+WIDTH = {'forest': 96, 'fire': 96, 'water': 96, 'shadow': 96, 'castle': 272, 'mirage': 96}
 tiles, src = [], {}
 for kind, W in WIDTH.items():
     p = os.path.join(HERE, '..', 'entrance_%s_raw.jpg' % kind)

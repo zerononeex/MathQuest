@@ -1458,6 +1458,82 @@ function check(name, ok, detail) {
     await fp.close();
   }
 
+  // --- The Aurora Sword sidequest: the smith marks four vaults; each opens
+  // with its item (bomb / fire arrows + shore switch / Gale Boomerang on the
+  // crystal / the three parts), each is waves -> guardian -> relic + portal;
+  // the smith then points to the Great Fairy's grotto (bombed open) and she
+  // reforges the parts: +10 Attack, +5 hearts; all of it survives a reload ---
+  {
+    const qp = await browser.newPage();
+    qp.on('pageerror', e => errorsAll.push('sidequest: ' + e.message));
+    await qp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await qp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      const TS = CONFIG.TILE, S = SQ_SITES;
+      const stand = (x, y) => { hero.x = (x + 0.5) * TS; hero.y = (y + 0.5) * TS - 4; };
+      const step = n => { for (let i = 0; i < (n || 1); i++) { update(CONFIG.STEP_MS); flush(); } };
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame(); player.invincibleT = 1e9; player.ap = 999; dialogue.active = false;
+        out.sites = ['v1', 'v2', 'v3', 'v4', 'grotto'].every(k => S[k]);
+        openDialogue(smithNPC); dialogue.active = false; out.started = sq.started;
+        const clear = id => { // play a vault through: waves, guardian, relic, portal
+          stand(S[id].x, S[id].y); step(2);
+          const inV = world.mode === 'vault';
+          for (let i = 0; i < 400 && !vaultRun.st.waves; i++) { currentEnemies().forEach(e => { e.alive = false; }); step(); }
+          const m0 = currentMap(); hero.x = (m0.w - 1.1) * TS; hero.y = (Math.floor(m0.h / 2) + 0.5) * TS; step(2);
+          const boss = vaultRun.roomIndex === 1 && vaultRun.boss && vaultRun.boss.alive && !!NEW_BOSS_DEFS[vaultRun.boss.bossKind];
+          vaultRun.boss.alive = false; vaultRun.boss.hp = 0; step(2);
+          const m1 = currentMap(); hero.x = (m1.w - 1.1) * TS; hero.y = (Math.floor(m1.h / 2) + 0.5) * TS; step(2);
+          const pd = vaultPedestalPos(currentMap()); hero.x = pd.x; hero.y = pd.y + 8; step(2); livesScreen.active = false;
+          step(60); const pp = vaultPortalPos(currentMap()); hero.x = pp.x; hero.y = pp.y; step(3);
+          return inV && boss && world.mode === 'overworld' && sq.parts[VAULT_DEFS[id].part];
+        };
+        // v1: the cracked rock needs a bomb
+        const g1 = owGates.find(g => g.id === 'sq_v1');
+        out.v1Blocked = overworld.grid[g1.y][g1.x] === T.CRACKED;
+        owBombBlast((g1.x + 1) * TS, (g1.y + 1) * TS);
+        out.v1 = clear('v1');
+        // v2: plain arrows do nothing, fire arrows light both torches, the shore switch lowers the bridge
+        const t0 = S.v2.torches[0];
+        sqArrowHit({ x: (t0[0] + 0.5) * TS, y: (t0[1] + 0.5) * TS - 6, type: 'normal' }); out.v2PlainNoLight = !sq.torches[0];
+        for (const t of S.v2.torches) sqArrowHit({ x: (t[0] + 0.5) * TS, y: (t[1] + 0.5) * TS - 6, type: 'fire' });
+        out.v2Island = overworld.grid[S.v2.y + 2][S.v2.x] === T.WATER;
+        stand(S.v2.sw[0], S.v2.sw[1]); hero.y += 4; step(2);
+        out.v2Bridge = !!owState.bridges.sq_v2 && overworld.grid[S.v2.y + 2][S.v2.x] === T.BRIDGE;
+        out.v2 = clear('v2');
+        // v3: the plain boomerang falls short from the west shore, the Gale Boomerang reaches
+        const cy = S.v3.crystal[1]; let x = S.v3.crystal[0] - 12; while (overworld.grid[cy][x + 1] !== T.WATER) x++;
+        const throwFrom = gale => { player.owned.boomerang = true; player.owned.galeBoomerang = gale; boomerangs.length = 0; stand(x, cy); hero.y += 4; hero.facing = 'right'; player.attackCooldown = 0; throwBoomerang(); step(120); };
+        throwFrom(false); out.v3ShortThrow = !sq.crystal;
+        throwFrom(true); out.v3Gale = sq.crystal && S.v3.pillars.every(([px, py]) => overworld.grid[py][px] !== T.PROP);
+        out.v3 = clear('v3');
+        // v4: sealed until three parts; opens now
+        const door = owInteractables().find(i => i.key === 'sq:v4door'); door.act(); dialogue.active = false;
+        out.v4Opened = sq.v4Open && overworld.grid[S.v4.y][S.v4.x] === T.STAIRS;
+        out.v4 = clear('v4');
+        // the fairy sleeps until the smith was told; the grotto opens to a bomb
+        openDialogue(greatFairyNPC); out.fairySleeps = !greatFairyAwake(); dialogue.active = false;
+        openDialogue(smithNPC); dialogue.active = false; out.smithTold = sq.smithTold;
+        owBombBlast((S.grotto.x + 0.5) * TS, (S.grotto.y + 1.5) * TS); out.grotto = sq.grottoOpen;
+        stand(S.grotto.x, S.grotto.y); step(2); out.inGrotto = world.interior === grottoInterior;
+        const before = { a: player.attack, h: player.maxHearts };
+        openDialogue(greatFairyNPC); while (dialogue.active) advanceDialogue(); livesScreen.active = false;
+        out.reforge = sq.fairyDone && player.attack === before.a + 10 && player.maxHearts === before.h + 5 && equippedSwordKind() === 'auroraSword';
+        saveGame();
+        out.saved = JSON.parse(localStorage.getItem(SAVE_KEY)).sidequest.fairyDone === true;
+      } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+      return out;
+    });
+    await qp.reload({ waitUntil: 'load' }); await new Promise(r => setTimeout(r, 400));
+    const r2 = await qp.evaluate(() => { const d = loadSaveData(); applySaveData(d); return { parts: sqPartCount(), sword: equippedSwordKind(), crystal: sq.crystal, pillarsDown: SQ_SITES.v3.pillars.every(([x, y]) => overworld.grid[y][x] !== T.PROP), v4: overworld.grid[SQ_SITES.v4.y][SQ_SITES.v4.x] === T.STAIRS, grotto: overworld.grid[SQ_SITES.grotto.y][SQ_SITES.grotto.x] === T.STAIRS, bridge: !!owState.bridges.sq_v2 }; });
+    const ok = !r.exception && Object.keys(r).filter(k => k !== 'exception').every(k => r[k] === true) && r2.parts === 4 && r2.sword === 'auroraSword' && r2.pillarsDown && r2.v4 && r2.grotto && r2.bridge;
+    check('Aurora Sword sidequest: 4 item-gated vaults (bomb / fire arrows / Gale Boomerang / 3 parts), waves -> guardian -> relic + portal, smith -> Great Fairy grotto (bomb) -> +10 Attack +5 hearts; saved',
+      ok, JSON.stringify(r) + ' reload ' + JSON.stringify(r2));
+    await qp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
