@@ -12,6 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); ART = os.path.join(HERE, '..'
 SHEETS = [
     ('homes_raw.jpg', [('home1', (205, 398)), ('home2', (483, 398)), ('home3', (817, 405))], 0.24),
     ('shop_raw.jpg', [('shop', (705, 636))], 0.099),
+    ('regional_shops_raw.jpg', [('shop_forest', (112, 338)), ('shop_lakes', (362, 292)), ('shop_mountain', (612, 335)), ('shop_darkness', (868, 345))], 0.3),
 ]
 def key(A):
     r, g, b = A[..., 0], A[..., 1], A[..., 2]
@@ -35,6 +36,10 @@ for fn, names, k in SHEETS:
     runs = [r for r in runs if r[1] - r[0] > 60]
     assert len(runs) == len(names), (fn, runs)
     for (name, (dx, dy)), (x0, x1) in zip(names, runs):
+        if name == 'shop_lakes': # the painted pond under its dock would sit on grass: cut the water away
+            band = A[:, x0:x1 + 1]; hy = int(A.shape[0] * 0.44)
+            water = (band[..., 2] > 140) & (band[..., 0] < 130) & (band[..., 2] > band[..., 0] + 60)
+            water[:hy] = False; al[:, x0:x1 + 1] &= ~water
         sub = al[:, x0:x1 + 1]; ys = np.where(sub.sum(1) > 1)[0]; y0, y1 = ys[0], ys[-1]
         C = A[y0:y1 + 1, x0:x1 + 1]; a = al[y0:y1 + 1, x0:x1 + 1]
         W, H = round((x1 - x0 + 1) * k * 2), round((y1 - y0 + 1) * k * 2)
