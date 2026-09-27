@@ -12,7 +12,11 @@ import numpy as np
 from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__)); ART = os.path.join(HERE, '..')
 KINDS = ['rubblejaw', 'flarewing', 'squallback', 'astral']
-ROWS = [(0.0, 0.455), (0.52, 0.93)] # (the label strips sit just below each)
+LABELLED = [(0.0, 0.455), (0.52, 0.93)] # 2 rows cut above their text label strips
+LAYOUT = { # columns, row bands (fractions of the sheet height)
+  'rubblejaw': (4, LABELLED),
+  'flarewing': (3, [(0.0, 0.5), (0.5, 1.0)]),
+}
 def key(C):
     r, g, b = C[..., 0], C[..., 1], C[..., 2]
     K = ((r > 150) & (b > 150) & (g < 130) & (np.abs(r - b) < 90)) | ((r > g + 70) & (b > g + 70))
@@ -28,9 +32,10 @@ for kind in KINDS:
     if not os.path.exists(p): continue
     A = np.array(Image.open(p).convert('RGB')).astype(float); H, W = A.shape[:2]
     cuts = []
-    for r0, r1 in ROWS:
-        for c in range(4):
-            x0, x1, y0, y1 = round(c * W / 4) + 3, round((c + 1) * W / 4) - 3, round(r0 * H), round(r1 * H)
+    ncol, rows = LAYOUT.get(kind, (4, LABELLED))
+    for r0, r1 in rows:
+        for c in range(ncol):
+            x0, x1, y0, y1 = round(c * W / ncol) + 3, round((c + 1) * W / ncol) - 3, round(r0 * H), round(r1 * H)
             C = A[y0:y1, x0:x1]; al = key(C)
             ys, xs = np.where(al.sum(1) > 1)[0], np.where(al.sum(0) > 1)[0]
             cuts.append((C[ys[0]:ys[-1] + 1, xs[0]:xs[-1] + 1], al[ys[0]:ys[-1] + 1, xs[0]:xs[-1] + 1]))
