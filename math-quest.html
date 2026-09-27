@@ -3803,7 +3803,7 @@ const BOSS_WALK = { grovak: 26, voltuga: 34, puffling: 30 };
 function scaleBossForFight(e) {
   if (!e || e.bossScaled || !BOSS_HITS[e.bossKind]) return;
   e.bossScaled = true;
-  const per = computeDamage(equippedSwordKind(), e.defense || 0);
+  const per = computeDamage('sword', e.defense || 0); // hero strength without the sword bonus: a better sword ends fights sooner
   const hits = Math.round(BOSS_HITS[e.bossKind] * (littleHero() ? 0.6 : 1));
   if (e.baseMaxHp === undefined) e.baseMaxHp = e.maxHp; // a refight re-scales from the original, never compounding
   e.hp = e.maxHp = Math.max(e.baseMaxHp, hits * per) * 2; // doubled: fast tapping on a tablet made fights too short
@@ -4270,7 +4270,7 @@ function castleEntranceCheck() {
 function castleScaleEnemy(e) {
   if (e.castleScaled || e.isBoss) return;
   e.castleScaled = true;
-  const per = computeDamage(equippedSwordKind(), e.defense || 0);
+  const per = computeDamage('sword', e.defense || 0); // hero strength without the sword bonus: a better sword ends fights sooner
   const LH = littleHero();
   e.hp = e.maxHp = Math.max(Math.ceil(e.maxHp * (LH ? 1.6 : 3)), (LH ? 2 : 3) * per);
   e.xp = Math.round((e.xp || 5) * 2);
@@ -4718,7 +4718,7 @@ function malrekScale(g) {
   const N = malrekBonus();
   if (g.bonus === N && g.scaledFor === player.attack) return;
   const frac = g.maxHp > 0 && g.bonus !== undefined ? Math.max(0, g.hp / g.maxHp) : 1;
-  const per = computeDamage(equippedSwordKind(), g.defense || 0);
+  const per = computeDamage('sword', g.defense || 0);
   const hits = Math.round((littleHero() ? 16 + N : 26 + 2 * N) * 1.5); // 1.5x (the temple bosses got 2x; with 3 tries per fight 2x here was out of reach)
   const weaker = g.bonus !== undefined && N < g.bonus;
   g.bonus = N; g.scaledFor = player.attack;
@@ -5209,7 +5209,7 @@ const TUNIC_SKINS = {
 function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
 
 // weapon damage table (min-1 floor applied at hit time)
-const WEAPON_DAMAGE = { sword: 0, sharpSword: 0, heroSword: 1, boomerang: 0, galeBoomerang: 1, bow: 1 };
+const WEAPON_DAMAGE = { sword: 0, sharpSword: 2, heroSword: 4, boomerang: 0, galeBoomerang: 1, bow: 1 }; // better swords hit harder
 function equippedSwordKind() {
   if (player.owned.heroSword) return 'heroSword';
   if (player.owned.sharpSword) return 'sharpSword';
@@ -6224,9 +6224,9 @@ function drawLevelUpPopup() {
 // Shop (Phase 3) - data-driven items
 // =========================================================================
 const SHOP_ITEMS = [
-  { id: 'sharpSword', name: 'Sharp Sword', price: CONFIG.SHOP.sharpSword, desc: 'A brighter, wider blade.' },
+  { id: 'sharpSword', name: 'Sharp Sword', price: CONFIG.SHOP.sharpSword, desc: '+2 sword damage, a little longer.' },
   { id: 'boomerang', name: 'Boomerang', price: CONFIG.SHOP.boomerang, desc: 'Throw it at foes far away!' },
-  { id: 'heroSword', name: 'Hero Sword', price: CONFIG.SHOP.heroSword, desc: 'A longer golden blade.' },
+  { id: 'heroSword', name: 'Hero Sword', price: CONFIG.SHOP.heroSword, desc: '+4 sword damage, a long golden blade.' },
   { id: 'bow', name: 'Bow & Arrows', price: CONFIG.SHOP.bow, desc: 'Fire arrows at any distance.' },
   { id: 'fireArrow', name: 'Fire Arrows', price: CONFIG.SHOP.fireArrow, desc: 'Burning arrow tips.', prereq: 'bow' },
   { id: 'iceArrow', name: 'Ice Arrows', price: CONFIG.SHOP.iceArrow, desc: 'Slows enemies down.', prereq: 'bow' },
@@ -6296,6 +6296,7 @@ function buyItem(item) {
     }
   }
   SFX.coin(0);
+  if (item.id === 'sharpSword' || item.id === 'heroSword') spawnFloatingText(hero.x, hero.y - 34, 'Sword damage +' + WEAPON_DAMAGE[equippedSwordKind()] + '!', '#ffd84a');
   spawnFloatingText(hero.x, hero.y - 20, 'Bought!', '#8effc1');
   shopNotice('Bought the ' + item.name + '!', '#8effc1');
 }
@@ -8836,7 +8837,19 @@ function tapWeaponSlot(sx, sy) {
 }
 
 // small polished pixel icons for the weapon slots (drawn, not unicode glyphs)
+const SWORD_ICON_OPS = { sword: undefined, sharpSword: 'tint:#8fd0ff', heroSword: 'tint:#ffd040' };
 function drawSlotIcon(kind, cx, cy) {
+  if (kind === 'sword' || kind === 'sharpSword' || kind === 'heroSword') kind = equippedSwordKind(); // the best sword owned
+  if (kind !== 'sword' && (kind === 'sharpSword' || kind === 'heroSword') && imgReady('weapons_icons')) {
+    const big = kind === 'heroSword' ? 34 : 32;
+    drawSpriteFoot(ctx, 'weapons_icons', SRC.weaponIcon.sword, cx, cy + big / 2, big, { w: big, ops: SWORD_ICON_OPS[kind] });
+    const t = performance.now() / 1000; // a glint on the upgraded blade
+    if (Math.floor(t * 2) % 3 === 0) { ctx.fillStyle = '#ffffff'; ctx.fillRect(cx + 5, cy - 9, 2, 2); ctx.fillRect(cx + 4, cy - 8, 4, 0.1); }
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(cx + 6, cy - 22, 17, 11);
+    ctx.fillStyle = kind === 'heroSword' ? '#ffd84a' : '#9fe0ff'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('+' + WEAPON_DAMAGE[kind], cx + 14, cy - 13);
+    return;
+  }
   const iconKey = (kind === 'sword' || kind === 'sharpSword' || kind === 'heroSword') ? 'sword'
     : (kind === 'boomerang' || kind === 'galeBoomerang') ? 'boomerang'
     : kind === 'bow' ? 'bow' : null;
