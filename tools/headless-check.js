@@ -222,7 +222,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     // boss room (Grovak) and the castle final boss (Malrek art)
     await page.evaluate(() => {
-      const d = world.dungeon; d.roomIndex = 2;
+      const d = world.dungeon; d.roomIndex = d.BOSS;
       hero.x = 4 * CONFIG.TILE; hero.y = 5 * CONFIG.TILE; player.invincibleT = 0;
     });
     await sleep(600);
@@ -295,9 +295,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     // and the Boss Key in the HUD
     const boss = await page.evaluate(() => {
       const d = dungeons.find(x => x.def.id === 'shadow');
-      world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 2;
+      world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = d.BOSS;
       d.hasSmallKey = true;
-      const e = d.enemies[2][0];
+      const e = d.enemies[d.BOSS][0];
       hero.x = 3 * CONFIG.TILE; hero.y = 3 * CONFIG.TILE; player.invincibleT = 999;
       let guard = 0;
       while (e.alive && guard++ < 200) damageEnemy(e, 'heroSword');
@@ -307,17 +307,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     });
     await sleep(300);
     await page.evaluate(() => { // walk up to the boss door so it opens
-      const d = world.dungeon, r = d.rooms[2];
+      const d = world.dungeon, r = d.rooms[d.BOSS];
       hero.x = (r.w - 2) * CONFIG.TILE; hero.y = (Math.floor(r.h / 2) + 0.5) * CONFIG.TILE;
     });
     await sleep(400);
     const bossState = await page.evaluate(() => {
-      const d = world.dungeon, r = d.rooms[2];
-      return { bossDefeated: d.bossDefeated, hasBossKey: d.hasBossKey, roomIndex: d.roomIndex,
+      const d = world.dungeon, r = d.rooms[d.BOSS];
+      return { bossDefeated: d.bossDefeated, hasBossKey: d.hasBossKey, roomIndex: d.roomIndex, treas: d.TREAS,
         doorOpen: r.grid[Math.floor(r.h / 2)][r.w - 1] === T.FLOOR };
     });
     await canvasShot('23-post-boss-key');
-    const bossOk = bossState.bossDefeated && bossState.hasBossKey && (bossState.doorOpen || bossState.roomIndex === 3);
+    const bossOk = bossState.bossDefeated && bossState.hasBossKey && (bossState.doorOpen || bossState.roomIndex === bossState.treas);
     console.log((bossOk ? 'OK' : 'FAIL') + ': boss key after killing ' + boss.kind + ' ' + JSON.stringify(bossState));
     if (!bossOk) errors.push('boss key check failed');
     await page.evaluate(() => { player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null; });
@@ -344,7 +344,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       world.mode = 'interior'; world.interior = buildings[0].interior; out.house = musicForState();
       world.interior = null; world.mode = 'dungeon'; world.dungeon = dungeons[0];
       dungeons[0].roomIndex = 0; out.dungeonRoom = musicForState();
-      dungeons[0].roomIndex = 2; out.bossRoom = musicForState(); dungeons[0].roomIndex = 0;
+      dungeons[0].roomIndex = dungeons[0].BOSS; out.bossRoom = musicForState(); dungeons[0].roomIndex = 0;
       world.dungeon = null; world.mode = 'castle'; castle.roomIndex = CASTLE_ARENA; out.finalBoss = musicForState();
       castle.roomIndex = 0;
       world.mode = 'overworld'; hero.x = (overworld.w / 2 + 40) * T; hero.y = (overworld.h / 2) * T;

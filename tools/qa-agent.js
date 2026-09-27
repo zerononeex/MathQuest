@@ -596,6 +596,7 @@
     }
     if (mathPopup.active) { solveMath(); return true; }
     if (typeof livesScreen !== 'undefined' && livesScreen.active) {
+      QA.wasSentOut = true;
       if (!UI.livesNoted) { UI.livesNoted = true; milestone('Out of lives notice: ' + livesScreen.title + ' - ' + livesScreen.lines[1]); Cap.arm && Cap.arm('lives'); }
       if (QA.gameMs - UI.lastPress > 700) { UI.lastPress = QA.gameMs; Inp.press('Enter'); }
       return true;
@@ -868,14 +869,14 @@
     }
     // boss dead but key/door never granted
     if (world.mode === 'dungeon' && world.dungeon) {
-      const d = world.dungeon, id = d.def.id, boss = (d.enemies[2] || []).find(e => e.isMiniboss);
+      const d = world.dungeon, id = d.def.id, boss = (d.enemies[d.BOSS] || []).find(e => e.isMiniboss);
       if (boss && !boss.alive) {
         if (d.bossDefeated) QA.bossDeadAt[id] = 0;
         else if (!QA.bossDeadAt[id]) QA.bossDeadAt[id] = QA.gameMs;
         else if (QA.gameMs - QA.bossDeadAt[id] > 1500 && !QA.bossReported[id]) {
           QA.bossReported[id] = true;
           report('CRITICAL', 'progression', d.def.name + ': boss "' + (boss.bossKind || boss.type) + '" was killed (alive=false, hp=' + boss.hp + ') but the dungeon never registers it: bossDefeated=' + d.bossDefeated +
-            ', hasBossKey=' + d.hasBossKey + ', no Boss Key / heart piece spawned, boss door tile stays ' + tileName(d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1]) + ' - dungeon cannot be completed',
+            ', hasBossKey=' + d.hasBossKey + ', no Boss Key / heart piece spawned, boss door tile stays ' + tileName(d.rooms[d.BOSS].grid[Math.floor(d.rooms[d.BOSS].h / 2)][d.rooms[d.BOSS].w - 1]) + ' - dungeon cannot be completed',
             { dungeon: id, repro: 'New Game -> enter the ' + d.def.name + ', get the Small Key, solve the puzzle, kill the boss in room 2, then walk to the east door: it stays sealed and no Boss Key drops', suspected: 'updateDungeonRoom() skips enemies with alive=false before its "e.hp <= 0 && !d.bossDefeated -> defeatMiniboss()" check, but damageEnemy() already set alive=false on the killing blow, so defeatMiniboss() never runs' },
             'bosskey|' + id);
         }
@@ -1534,7 +1535,7 @@
   function* pushBlock(d) {
     const p = d.puzzle, sx = (p.switchX + 0.5) * TS(), sy = (p.switchY + 0.5) * TS();
     const end = QA.gameMs + 90000;
-    while (!p.solved && QA.gameMs < end && world.dungeon === d && d.roomIndex === 1) {
+    while (!p.solved && QA.gameMs < end && world.dungeon === d && d.roomIndex === d.PUZ) {
       const b = p.block, ex = sx - b.x, ey = sy - b.y;
       const dir = Math.abs(ey) >= 8.5 ? (ey > 0 ? 'down' : 'up') : (ex > 0 ? 'right' : 'left');
       const v = DIRVEC[dir], ax = b.x - v[0] * 24, ay = b.y - v[1] * 24;
@@ -1563,7 +1564,7 @@
     return p.solved;
   }
   function* solvePuzzleGen(d) {
-    const p = d.puzzle, room = d.rooms[1];
+    const p = d.puzzle, room = d.rooms[d.PUZ];
     if (!p || p.solved) return true;
     QA.state = 'PUZZLE';
     if (p.type === 'riddle') {
@@ -1604,7 +1605,7 @@
     return solved;
   }
   function* openChestGen(d) {
-    const room = d.rooms[3], cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
+    const room = d.rooms[d.TREAS], cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
     if (d.chestOpened) return true;
     yield* navTo(cx - 1, cy, { label: 'walk to treasure chest' });
     const chX = (cx + 0.5) * TS(), chY = (cy + 0.5) * TS();
@@ -1623,6 +1624,7 @@
     let guard = 0;
     while (world.mode === 'dungeon' && guard++ < 8) {
       const ri = d.roomIndex, room = currentMap(), midY = Math.floor(room.h / 2);
+      if (d.extra && d.extra[ri] && d.extra[ri].kind === 'crystal') yield* crossPegRoomWest(d, ri);
       const r = yield* navTo(0, midY, { allowZone: true, expectTransition: true, label: 'exit ' + d.def.name + ': walk west out of room ' + ri, timeoutMs: 45000 });
       yield* waitUntil(() => !fading(), 1500);
       if (r !== 'transition') { report('CRITICAL', 'progression', "Can't exit " + d.def.name + ' from room ' + ri + ': walking into the west doorway did not transition (' + r + ')', null, 'noexit|' + d.def.id + '|' + ri); break; }
@@ -1630,9 +1632,11 @@
     if (world.mode === 'overworld') { st.exited = true; milestone('Exited ' + d.def.name + ' to the overworld at (' + heroTile().tx + ',' + heroTile().ty + ')'); }
   }
   function* phaseDungeon(d) {
+    QA.wasSentOut = false;
     let st = yield* crawlDungeon(d);
     // sent out of the boss fight (out of tries)? go back in and finish it
-    for (let tries = 0; tries < 6 && st && !d.chestOpened && /boss/.test(st.blockedBy || '') && world.mode === 'overworld'; tries++) {
+    for (let tries = 0; tries < 6 && st && !d.chestOpened && (/boss|sent out/.test(st.blockedBy || '') || QA.wasSentOut) && world.mode === 'overworld'; tries++) {
+      QA.wasSentOut = false;
       milestone(d.def.name + ': back in for another try at the boss');
       st.blockedBy = null;
       st = yield* crawlDungeon(d);
@@ -1662,19 +1666,36 @@
       if (!d.hasSmallKey) { report('CRITICAL', 'progression', d.def.name + ': no Small Key after smashing every pot in the entrance room'); st.blockedBy = 'small key'; yield* leaveDungeon(d, st); return st; }
       st.smallKey = true; milestone(d.def.name + ': got the Small Key');
       if (!(yield* passEastDoor(d, 0, 'locked door'))) { st.blockedBy = 'locked door'; yield* leaveDungeon(d, st); return st; }
+      // extra rooms: wave rooms and the crystal peg room
+      for (let ri = 1; ri < d.PUZ; ri++) {
+        const x = d.extra[ri];
+        if (d.roomIndex !== ri) { st.blockedBy = 'lost track of rooms'; yield* leaveDungeon(d, st); return st; }
+        if (x.kind === 'waves') {
+          QA.state = 'WAVES';
+          const tw = QA.gameMs;
+          while (!x.puz.solved && world.dungeon === d && d.roomIndex === ri && QA.gameMs - tw < 240000) { yield* roomClear(); yield* wait(250); }
+          if (world.mode !== 'dungeon') { st.blockedBy = 'sent out during waves'; return st; }
+          if (!x.puz.solved) { report('CRITICAL', 'progression', d.def.name + ': wave room ' + ri + ' never finished (wave ' + x.puz.wave + '/' + x.puz.waves.length + ')'); st.blockedBy = 'waves'; yield* leaveDungeon(d, st); return st; }
+          milestone(d.def.name + ': beat ' + x.puz.waves.length + ' waves in room ' + ri);
+        } else {
+          if (!(yield* crossPegRoom(d, ri))) { st.blockedBy = 'crystal pegs'; yield* leaveDungeon(d, st); return st; }
+          milestone(d.def.name + ': crossed the crystal peg room');
+        }
+        if (!(yield* passEastDoor(d, ri, x.kind + ' room door'))) { st.blockedBy = x.kind + ' door'; yield* leaveDungeon(d, st); return st; }
+      }
       // room 1: puzzle
       QA.state = 'DUNGEON_CRAWL';
       yield* roomClear();
       if (!(yield* solvePuzzleGen(d))) { st.blockedBy = d.puzzle.type + ' puzzle'; yield* leaveDungeon(d, st); return st; }
       st.puzzle = true; milestone(d.def.name + ': solved the ' + d.puzzle.type + ' puzzle');
-      if (!(yield* passEastDoor(d, 1, 'puzzle door'))) { st.blockedBy = 'puzzle door'; yield* leaveDungeon(d, st); return st; }
+      if (!(yield* passEastDoor(d, d.PUZ, 'puzzle door'))) { st.blockedBy = 'puzzle door'; yield* leaveDungeon(d, st); return st; }
       // room 2: boss
       QA.state = 'BOSS';
-      const boss = d.enemies[2].find(e => e.isMiniboss);
+      const boss = d.enemies[d.BOSS].find(e => e.isMiniboss);
       if (boss && boss.alive) {
         milestone(d.def.name + ': boss fight vs ' + (boss.bossKind || boss.type) + ' (hp ' + boss.hp + ')');
         const tb = QA.gameMs;
-        while (boss.alive && world.dungeon === d && d.roomIndex === 2 && QA.gameMs - tb < 300000) { QA.goal = 'defeat ' + (boss.bossKind || boss.type) + ' hp ' + boss.hp; yield* fight(boss, { timeoutMs: 300000 }); yield; }
+        while (boss.alive && world.dungeon === d && d.roomIndex === d.BOSS && QA.gameMs - tb < 300000) { QA.goal = 'defeat ' + (boss.bossKind || boss.type) + ' hp ' + boss.hp; yield* fight(boss, { timeoutMs: 300000 }); yield; }
         if (boss.alive) { st.blockedBy = 'boss not defeated'; agentIssue('could not defeat ' + d.def.name + ' boss'); yield* leaveDungeon(d, st); return st; }
         milestone(d.def.name + ': boss defeated in ' + ((QA.gameMs - tb) / 1000).toFixed(1) + 's (game)');
       }
@@ -1682,10 +1703,10 @@
       const gotKey = yield* waitUntil(() => d.bossDefeated && d.hasBossKey, 2500);
       if (!gotKey) {
         QA.goal = 'check sealed boss door';
-        yield* navTo(d.rooms[2].w - 2, Math.floor(d.rooms[2].h / 2), { label: 'try the sealed boss door', fight: false });
+        yield* navTo(d.rooms[d.BOSS].w - 2, Math.floor(d.rooms[d.BOSS].h / 2), { label: 'try the sealed boss door', fight: false });
         yield* wait(1200);
         st.blockedBy = 'boss kill not registered (no Boss Key, door sealed)';
-        milestone(d.def.name + ': boss door still ' + tileName(d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1]) + ' after the boss died');
+        milestone(d.def.name + ': boss door still ' + tileName(d.rooms[d.BOSS].grid[Math.floor(d.rooms[d.BOSS].h / 2)][d.rooms[d.BOSS].w - 1]) + ' after the boss died');
         yield* leaveDungeon(d, st); return st;
       }
       st.bossKey = true; milestone(d.def.name + ': got the Boss Key');
@@ -1696,7 +1717,7 @@
         if (yield* waitUntil(() => player.maxHearts > mh, 800)) milestone(d.def.name + ': collected Giant Heart Piece (max hearts ' + player.maxHearts + ')');
         else report('WARNING', 'pickup', d.def.name + ': could not collect the boss heart piece at (' + hp.x.toFixed(0) + ',' + hp.y.toFixed(0) + ')');
       }
-      if (!(yield* passEastDoor(d, 2, 'boss door'))) { st.blockedBy = 'boss door'; yield* leaveDungeon(d, st); return st; }
+      if (!(yield* passEastDoor(d, d.BOSS, 'boss door'))) { st.blockedBy = 'boss door'; yield* leaveDungeon(d, st); return st; }
       QA.state = 'TREASURE';
       if (!(yield* openChestGen(d))) { st.blockedBy = 'treasure chest will not open'; yield* leaveDungeon(d, st); return st; }
       st.chest = true;
@@ -1849,6 +1870,42 @@
     yield* waitUntil(() => !fading(), 1500);
     if (castle.roomIndex !== ri + 1) { report('CRITICAL', 'transition', 'Castle: walking through the ' + r.name + ' east door did not reach the next room (' + res + ')'); return false; }
     milestone('Castle: entered ' + castle.rooms[ri + 1].name);
+    return true;
+  }
+  // temple peg rooms: in each stretch between fences strike that stretch's
+  // crystal until the next fence is lowered, then walk through
+  function* crossPegRoom(d, ri) {
+    const x = d.extra[ri], p = x.puz, map = x.map, midY = Math.floor(map.h / 2);
+    for (let step = 0; step < 24 && d.roomIndex === ri && world.mode === 'dungeon'; step++) {
+      const htx = Math.floor(hero.x / TS()), k = p.fences.filter(f => f[0] < htx).length;
+      if (k >= p.fences.length) return true;
+      const [fx, col] = p.fences[k];
+      if (p.raised === col) {
+        const c = p.crystals[k];
+        yield* navTo(c.x, c.y + (c.y < midY ? 1 : -1), { label: 'walk to crystal ' + (k + 1), fight: false });
+        yield* waitUntil(() => p.t <= 0, 800);
+        Inp.press('e');
+        if (!(yield* waitUntil(() => p.raised !== col, 800))) { report('CRITICAL', 'puzzle', d.def.name + ': striking crystal ' + (k + 1) + ' did not swap the pegs'); return false; }
+      }
+      yield* navTo(fx + 1, midY, { label: 'through the lowered ' + col + ' fence', fight: false });
+    }
+    return Math.floor(hero.x / TS()) > p.fences[p.fences.length - 1][0];
+  }
+  function* crossPegRoomWest(d, ri) {
+    const x = d.extra[ri], p = x.puz, map = x.map, midY = Math.floor(map.h / 2);
+    for (let step = 0; step < 24 && d.roomIndex === ri && world.mode === 'dungeon'; step++) {
+      const htx = Math.floor(hero.x / TS()), k = p.fences.filter(f => f[0] < htx).length;
+      if (k === 0) return true;
+      const [fx, col] = p.fences[k - 1];
+      if (p.raised === col) {
+        const c = p.crystals[k];
+        yield* navTo(c.x, c.y + (c.y < midY ? 1 : -1), { label: 'walk to crystal (heading out)', fight: false });
+        yield* waitUntil(() => p.t <= 0, 800);
+        Inp.press('e');
+        yield* waitUntil(() => p.raised !== col, 800);
+      }
+      yield* navTo(fx - 1, midY, { label: 'back through the ' + col + ' fence', fight: false });
+    }
     return true;
   }
   function* castlePushBlock(p, b, plate) {

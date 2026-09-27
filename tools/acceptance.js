@@ -207,29 +207,29 @@ function check(name, ok, detail) {
         hero.x = (d.rooms[0].w - 1) * 16 - 4; hero.y = Math.floor(d.rooms[0].h / 2) * 16 + 8;
         handleDungeonDoors(d, d.rooms[0], 0.016);
         const doorOpened = d.rooms[0].grid[Math.floor(d.rooms[0].h / 2)][d.rooms[0].w - 1] === 4; // T.FLOOR
-        dungeonGoRoom(d, 1, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
+        dungeonGoRoom(d, d.PUZ, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
         d.puzzle.solved = true;
-        solvePuzzle(d, d.rooms[1]);
+        solvePuzzle(d, d.rooms[d.PUZ]);
         // solving the puzzle raises a math-sealed boss door; walking up to it
         // asks a question and the right answer opens it
-        const p1 = d.rooms[1], p1y = Math.floor(p1.h / 2);
+        const p1 = d.rooms[d.PUZ], p1y = Math.floor(p1.h / 2);
         const sealRaised = p1.grid[p1y][p1.w - 1] === T.BOSSDOOR;
         d.doorHintShown.seal = false;
         hero.x = (p1.w - 1) * 16 - 4; hero.y = p1y * 16 + 8;
         handleDungeonDoors(d, p1, 0.016);
         const sealAsked = (mathPopup.active && mathPopup.purpose === 'lock' && (answerMathPopup(mathPopup.question.correctIndex), true));
         const puzzleOk = sealRaised && sealAsked && p1.grid[p1y][p1.w - 1] === 4;
-        dungeonGoRoom(d, 2, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
-        const miniboss = d.enemies[2][0];
+        dungeonGoRoom(d, d.BOSS, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
+        const miniboss = d.enemies[d.BOSS][0];
         // boss-sealed exit before defeat
-        hero.x = (d.rooms[2].w - 1) * 16 - 4; hero.y = Math.floor(d.rooms[2].h / 2) * 16 + 8;
-        handleDungeonDoors(d, d.rooms[2], 0.016);
-        const sealedBeforeDefeat = d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1] !== 4;
+        hero.x = (d.rooms[d.BOSS].w - 1) * 16 - 4; hero.y = Math.floor(d.rooms[d.BOSS].h / 2) * 16 + 8;
+        handleDungeonDoors(d, d.rooms[d.BOSS], 0.016);
+        const sealedBeforeDefeat = d.rooms[d.BOSS].grid[Math.floor(d.rooms[d.BOSS].h / 2)][d.rooms[d.BOSS].w - 1] !== 4;
         miniboss.hp = 0; defeatMiniboss(d, miniboss);
-        handleDungeonDoors(d, d.rooms[2], 0.016);
-        const openAfterDefeat = d.rooms[2].grid[Math.floor(d.rooms[2].h / 2)][d.rooms[2].w - 1] === 4;
-        dungeonGoRoom(d, 3, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
-        hero.x = (Math.floor(d.rooms[3].w / 2) + 0.5) * 16; hero.y = (Math.floor(d.rooms[3].h / 2) + 0.5) * 16;
+        handleDungeonDoors(d, d.rooms[d.BOSS], 0.016);
+        const openAfterDefeat = d.rooms[d.BOSS].grid[Math.floor(d.rooms[d.BOSS].h / 2)][d.rooms[d.BOSS].w - 1] === 4;
+        dungeonGoRoom(d, d.TREAS, 'west'); fadeCallback && fadeCallback(); fadeAlpha = 0; fadeDir = 0;
+        hero.x = (Math.floor(d.rooms[d.TREAS].w / 2) + 0.5) * 16; hero.y = (Math.floor(d.rooms[d.TREAS].h / 2) + 0.5) * 16;
         // chest without boss key -> hint, no freeze. E goes through the real
         // per-frame update (updatePlaying), not a direct handler call: that
         // is how "E on the chest does nothing" slipped past this check.
@@ -270,14 +270,14 @@ function check(name, ok, detail) {
     const out = [];
     for (const d of dungeons) {
       try {
-        const room = d.rooms[2], midY = Math.floor(room.h / 2), TS = CONFIG.TILE;
-        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 2;
+        const room = d.rooms[d.BOSS], midY = Math.floor(room.h / 2), TS = CONFIG.TILE;
+        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = d.BOSS;
         dialogue.active = false; mathPopup.active = false; shop.active = false; fadeAlpha = 0; fadeDir = 0; fadeCallback = null;
         d.hasBossKey = false; d.bossDefeated = false; d.chestOpened = false;
         room.grid[midY][room.w - 1] = T.BOSSDOOR; // re-seal (the check above opened it)
-        const tr = d.rooms[3];
+        const tr = d.rooms[d.TREAS];
         tr.grid[Math.floor(tr.h / 2)][Math.floor(tr.w / 2)] = T.CHEST;
-        const e = d.enemies[2].find(x => x.isMiniboss);
+        const e = d.enemies[d.BOSS].find(x => x.isMiniboss);
         Object.assign(e, { alive: true, hp: e.maxHp, x: (room.w / 2) * TS, y: (room.h / 2) * TS, hopDx: 0, hopDy: 0, dashTimer: 99 });
         hero.x = 3 * TS; hero.y = 3 * TS; player.invincibleT = 999; player.downed = false;
         let hits = 0;
@@ -293,7 +293,7 @@ function check(name, ok, detail) {
         // walk through it into the treasure room
         hero.x = (room.w - 1.1) * TS;
         updateDungeonRoom(1 / 60, room); fadeCallback && fadeCallback(); fadeCallback = null; fadeAlpha = 0; fadeDir = 0;
-        const inTreasure = d.roomIndex === 3;
+        const inTreasure = d.roomIndex === d.TREAS;
         // and open the boss treasure with the key
         hero.x = (Math.floor(tr.w / 2) + 0.5) * TS; hero.y = (Math.floor(tr.h / 2) + 0.5) * TS;
         player.levelUpChoicePending = false;
@@ -335,13 +335,13 @@ function check(name, ok, detail) {
       };
       const enterTreasure = d => {
         clearModals();
-        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = 3; d.hasBossKey = true;
-        const tr = d.rooms[3];
+        world.mode = 'dungeon'; world.dungeon = d; world.interior = null; d.roomIndex = d.TREAS; d.hasBossKey = true;
+        const tr = d.rooms[d.TREAS];
         tr.grid[Math.floor(tr.h / 2)][Math.floor(tr.w / 2)] = T.CHEST; tr.canvas = prerenderMap(tr);
         d.chestOpened = false; player.medallions[d.def.id] = false;
       };
       for (const d of dungeons) {
-        const id = d.def.id, tr = d.rooms[3], cx = Math.floor(tr.w / 2), cy = Math.floor(tr.h / 2);
+        const id = d.def.id, tr = d.rooms[d.TREAS], cx = Math.floor(tr.w / 2), cy = Math.floor(tr.h / 2);
         // (a) stand on the tile west of the chest, face it, press E
         enterTreasure(d);
         hero.x = (cx - 0.5) * TS; hero.y = (cy + 0.5) * TS; hero.facing = 'right';
@@ -359,10 +359,10 @@ function check(name, ok, detail) {
         out.chestTap.push({ id, opened: d.chestOpened, medallion: !!player.medallions[id], frames });
       }
       // (c) Fire Dungeon torches: stand on each in order, press E
-      const fire = dungeons.find(d => d.def.id === 'fire'), pz = fire.puzzle, pr = fire.rooms[1], midY = Math.floor(pr.h / 2);
+      const fire = dungeons.find(d => d.def.id === 'fire'), pz = fire.puzzle, pr = fire.rooms[fire.PUZ], midY = Math.floor(pr.h / 2);
       const resetTorches = () => {
         clearModals();
-        world.mode = 'dungeon'; world.dungeon = fire; world.interior = null; fire.roomIndex = 1;
+        world.mode = 'dungeon'; world.dungeon = fire; world.interior = null; fire.roomIndex = fire.PUZ;
         pz.solved = false; pz.lit = []; pr.grid[midY][pr.w - 1] = T.WALL; pr.canvas = prerenderMap(pr);
       };
       resetTorches();
@@ -599,12 +599,12 @@ function check(name, ok, detail) {
   const fireBoss = bossKillResults.find(b => b.id === 'fire') || {};
   const cmResult = await page.evaluate(() => {
     try {
-      const d = dungeons.find(x => x.def.id === 'fire'), e = d.enemies[2].find(x => x.isMiniboss);
-      const others = dungeons.filter(x => x.def.id !== 'fire').map(x => x.enemies[2][0].maxHp);
+      const d = dungeons.find(x => x.def.id === 'fire'), e = d.enemies[d.BOSS].find(x => x.isMiniboss);
+      const others = dungeons.filter(x => x.def.id !== 'fire').map(x => x.enemies[x.BOSS][0].maxHp);
       const out = { bossKind: d.def.bossKind, enemyKind: e.bossKind, maxHp: e.maxHp, others,
         malrekInDungeons: dungeons.some(x => x.def.bossKind === 'malrek'), name: NEW_BOSS_DEFS.cindermaw && NEW_BOSS_DEFS.cindermaw.name };
       // double damage while stunned (crouched)
-      world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = 2;
+      world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = d.BOSS;
       Object.assign(e, { alive: true, hp: e.maxHp, cmState: 'idle', cmT: 99 });
       damageEnemy(e, 'sword'); out.normalHit = e.maxHp - e.hp;
       e.hp = e.maxHp; e.cmState = 'stun'; damageEnemy(e, 'sword'); out.stunHit = e.maxHp - e.hp;
@@ -612,7 +612,7 @@ function check(name, ok, detail) {
       Object.assign(e, { hp: e.maxHp, cmState: 'idle', cmT: 0.01, x: 8 * 16, y: 5 * 16 });
       hero.x = 3 * 16; hero.y = 5 * 16; player.invincibleT = 999; d.bossDefeated = true; // keep the kill hook out of this
       const seen = [], shots0 = enemyShots.length;
-      for (let i = 0; i < 400; i++) { updateDungeonRoom(1 / 60, d.rooms[2]); updateEnemyShots(1 / 60, d.rooms[2]); if (seen[seen.length - 1] !== e.cmState) seen.push(e.cmState); }
+      for (let i = 0; i < 400; i++) { updateDungeonRoom(1 / 60, d.rooms[d.BOSS]); updateEnemyShots(1 / 60, d.rooms[d.BOSS]); if (seen[seen.length - 1] !== e.cmState) seen.push(e.cmState); }
       out.cycle = seen.join('>'); out.spat = enemyShots.length > shots0 || seen.includes('lunge');
       d.bossDefeated = false; player.invincibleT = 0; world.mode = 'overworld'; world.dungeon = null;
       return out;
@@ -1136,16 +1136,16 @@ function check(name, ok, detail) {
       try {
         CONFIG.DIFFICULTY = 'ADVENTURER'; startNewGame(); player.invincibleT = 999; player.attack = 5;
         for (const id of ['forest', 'water', 'shadow']) {
-          const d = dungeons.find(x => x.def.id === id), room = d.rooms[2], e = d.enemies[2][0];
-          world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = 2;
+          const d = dungeons.find(x => x.def.id === id), room = d.rooms[d.BOSS], e = d.enemies[d.BOSS][0];
+          world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = d.BOSS;
           hero.x = 4 * 16; hero.y = Math.floor(room.h / 2) * 16 + 8;
           scaleBossForFight(e);
           const seen = new Set(), states = new Set();
           for (let i = 0; i < 60 * 120 && seen.size < 3; i++) { updateBossAI(e, 1 / 60, room, d); if (e.bs.atk) seen.add(e.bs.atk); states.add(e.bs.st); e.x = Math.max(40, Math.min(room.w * 16 - 40, e.x)); }
           out[id] = { hp: e.maxHp, attacks: [...seen].sort().join(','), states: [...states].sort().join(',') };
         }
-        const f = dungeons.find(x => x.def.id === 'fire'), c = f.enemies[2][0];
-        world.dungeon = f; f.roomIndex = 2; const n0 = enemyShots.length;
+        const f = dungeons.find(x => x.def.id === 'fire'), c = f.enemies[f.BOSS][0];
+        world.dungeon = f; f.roomIndex = f.BOSS; const n0 = enemyShots.length;
         c.cmState = 'rear'; c.cmT = 0.01; updateCindermaw(c, 0.02); const first = enemyShots.length - n0;
         c.cmState = 'rear'; c.cmT = 0.01; updateCindermaw(c, 0.02); const second = enemyShots.length - n0 - first;
         out.cinder = { first, second };
@@ -1208,12 +1208,13 @@ function check(name, ok, detail) {
         room().puz.t = 0; strikeCrystal(room());
         out.k3 = takeKey(); out.d3 = openEast(); next();
         // 4: two waves
-        const first = room().enemies.filter(e => e.alive).length;
-        room().enemies.forEach(e => e.alive = false);
-        for (let i = 0; i < 70; i++) updateCastleRoom(1 / 60, map());
-        const second = room().enemies.filter(e => e.alive).length;
-        room().enemies.forEach(e => e.alive = false); updateCastleRoom(0.016, map());
-        out.waves = [first, second]; out.k4 = takeKey(); out.d4 = openEast(); next();
+        const counts = [];
+        for (let w = 0; w < 8 && !room().puz.solved; w++) {
+          counts.push(room().enemies.filter(e => e.alive).length);
+          room().enemies.forEach(e => e.alive = false);
+          for (let i = 0; i < 70; i++) updateCastleRoom(1 / 60, map());
+        }
+        out.waves = counts; out.k4 = takeKey(); out.d4 = openEast(); next();
         // 5: memory orbs -> sealed boss door -> math seal
         const p5 = room().puz;
         for (const i of p5.order) { const s = p5.switches[i]; hero.x = (s.x + 0.5) * TS; hero.y = (s.y + 0.5) * TS; updateCastleRoom(0.016, map()); hero.x = 3 * TS; hero.y = 5 * TS; updateCastleRoom(0.016, map()); }
@@ -1237,7 +1238,7 @@ function check(name, ok, detail) {
     const sc = r.scale || [];
     check('Castle: 7 rooms, a way out, 4 Small Keys for 4 locked doors, a puzzle in each room (guards, blocks, braziers, crystal pegs, waves, memory orbs)',
       !r.exception && r.rooms === 7 && r.locked === 4 && r.exitWorks && r.lockedNoKey && r.k0 && r.d0 && r.p1closed && r.p1 && r.wrongResets && r.k2 && r.d2 &&
-      r.pegs && r.k3 && r.d3 && r.waves[0] === 3 && r.waves[1] === 4 && r.k4 && r.d4 && r.seal && r.sealOpen && r.arena, JSON.stringify(r));
+      r.pegs && r.k3 && r.d3 && r.waves.length === 5 && r.waves[0] === 3 && r.waves[4] === 5 && r.k4 && r.d4 && r.seal && r.sealOpen && r.arena, JSON.stringify(r));
     check('Malrek: 5 attacks; scaled to the hero +5 levels (+4/+3/+2 after 10/20/30 revives); arena door opens when he falls',
       !r.exception && r.attacks === 'meteors,nova,orbs,slash,spikes' && sc.map(x => x.b).join() === '5,4,3,2' &&
       sc[0].tempo > sc[3].tempo && sc[0].hp > sc[3].hp && sc[0].dmg >= sc[3].dmg && r.hpFollowsHero && r.doorOpensAfter, JSON.stringify({ attacks: r.attacks, scale: sc, hpFollowsHero: r.hpFollowsHero, door: r.doorOpensAfter }));
@@ -1265,8 +1266,8 @@ function check(name, ok, detail) {
         livesScreen.active = false;
         // boss tries
         const d = dungeons[0]; world.mode = 'dungeon'; world.dungeon = d; world.returnSpot = { x: 30 * 16, y: 60 * 16 };
-        dungeonGoRoom(d, 2, 'west'); flush();
-        const boss = d.enemies[2][0];
+        dungeonGoRoom(d, d.BOSS, 'west'); flush();
+        const boss = d.enemies[d.BOSS][0];
         out.inFight = inBossFight(); out.tries = lives.boss;
         boss.hp = 5;
         player.downed = true; doRevive(); player.downed = true; doRevive();
@@ -1326,6 +1327,49 @@ function check(name, ok, detail) {
       !r.exception && r.none && r.list === 'bomb,superMushroom,fireFlower,dkBarrel,inkBlaster' && r.swapTap && r.afterCycle === 'superMushroom' &&
       r.berry.giant && r.berry.full && r.berry.left === 1 && r.giantDouble && r.ember && r.ink && r.barrel && r.barrelGoneFromList && r.arrow === 'fire', JSON.stringify(r));
     await ip.close();
+  }
+
+  // --- temple extra rooms: wave rooms (2-4 waves, more in later temples)
+  // and a different red/blue crystal peg room in each temple ---
+  {
+    const xp = await browser.newPage();
+    xp.on('pageerror', e => errorsAll.push('extras: ' + e.message));
+    await xp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await xp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame(); player.invincibleT = 1e9;
+        out.layout = {}; out.layouts = new Set(); out.crossed = {}; out.wavesOk = {};
+        for (const d of dungeons) {
+          out.layout[d.def.id] = d.extra.map(x => x ? (x.kind === 'waves' ? 'w' + x.puz.waves.length : 'c') : '-').join('');
+          out.layouts.add(JSON.stringify(d.extra.find(x => x && x.kind === 'crystal').puz.fences));
+          world.mode = 'dungeon'; world.dungeon = d;
+          for (let ri = 1; ri < d.PUZ; ri++) {
+            const x = d.extra[ri]; d.roomIndex = ri;
+            if (x.kind === 'waves') {
+              let spawned = 0;
+              for (let k = 0; k < 10 && !x.puz.solved; k++) { updateDungeonExtra(d, 0.016); spawned = Math.max(spawned, x.puz.wave); x.enemies.forEach(e => e.alive = false); for (let i = 0; i < 70; i++) updateDungeonExtra(d, 1 / 60); }
+              const m = x.map; out.wavesOk[d.def.id + ri] = x.puz.solved && m.grid[Math.floor(m.h / 2)][m.w - 1] === T.FLOOR && spawned === x.puz.waves.length;
+            } else {
+              // walk the stretches: strike a crystal whenever the next fence is up
+              const p = x.puz; let ok = true;
+              for (let k = 0; k < p.fences.length; k++) { if (p.raised === p.fences[k][1]) { p.t = 0; strikeCrystal(x); } if (x.map.grid[5][p.fences[k][0]] !== T.PEGDOWN) ok = false; }
+              out.crossed[d.def.id] = ok && p.crystals.length === p.fences.length + 1;
+            }
+          }
+        }
+        out.layouts = out.layouts.size;
+        world.mode = 'overworld'; world.dungeon = null;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    const L = r.layout || {};
+    check('Temples: 2-3 wave rooms (more waves later on), a different crystal peg room each, all passable',
+      !r.exception && L.forest === '-w2cw2---' && L.fire === '-w2cw3---' && L.water === '-w3cw3w3---' && L.shadow === '-w3cw4w4---' && r.layouts === 4 &&
+      Object.values(r.crossed).length === 4 && Object.values(r.crossed).every(Boolean) && Object.values(r.wavesOk).length === 10 && Object.values(r.wavesOk).every(Boolean), JSON.stringify(r));
+    await xp.close();
   }
 
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
