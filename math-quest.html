@@ -782,6 +782,15 @@ function playTone(freq, dur, type, gainAmt, startDelay) {
   } catch (e) { /* ignore */ }
 }
 const SFX = {
+  bossTell: () => { playTone(160, 0.14, 'sawtooth', 0.09); playTone(240, 0.12, 'sawtooth', 0.08, 0.12); },
+  bossSlam: () => { playTone(70, 0.28, 'square', 0.18); playTone(50, 0.3, 'sawtooth', 0.14, 0.04); },
+  bossRumble: () => { for (let i = 0; i < 5; i++) playTone(60 + (i % 2) * 12, 0.12, 'sawtooth', 0.1, i * 0.08); },
+  bossSpin: () => { for (let i = 0; i < 4; i++) playTone(300 + i * 60, 0.08, 'triangle', 0.08, i * 0.07); },
+  zap: () => { playTone(1200, 0.05, 'square', 0.08); playTone(600, 0.08, 'sawtooth', 0.08, 0.04); playTone(1600, 0.05, 'square', 0.06, 0.1); },
+  splash: () => { playTone(500, 0.08, 'triangle', 0.1); playTone(380, 0.1, 'triangle', 0.08, 0.06); playTone(260, 0.12, 'triangle', 0.06, 0.12); },
+  boing: () => { playTone(200, 0.08, 'sine', 0.14); playTone(420, 0.12, 'sine', 0.12, 0.07); },
+  puff: () => { playTone(180, 0.2, 'sawtooth', 0.06); playTone(140, 0.25, 'sawtooth', 0.05, 0.1); },
+  pop: () => { playTone(900, 0.04, 'square', 0.09); playTone(1200, 0.04, 'square', 0.08, 0.06); playTone(700, 0.04, 'square', 0.08, 0.12); },
   enemyWindup: () => { playTone(220, 0.1, 'square', 0.05); playTone(330, 0.09, 'square', 0.05, 0.09); },
   spit: () => { playTone(620, 0.05, 'triangle', 0.09); playTone(310, 0.08, 'triangle', 0.07, 0.04); },
   swish: () => { playTone(520, 0.12, 'triangle', 0.12); playTone(760, 0.08, 'triangle', 0.08, 0.03); },
@@ -3239,6 +3248,8 @@ function dungeonGoRoom(d, newIndex, fromEdge) {
     hero.x = fromEdge === 'west' ? 2 * CONFIG.TILE : (room.w - 3) * CONFIG.TILE;
     hero.y = Math.floor(room.h / 2) * CONFIG.TILE;
     if (newIndex === 2 && !d.bossDefeated) {
+      for (const e of d.enemies[2]) if (e.isMiniboss) scaleBossForFight(e);
+      setBossShutter(d, true); // no getting knocked back out through the doorway mid-fight
       const bk = d.def.bossKind;
       if (bk && NEW_BOSS_DEFS[bk]) showHint(NEW_BOSS_DEFS[bk].name + '\n' + NEW_BOSS_DEFS[bk].flavor, 3);
     }
@@ -3246,6 +3257,16 @@ function dungeonGoRoom(d, newIndex, fromEdge) {
   });
 }
 
+// The boss room's west doorway shuts while the boss is alive and opens again
+// when it falls (the room stays open when revisiting a beaten boss).
+function setBossShutter(d, shut) {
+  const room = d.rooms[2], midY = Math.floor(room.h / 2);
+  const want = shut ? T.BOSSDOOR : T.FLOOR;
+  if (room.grid[midY][0] === want) return;
+  room.grid[midY][0] = want;
+  room.canvas = prerenderMap(room);
+  if (shut) SFX.thud();
+}
 // solves puzzle-specific interactions; called from updatePlaying each frame
 function updateDungeonPuzzle(d, dt) {
   const room = d.rooms[d.roomIndex];
@@ -3613,6 +3634,7 @@ function defeatMiniboss(d, e) {
   d.bossDefeated = true;
   e.alive = false; e.hp = Math.min(e.hp, 0);
   musicOnBossDefeated();
+  setBossShutter(d, false);
   d.hasBossKey = true;
   spawnFloatingText(e.x, e.y - 20, 'BOSS KEY!', '#ffd84a');
   showHint('Got the Boss Key! The sealed door is open.', 2.5);
@@ -3638,11 +3660,21 @@ function updateCindermaw(e, dt) {
     e.hopDx = 0; e.hopDy = 0;
     if (e.cmT <= 0) {
       e.cmState = 'lunge'; e.cmT = 0.45;
-      const sp = LH ? 105 : 150;
-      e.hopDx = dx / dist * sp; e.hopDy = dy / dist * sp;
-      const sx = e.x + (dx < 0 ? -10 : 10), sy = e.y - 12;
-      enemyShots.push({ kind: 'lava', map: currentMap(), sx, sy, x: sx, y: sy, tx: hero.x, ty: hero.y, t: 0, dur: LH ? 0.95 : 0.7, arc: 26, z: 0 });
-      SFX.fireWhoosh(); screenShake(2, 0.15);
+      e.cmAlt = !e.cmAlt;
+      if (e.cmAlt) { // lunge + lava spit
+        const sp = LH ? 105 : 150;
+        e.hopDx = dx / dist * sp; e.hopDy = dy / dist * sp;
+        const sx = e.x + (dx < 0 ? -10 : 10), sy = e.y - 12;
+        enemyShots.push({ kind: 'lava', map: currentMap(), sx, sy, x: sx, y: sy, tx: hero.x, ty: hero.y, t: 0, dur: LH ? 0.95 : 0.7, arc: 26, z: 0 });
+        SFX.fireWhoosh(); screenShake(2, 0.15);
+      } else { // flame ring: fireballs in every direction
+        const n = LH ? 6 : 10, sp = LH ? 80 : 115;
+        for (let i = 0; i < n; i++) {
+          const a = i / n * Math.PI * 2 + (e.ringTurn = ((e.ringTurn || 0) + 0.3));
+          enemyShots.push({ kind: 'pebble', map: currentMap(), x: e.x, y: e.y - 8, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 2.4, reflected: false, fire: true, dmg: 1 });
+        }
+        SFX.bossRumble(); SFX.fireWhoosh(); screenShake(4, 0.2);
+      }
     }
   } else if (e.cmState === 'lunge') {
     if (e.cmT <= 0) { e.cmState = 'stun'; e.cmT = LH ? 2.2 : 1.5; e.hopDx = 0; e.hopDy = 0; }
@@ -3650,6 +3682,209 @@ function updateCindermaw(e, dt) {
     e.hopDx = 0; e.hopDy = 0;
     if (e.cmT <= 0) { e.cmState = 'idle'; e.cmT = (LH ? 2.4 : 1.8) + Math.random() * 0.6; }
   }
+}
+// =========================================================================
+// Temple bosses: three telegraphed attacks each (Grovak, Voltuga, Puffling;
+// Cindermaw has its own cycle + a flame ring). Every attack is
+//   wind (flashing tell, red markers) -> act (the hit) -> rest (a moment to
+//   strike back; after a charge the boss is dizzy)
+// and the boss walks toward the hero between attacks. HP is set when the
+// fight starts from the hero's current sword damage, so a fight lasts about
+// the same number of hits at any level (Little Hero ~40% fewer).
+// =========================================================================
+const BOSS_ATTACKS = {
+  grovak: ['slam', 'stomp', 'spin'],
+  voltuga: ['bolts', 'shell', 'spray'],
+  puffling: ['jump', 'spores', 'split'],
+};
+const BOSS_HITS = { grovak: 14, cindermaw: 16, voltuga: 18, puffling: 20 };
+const BOSS_WALK = { grovak: 26, voltuga: 34, puffling: 30 };
+function scaleBossForFight(e) {
+  if (!e || e.bossScaled || !BOSS_HITS[e.bossKind]) return;
+  e.bossScaled = true;
+  const per = computeDamage(equippedSwordKind(), e.defense || 0);
+  const hits = Math.round(BOSS_HITS[e.bossKind] * (littleHero() ? 0.6 : 1));
+  e.hp = e.maxHp = Math.max(e.maxHp, hits * per);
+}
+function bossDmg() { return littleHero() ? 1 : 2; }
+function bossPickAttack(e) {
+  const list = BOSS_ATTACKS[e.bossKind];
+  let k;
+  do { k = list[Math.floor(Math.random() * list.length)]; } while (k === e.lastAtk && list.length > 1);
+  e.lastAtk = k;
+  return k;
+}
+const BOSS_WIND = { slam: 0.8, stomp: 0.6, spin: 0.5, bolts: 0.7, shell: 0.5, spray: 0.6, jump: 0.6, spores: 0.6, split: 0.5 };
+function updateBossAI(e, dt, room, d) {
+  const LH = littleHero(), sf = enemySlowFactor(e);
+  const dx = hero.x - e.x, dy = hero.y - e.y, dist = Math.hypot(dx, dy) || 1;
+  if (e.hitFlash > 0) e.hitFlash -= dt;
+  const bs = e.bs || (e.bs = { st: 'idle', t: 1.4, atk: null });
+  bs.t -= dt * sf;
+  let vx = 0, vy = 0;
+  if (bs.st === 'idle') {
+    const sp = BOSS_WALK[e.bossKind] * (LH ? 0.75 : 1);
+    if (dist > 26) { vx = dx / dist * sp; vy = dy / dist * sp; }
+    if (bs.t <= 0) {
+      bs.atk = bossPickAttack(e); bs.st = 'wind'; bs.t = BOSS_WIND[bs.atk] * (LH ? 1.5 : 1);
+      bs.tx = hero.x; bs.ty = hero.y; bs.ang = Math.atan2(dy, dx);
+      if (bs.atk === 'slam') { bs.tx = e.x + Math.cos(bs.ang) * 30; bs.ty = e.y + Math.sin(bs.ang) * 30; }
+      if (bs.atk === 'bolts') bs.strikes = [0, 1, 2].map(i => ({ x: hero.x + (i ? (Math.random() - 0.5) * 70 : 0), y: hero.y + (i ? (Math.random() - 0.5) * 50 : 0), t: 0.55 + i * 0.3, done: false }));
+      SFX.bossTell();
+    }
+  } else if (bs.st === 'wind') {
+    if (bs.t <= 0) bossStartAct(e, bs, d, dist, dx, dy);
+  } else if (bs.st === 'act') {
+    const r = bossAct(e, bs, dt, room, dist, dx, dy);
+    vx = r.vx; vy = r.vy;
+    if (bs.t <= 0) { bs.st = 'rest'; bs.t = (bs.dizzy ? 1.4 : 0.9) * (LH ? 1.4 : 1); }
+  } else { // rest
+    if (bs.t <= 0) { bs.st = 'idle'; bs.dizzy = false; bs.t = (LH ? 2.0 : 1.3) + Math.random() * 0.8; }
+  }
+  moveWithCollision(e, vx * dt * sf, vy * dt * sf, room);
+  // bolts land on their own clock, even into the rest phase
+  if (bs.strikes) for (const s of bs.strikes) {
+    if (s.done || bs.st === 'wind' || bs.st === 'idle') continue;
+    s.t -= dt;
+    if (s.t <= 0) {
+      s.done = true; SFX.zap(); screenShake(2, 0.1); spawnVisualFx('burst', s.x, s.y, 0.3);
+      if (Math.hypot(hero.x - s.x, hero.y - s.y) < 15) damageHero(bossDmg(), s.x, s.y);
+    }
+  }
+  // spore clouds linger and sting while you stand in them
+  if (e.spores) for (let i = e.spores.length - 1; i >= 0; i--) {
+    const c = e.spores[i]; c.t -= dt;
+    if (c.t <= 0) { e.spores.splice(i, 1); continue; }
+    if (Math.hypot(hero.x - c.x, hero.y - c.y) < c.r) { c.tick = (c.tick || 0) - dt; if (c.tick <= 0) { c.tick = 0.7; damageHero(1, c.x, c.y); } }
+  }
+  // touching the boss hurts, except while it is dizzy
+  if (e.alive && !(bs.st === 'rest' && bs.dizzy) && !e.airborne && dist < (e.w + hero.w) / 2 - 2) damageHero(bossDmg(), e.x, e.y);
+}
+function bossStartAct(e, bs, d, dist, dx, dy) {
+  const LH = littleHero();
+  bs.st = 'act'; bs.hit = false;
+  switch (bs.atk) {
+    case 'slam':
+      bs.t = 0.25; SFX.bossSlam(); screenShake(6, 0.25);
+      spawnVisualFx('burst', bs.tx, bs.ty, 0.4);
+      if (Math.hypot(hero.x - bs.tx, hero.y - bs.ty) < 30) damageHero(bossDmg(), bs.tx, bs.ty);
+      break;
+    case 'stomp': bs.t = 0.75; bs.ring = 12; SFX.bossRumble(); screenShake(4, 0.3); break;
+    case 'spin': bs.t = 1.8; bs.dizzy = true; SFX.bossSpin(); break;
+    case 'bolts': bs.t = 1.2; SFX.zap(); break;
+    case 'shell': {
+      bs.t = 2.2; bs.dizzy = true; const sp = LH ? 140 : 190;
+      bs.vx = dx / dist * sp; bs.vy = dy / dist * sp; SFX.bossSpin(); break;
+    }
+    case 'spray': {
+      bs.t = 0.4; SFX.splash();
+      const n = LH ? 3 : 5, base = Math.atan2(dy, dx), sp = LH ? 90 : 125;
+      for (let i = 0; i < n; i++) {
+        const a = base + (i - (n - 1) / 2) * 0.28;
+        enemyShots.push({ kind: 'pebble', map: currentMap(), x: e.x, y: e.y - 6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 2.4, reflected: false, water: true, dmg: 1 });
+      }
+      break;
+    }
+    case 'jump': bs.t = 0.9; bs.sx0 = e.x; bs.sy0 = e.y; bs.tx = hero.x; bs.ty = hero.y; e.airborne = true; SFX.boing(); break;
+    case 'spores': {
+      bs.t = 0.4; SFX.puff();
+      e.spores = e.spores || [];
+      const offs = [[0, 0], [30, 14], [-28, 12]];
+      for (const [ox, oy] of offs) e.spores.push({ x: hero.x + ox, y: hero.y + oy, r: 22, t: LH ? 2.2 : 3.2 });
+      break;
+    }
+    case 'split': {
+      bs.t = 0.4; SFX.pop();
+      const list = d ? d.enemies[d.roomIndex] : [];
+      const minis = list.filter(o => o.alive && o.bossMini).length;
+      for (let i = 0; i < Math.min(3, 4 - minis); i++) {
+        const a = i * 2.1 + Math.random(), m = makeSlime(e.x + Math.cos(a) * 26, e.y + Math.sin(a) * 18);
+        m.bossMini = true; m.hp = m.maxHp = LH ? 1 : 2; m.xp = 2;
+        list.push(m);
+      }
+      break;
+    }
+  }
+}
+function bossAct(e, bs, dt, room, dist, dx, dy) {
+  const LH = littleHero();
+  let vx = 0, vy = 0;
+  if (bs.atk === 'stomp') {
+    const prev = bs.ring; bs.ring += dt * (LH ? 110 : 140);
+    const hd = Math.hypot(hero.x - e.x, hero.y - e.y);
+    if (!bs.hit && hd >= prev - 6 && hd <= bs.ring + 4 && bs.ring < 100) { bs.hit = true; damageHero(bossDmg(), e.x, e.y); }
+  } else if (bs.atk === 'spin') {
+    const sp = LH ? 55 : 78; vx = dx / dist * sp; vy = dy / dist * sp;
+  } else if (bs.atk === 'shell') {
+    const ox = e.x, oy = e.y;
+    moveWithCollision(e, bs.vx * dt, 0, room); if (e.x === ox) { bs.vx = -bs.vx; SFX.thud(); }
+    moveWithCollision(e, 0, bs.vy * dt, room); if (e.y === oy) { bs.vy = -bs.vy; SFX.thud(); }
+  } else if (bs.atk === 'jump') {
+    const k = 1 - Math.max(0, bs.t) / 0.9;
+    e.x = bs.sx0 + (bs.tx - bs.sx0) * k; e.y = bs.sy0 + (bs.ty - bs.sy0) * k;
+    e.z = Math.sin(k * Math.PI) * 34;
+    if (bs.t <= 0) {
+      e.airborne = false; e.z = 0;
+      const p = findClearSpot(room, e.x, e.y, e.w, e.h, null, 4); e.x = p.x; e.y = p.y;
+      SFX.bossSlam(); screenShake(5, 0.25); spawnVisualFx('burst', e.x, e.y, 0.4);
+      if (Math.hypot(hero.x - e.x, hero.y - e.y) < 32) damageHero(bossDmg(), e.x, e.y);
+    }
+  }
+  return { vx, vy };
+}
+// markers, rings and clouds drawn under/around a temple boss
+function drawBossFx(e, now) {
+  const bs = e.bs;
+  if (e.spores) for (const c of e.spores) {
+    ctx.fillStyle = `rgba(150,200,90,${0.28 + 0.08 * Math.sin(now * 5 + c.x)})`;
+    ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 4; i++) { ctx.fillStyle = 'rgba(210,240,140,0.8)'; ctx.fillRect(Math.round(c.x + Math.cos(now * 2 + i * 1.6) * c.r * 0.6), Math.round(c.y + Math.sin(now * 2.6 + i) * c.r * 0.4), 2, 2); }
+  }
+  if (!bs) return;
+  const blink = Math.floor(now * 10) % 2 === 0;
+  if (bs.st === 'wind' && bs.atk === 'slam') { ctx.strokeStyle = blink ? 'rgba(255,60,40,0.9)' : 'rgba(255,200,60,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bs.tx, bs.ty, 30, 0, Math.PI * 2); ctx.stroke(); }
+  if (bs.st === 'wind' && bs.atk === 'jump') { ctx.fillStyle = 'rgba(255,60,40,0.25)'; ctx.beginPath(); ctx.arc(hero.x, hero.y + 6, 30, 0, Math.PI * 2); ctx.fill(); }
+  if (bs.st === 'act' && bs.atk === 'jump') { ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(bs.tx, bs.ty + 8, 18, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(255,60,40,0.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bs.tx, bs.ty + 6, 32, 0, Math.PI * 2); ctx.stroke(); }
+  if (bs.st === 'act' && bs.atk === 'stomp') {
+    ctx.strokeStyle = 'rgba(200,160,90,0.9)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(e.x, e.y + 6, bs.ring, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,240,200,0.6)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(e.x, e.y + 6, Math.max(0, bs.ring - 4), 0, Math.PI * 2); ctx.stroke();
+  }
+  if (bs.strikes) for (const s of bs.strikes) {
+    if (s.done) continue;
+    if (bs.st === 'wind' || bs.st === 'act') {
+      ctx.strokeStyle = blink ? 'rgba(120,200,255,0.95)' : 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 14, 0, Math.PI * 2); ctx.stroke();
+      if (s.t < 0.15 && bs.st === 'act') { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(s.x - 3, s.y - 120); ctx.lineTo(s.x + 4, s.y - 60); ctx.lineTo(s.x - 2, s.y - 30); ctx.lineTo(s.x, s.y); ctx.stroke(); }
+    }
+  }
+  if (bs.st === 'rest' && bs.dizzy) {
+    for (let k = 0; k < 3; k++) {
+      const a = now * 5 + k * 2.09;
+      ctx.fillStyle = k % 2 ? '#ffe066' : '#ffffff';
+      ctx.fillRect(Math.round(e.x + Math.cos(a) * 12) - 1, Math.round(e.y - e.h - 10 + Math.sin(a) * 3) - 1, 3, 3);
+    }
+  }
+}
+// pose for a temple boss from its attack state (art-free: squash / stretch /
+// spin; the P4-P6 pose sheets replace this when they arrive)
+function bossPose(e, now) {
+  const bs = e.bs;
+  const p = { sx: 1, sy: 1, lift: 0, flash: false, flip: null };
+  if (!bs) return p;
+  if (bs.st === 'wind') {
+    p.flash = Math.floor(now * 14) % 2 === 0;
+    if (bs.atk === 'slam' || bs.atk === 'jump' || bs.atk === 'bolts') { p.sy = 1.12; p.sx = 0.94; }
+    else if (bs.atk === 'stomp' || bs.atk === 'shell' || bs.atk === 'spores') { p.sy = 0.86; p.sx = 1.1; }
+    else { p.sy = 1.05; p.sx = 1.05; }
+  } else if (bs.st === 'act') {
+    if (bs.atk === 'slam' || bs.atk === 'stomp') { p.sy = 0.8; p.sx = 1.18; }
+    else if (bs.atk === 'spin' || bs.atk === 'shell') { p.flip = Math.floor(now * 12) % 2 === 0; p.sy = 0.9; }
+    else if (bs.atk === 'jump') { p.lift = Math.round(e.z || 0); p.sy = 1.1; p.sx = 0.92; }
+    else if (bs.atk === 'spores' || bs.atk === 'spray') { p.sy = 1.08; p.sx = 1.08; }
+  } else if (bs.st === 'rest' && bs.dizzy) {
+    p.sy = 0.92 + Math.sin(now * 8) * 0.04;
+  }
+  return p;
 }
 function spawnHeartPiece(x, y, d, roomIndex) {
   heartPieces.push({ x, y, t: 0, dungeonId: d ? d.def.id : null, roomIndex: d ? roomIndex : null });
@@ -3697,6 +3932,7 @@ function updateDungeonRoom(dt, room) {
       if (e.alive && e.cmState !== 'stun' && Math.hypot(hero.x - e.x, hero.y - e.y) < (e.w + hero.w) / 2 - 2) damageHero(1, e.x, e.y);
       continue;
     }
+    if (BOSS_ATTACKS[e.bossKind]) { updateBossAI(e, dt, room, d); continue; }
     // Grovak: slow telegraphed charge + club-slam AoE on arrival.
     // Puffling: inflates then slams, leaving a lingering spore-cloud DoT zone.
     // Voltuga: quick dash charge plus a ranged lightning zap.
@@ -4424,7 +4660,7 @@ function damageEnemy(e, weaponKind, from) {
   return true;
 }
 // can a weapon / tap target this enemy at all? (a burrowed mole can't)
-function enemyTargetable(e) { return e.alive && !e.hidden; }
+function enemyTargetable(e) { return e.alive && !e.hidden && !e.airborne; } // (a jumping boss is out of reach)
 function hurtEnemy(e, dmg, color) {
   e.hp -= dmg; e.hitFlash = 0.1;
   spawnFloatingText(e.x, e.y - 10, '-' + dmg, color || '#ffffff');
@@ -5038,7 +5274,11 @@ function drawEnemyShots(now) {
   for (const s of enemyShots) {
     if (s.map !== map) continue;
     const x = Math.round(s.x), y = Math.round(s.y);
-    if (s.kind === 'pebble' && s.fire) { // a fire imp's fireball
+    if (s.kind === 'pebble' && s.water) { // Voltuga's water spray
+      ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(x - 2, y + 4, 5, 1);
+      ctx.fillStyle = '#2a6ab8'; ctx.fillRect(x - 3, y - 2, 6, 5); ctx.fillRect(x - 2, y - 4, 4, 2);
+      ctx.fillStyle = '#9ad8ff'; ctx.fillRect(x - 1, y - 1, 2, 2);
+    } else if (s.kind === 'pebble' && s.fire) { // a fire imp's fireball
       ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - 2, y + 4, 5, 1);
       ctx.save(); ctx.translate(x, y); ctx.rotate(Math.floor(now * 12) * Math.PI / 2);
       if (!drawSprite(ctx, 'attack_fx', SRC.fx.fireballSwirl, -4, -5, 8, 10)) { ctx.fillStyle = '#ff7030'; ctx.fillRect(-3, -3, 6, 6); }
@@ -7000,11 +7240,14 @@ function drawNewBoss(e, hs, x, foot) {
   const breathe = 1 + Math.sin(now * 2.6 + 1) * 0.03;
   const dash = Math.min(1, Math.hypot(e.hopDx || 0, e.hopDy || 0) / 150);
   const h = BOSS_DRAW_H[e.bossKind] || 44;
+  drawBossFx(e, now);
+  const pose = bossPose(e, now);
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath(); ctx.ellipse(x, foot, h * 0.45, 4, 0, 0, Math.PI * 2); ctx.fill();
-  const ops = hs.flash || (e.zapTelegraph > 0 && Math.floor(now * 20) % 2 === 0) ? 'white' : statusOps(e, '');
-  if (!drawSpriteFoot(ctx, def.atlas || 'bosses', def.src, x, foot + Math.min(0, bob), h,
-    { sy: breathe * (1 - dash * 0.08), sx: 1 + dash * 0.08, flip: hero.x < e.x && e.bossKind !== 'grovak', ops })) {
+  ctx.beginPath(); ctx.ellipse(x, foot, h * 0.45 * (pose.lift ? 0.7 : 1), 4, 0, 0, Math.PI * 2); ctx.fill();
+  const ops = hs.flash || pose.flash || (e.zapTelegraph > 0 && Math.floor(now * 20) % 2 === 0) ? 'white' : statusOps(e, '');
+  const baseFlip = hero.x < e.x && e.bossKind !== 'grovak';
+  if (!drawSpriteFoot(ctx, def.atlas || 'bosses', def.src, x, foot + Math.min(0, bob) - pose.lift, h,
+    { sy: breathe * (1 - dash * 0.08) * pose.sy, sx: (1 + dash * 0.08) * pose.sx, flip: pose.flip === null ? baseFlip : pose.flip, ops })) {
     ctx.fillStyle = '#888'; ctx.fillRect(e.x - e.w / 2, e.y - e.h, e.w, e.h);
   }
   drawStatusFx(e, x, foot - h);
@@ -7055,8 +7298,8 @@ function drawCindermaw(e, hs, x, foot) {
 function drawNewBossHPBar(e) {
   const def = NEW_BOSS_DEFS[e.bossKind];
   if (!def) return;
-  // sits between the HUD panel (left) and the Q button (right)
-  const w = 320, h = 12, x = 244, y = 22;
+  // sits between the HUD panel (left) and the map / AP buttons (right)
+  const w = 270, h = 12, x = 244, y = 22;
   ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 4, y - 18, w + 8, h + 22);
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
   ctx.fillText(def.name.toUpperCase(), x + w / 2, y - 5);
@@ -7066,7 +7309,7 @@ function drawNewBossHPBar(e) {
 }
 
 function drawBossHPBar(g) {
-  const w = 320, h = 14, x = 244, y = 24;
+  const w = 270, h = 14, x = 244, y = 24;
   ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 4, y - 20, w + 8, h + 26);
   ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
   ctx.fillText('MALREK - Phase ' + g.phase, x + w / 2, y - 6);

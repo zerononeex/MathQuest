@@ -1125,6 +1125,41 @@ function check(name, ok, detail) {
     await ep.close();
   }
 
+  // --- temple bosses: three telegraphed attacks each (wind -> act -> rest),
+  // fight-start HP from the hero's damage, Cindermaw alternates lunge / flame ring ---
+  {
+    const bp = await browser.newPage();
+    bp.on('pageerror', e => errorsAll.push('bossai: ' + e.message));
+    await bp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await bp.evaluate(() => {
+      const out = {};
+      try {
+        CONFIG.DIFFICULTY = 'ADVENTURER'; startNewGame(); player.invincibleT = 999; player.attack = 5;
+        for (const id of ['forest', 'water', 'shadow']) {
+          const d = dungeons.find(x => x.def.id === id), room = d.rooms[2], e = d.enemies[2][0];
+          world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = 2;
+          hero.x = 4 * 16; hero.y = Math.floor(room.h / 2) * 16 + 8;
+          scaleBossForFight(e);
+          const seen = new Set(), states = new Set();
+          for (let i = 0; i < 60 * 40 && seen.size < 3; i++) { updateBossAI(e, 1 / 60, room, d); if (e.bs.atk) seen.add(e.bs.atk); states.add(e.bs.st); e.x = Math.max(40, Math.min(room.w * 16 - 40, e.x)); }
+          out[id] = { hp: e.maxHp, attacks: [...seen].sort().join(','), states: [...states].sort().join(',') };
+        }
+        const f = dungeons.find(x => x.def.id === 'fire'), c = f.enemies[2][0];
+        world.dungeon = f; f.roomIndex = 2; const n0 = enemyShots.length;
+        c.cmState = 'rear'; c.cmT = 0.01; updateCindermaw(c, 0.02); const first = enemyShots.length - n0;
+        c.cmState = 'rear'; c.cmT = 0.01; updateCindermaw(c, 0.02); const second = enemyShots.length - n0 - first;
+        out.cinder = { first, second };
+        world.mode = 'overworld'; world.dungeon = null;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    const ok3 = id => r[id] && r[id].attacks.split(',').length === 3 && /act/.test(r[id].states) && /rest/.test(r[id].states) && /wind/.test(r[id].states) && r[id].hp >= 14 * 5;
+    check('Temple bosses: Grovak, Voltuga and Puffling use 3 telegraphed attacks; big fight-start HP; Cindermaw alternates lunge and flame ring',
+      !r.exception && ok3('forest') && ok3('water') && ok3('shadow') && r.cinder.first === 1 && r.cinder.second >= 6, JSON.stringify(r));
+    await bp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
