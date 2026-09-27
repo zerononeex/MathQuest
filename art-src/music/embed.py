@@ -6,7 +6,7 @@ Run: python3 art-src/music/embed.py"""
 import os, re, base64, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
 p = os.path.join(HERE, '..', '..', 'math-quest.html'); s = open(p).read()
-for f in sorted(glob.glob(os.path.join(HERE, 'ow_*.mp3'))) + [os.path.join(HERE, 'fairy.mp3')]:
+for f in sorted(glob.glob(os.path.join(HERE, 'ow_*.mp3'))) + [os.path.join(HERE, f) for f in ('fairy.mp3', 'miniboss.mp3') if os.path.exists(os.path.join(HERE, f))]:
     k = os.path.basename(f)[:-4]
     line = '  %s: "data:audio/mpeg;base64,%s",' % (k, base64.b64encode(open(f, 'rb').read()).decode())
     s, n = re.subn(r'  %s: "data:audio/mpeg;base64,[^"]*",' % k, lambda m: line, s)
