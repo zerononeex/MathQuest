@@ -17,6 +17,7 @@ LAYOUT = { # columns, row bands (fractions of the sheet height[, columns in that
   'rubblejaw': (4, LABELLED),
   'flarewing': (3, [(0.0, 0.5), (0.5, 1.0)]),
   'squallback': (4, [(0.0, 0.435, 4), (0.435, 1.0, 3)]), # (the lightning bolt reaches up between the rows)
+  'astral': (6, [(0.0, 0.895)]),                    # one row, labels below
 }
 def key(C):
     r, g, b = C[..., 0], C[..., 1], C[..., 2]
