@@ -4915,6 +4915,7 @@ function malrekAct(g, map) {
 
 function damageGanon(g, weaponKind) {
   let dmg = computeDamage(weaponKind, g.defense);
+  if (player.giantT > 0 && SWORD_KINDS.has(weaponKind)) dmg *= 2; // Giant's Berry
   if (g.phase === 3) dmg *= 2; // takes double damage in phase 3
   g.hp -= dmg; g.hitFlash = 0.1;
   spawnFloatingText(g.x, g.y - 24, '-' + dmg, '#ffffff');
@@ -5209,6 +5210,7 @@ const TUNIC_SKINS = {
 function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
 
 // weapon damage table (min-1 floor applied at hit time)
+const SWORD_KINDS = new Set(['sword', 'sharpSword', 'heroSword']);
 const WEAPON_DAMAGE = { sword: 0, sharpSword: 2, heroSword: 4, boomerang: 0, galeBoomerang: 1, bow: 1 }; // better swords hit harder
 function equippedSwordKind() {
   if (player.owned.heroSword) return 'heroSword';
@@ -5216,7 +5218,7 @@ function equippedSwordKind() {
   return 'sword';
 }
 function swordReachPx() {
-  return CONFIG.WEAPON_REACH_TILES[equippedSwordKind()] * CONFIG.TILE + 12;
+  return CONFIG.WEAPON_REACH_TILES[equippedSwordKind()] * CONFIG.TILE + 12 + (player.giantT > 0 ? 8 : 0);
 }
 function computeDamage(weaponKind, enemyDefense) {
   const base = WEAPON_DAMAGE[weaponKind] || 0;
@@ -5377,6 +5379,7 @@ function damageEnemy(e, weaponKind, from) {
   if (e.isBoss) { damageGanon(e, weaponKind); return true; }
   if (enemyGuard(e, weaponKind, from || hero) !== 'hit') return false;
   let dmg = computeDamage(weaponKind, e.defense);
+  if (player.giantT > 0 && SWORD_KINDS.has(weaponKind)) dmg *= 2; // Giant's Berry
   if (e.bossKind === 'cindermaw' && e.cmState === 'stun') dmg *= 2; // crouched + eye closed: double damage
   hurtEnemy(e, dmg, e.bossKind === 'cindermaw' && e.cmState === 'stun' ? '#ffd84a' : '#ffffff');
   return true;
@@ -5431,12 +5434,16 @@ function trySwingSword() {
     const ang = Math.atan2(e.y - hero.y, e.x - hero.x);
     let diff = Math.abs(ang - facingAngle);
     if (diff > Math.PI) diff = Math.PI * 2 - diff;
-    if (diff < Math.PI * 0.65) { damageEnemy(e, kind, { x: hero.x, y: hero.y }); struck = true; }
+    if (diff < Math.PI * 0.65) {
+      const landed = damageEnemy(e, kind, { x: hero.x, y: hero.y }); struck = true;
+      if (landed && player.emberT > 0 && e.alive) e.burnT = 2; // Ember Bloom: the blade sets foes alight
+    }
   }
   // AP is only spent when the blade meets an enemy (blocked hits count too):
   // swinging at air, grass or pots is free
   if (struck) spendAP(CONFIG.SWORD_AP_COST);
   deflectEnemyShots(range, facingAngle);
+  if (player.inkT > 0) fireInkBlob(); // Ink Blaster: every swing also flings an ink blob
   for (const p of currentPots()) {
     if (!p.alive) continue;
     const d = Math.hypot(p.x - hero.x, p.y - hero.y);
@@ -6758,31 +6765,185 @@ function owTowns() {
   return out;
 }
 
-// Bomb button (bottom-right, big for small fingers): only once the Bomb
-// Bag is owned. Bombs cost no AP; a short cooldown stops accidental spam.
-function bombButtonRect() { return { x: CONFIG.GAME_W - 60, y: CONFIG.GAME_H - 60, w: 50, h: 50 }; }
-function tapBombButton(sx, sy) { return player.bombBag && pointInRect(sx, sy, bombButtonRect()); }
-function drawBombButton() {
-  if (!player.bombBag) return;
-  const r = bombButtonRect(), cx = r.x + r.w / 2, cy = r.y + r.h / 2 + 3, ready = (player.bombCooldown || 0) <= 0;
-  if (imgReady('hud_buttons')) {
-    ctx.globalAlpha = ready ? 1 : 0.45; drawHudButton('bomb', r); ctx.globalAlpha = 1;
-    const t = performance.now() / 1000; // the fuse spark twinkles
-    if (ready && Math.floor(t * 8) % 2) { ctx.fillStyle = '#fff6b0'; ctx.fillRect(r.x + r.w * 0.66, r.y + r.h * 0.22, 2, 2); }
-    return;
+// Item button (bottom-right, big for small fingers): uses the selected item;
+// the small swap button beside it steps through the items owned. Keys: B
+// uses, V swaps. Items: bombs (Bomb Bag, unlimited), and the shop's
+// Giant's Berry, Ember Bloom, Rolling Barrel and Ink Blaster (one each per use).
+const ITEM_ORDER = ['bomb', 'superMushroom', 'fireFlower', 'dkBarrel', 'inkBlaster'];
+const ITEM_NAMES = { bomb: 'Bomb', superMushroom: "Giant's Berry", fireFlower: 'Ember Bloom', dkBarrel: 'Rolling Barrel', inkBlaster: 'Ink Blaster' };
+function itemCount(id) { return id === 'bomb' ? (player.bombBag ? Infinity : 0) : (player.owned[id] || 0); }
+function ownedItems() { return ITEM_ORDER.filter(id => itemCount(id) > 0); }
+function selectedItem() {
+  const list = ownedItems();
+  if (!list.length) return null;
+  if (!list.includes(player.selItem)) player.selItem = list[0];
+  return player.selItem;
+}
+function cycleItem() {
+  const list = ownedItems();
+  if (list.length < 2) { if (list.length) showHint(ITEM_NAMES[list[0]] + ' is your only item', 1.2); return; }
+  player.selItem = list[(list.indexOf(selectedItem()) + 1) % list.length];
+  SFX.swish();
+  showHint('Item: ' + ITEM_NAMES[player.selItem] + (player.selItem === 'bomb' ? '' : '  (x' + itemCount(player.selItem) + ')'), 1.2);
+}
+function useSelectedItem() {
+  const id = selectedItem();
+  if (!id || dialogue.active || player.downed) return;
+  if (id === 'bomb') { throwBomb(); return; }
+  if ((player.itemCooldown || 0) > 0) return;
+  player.itemCooldown = 0.5;
+  player.owned[id] = Math.max(0, (player.owned[id] || 0) - 1);
+  const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  if (id === 'superMushroom') {
+    player.hearts = player.maxHearts; player.giantT = 10;
+    SFX.revive(); spawnConfetti(hero.x, hero.y, 16);
+    spawnFloatingText(hero.x, hero.y - 42, 'GIANT! x2 sword', '#ff8fa8');
+  } else if (id === 'fireFlower') {
+    player.emberT = 20; SFX.fireWhoosh();
+    spawnFloatingText(hero.x, hero.y - 30, 'Flaming sword!', '#ff9a3a');
+  } else if (id === 'dkBarrel') {
+    heroShots.push({ kind: 'barrel', x: hero.x + dv[0] * 12, y: hero.y + dv[1] * 12, vx: dv[0] * 150, vy: dv[1] * 150, life: 4, spin: 0 });
+    SFX.thud();
+  } else if (id === 'inkBlaster') {
+    player.inkT = 15; SFX.inkSplat();
+    spawnFloatingText(hero.x, hero.y - 30, 'Ink Blaster ready!', '#8fb0ff');
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(r.x, r.y, r.w, r.h);
-  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  saveGame();
+}
+// hero-thrown things other than bombs/arrows: rolling barrels, ink blobs
+const heroShots = [];
+function fireInkBlob() {
+  const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[hero.facing];
+  heroShots.push({ kind: 'ink', x: hero.x + dv[0] * 10, y: hero.y + dv[1] * 10, vx: dv[0] * 190, vy: dv[1] * 190, life: 1.2 });
+}
+function updateItems(dt, map) {
+  if (player.itemCooldown > 0) player.itemCooldown -= dt;
+  for (const k of ['giantT', 'emberT', 'inkT']) if (player[k] > 0) { player[k] -= dt; if (player[k] <= 0) { player[k] = 0; spawnFloatingText(hero.x, hero.y - 26, { giantT: 'Back to normal size', emberT: 'The flames fade', inkT: 'Out of ink' }[k], '#dddddd'); } }
+  for (let i = heroShots.length - 1; i >= 0; i--) {
+    const h = heroShots[i];
+    h.x += h.vx * dt; h.y += h.vy * dt; h.life -= dt; h.spin = (h.spin || 0) + dt * 12;
+    let gone = h.life <= 0 || tileSolidAt(map, h.x, h.y);
+    if (!gone) for (const e of currentEnemies()) {
+      if (!enemyTargetable(e) || Math.hypot(e.x - h.x, e.y - h.y) > (h.kind === 'barrel' ? 12 : 9)) continue;
+      if (h.kind === 'barrel') { const dmg = computeDamage('sword', e.defense) + 4; if (e.isBoss) { e.hp -= dmg; e.hitFlash = 0.1; spawnFloatingText(e.x, e.y - 24, '-' + dmg, '#ffd84a'); if (e.hp <= 0 && e.alive) ganonDefeated(e); } else hurtEnemy(e, dmg, '#ffd84a'); }
+      else { e.slowT = 3; if (!e.isBoss) hurtEnemy(e, 1, '#8fb0ff'); spawnFloatingText(e.x, e.y - 18, 'SLOW', '#8fb0ff'); }
+      gone = true; break;
+    }
+    if (gone) {
+      if (h.kind === 'barrel') { SFX.potSmash(); spawnConfetti(h.x, h.y, 10); screenShake(2, 0.1); }
+      else SFX.inkSplat();
+      heroShots.splice(i, 1);
+    }
+  }
+}
+function drawHeroShots() {
+  if (player.emberT > 0) { // Ember Bloom: little flames dance around the hero
+    const t = performance.now() / 1000;
+    for (let i = 0; i < 3; i++) {
+      const a = t * 4 + i * 2.1, fx = Math.round(hero.x + Math.cos(a) * 10), fy = Math.round(hero.y - 4 + Math.sin(a) * 6 - ((t * 20 + i * 5) % 6));
+      ctx.fillStyle = i % 2 ? '#ff7a1a' : '#ffd040'; ctx.fillRect(fx, fy, 2, 2);
+    }
+  }
+  for (const h of heroShots) {
+    const x = Math.round(h.x), y = Math.round(h.y);
+    if (h.kind === 'barrel') {
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - 6, y + 6, 12, 2);
+      drawWoodBarrel(x, y, 0.55, h.spin);
+    } else {
+      ctx.fillStyle = '#1a1a4a'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#5a6adf'; ctx.fillRect(x - 2, y - 2, 2, 2);
+    }
+  }
+}
+function bombButtonRect() { return { x: CONFIG.GAME_W - 60, y: CONFIG.GAME_H - 60, w: 50, h: 50 }; }
+function itemSwapRect() { return { x: CONFIG.GAME_W - 96, y: CONFIG.GAME_H - 44, w: 32, h: 32 }; }
+function tapBombButton(sx, sy) { return !!selectedItem() && pointInRect(sx, sy, bombButtonRect()); }
+function tapItemSwap(sx, sy) { return ownedItems().length > 1 && pointInRect(sx, sy, itemSwapRect()); }
+// a wooden barrel with iron hoops; `roll` slides the staves so it looks rolling
+function drawWoodBarrel(x, y, k, roll) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(k, k);
+  ctx.fillStyle = '#2a1608'; ctx.beginPath(); ctx.ellipse(0, 0, 12, 14, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#9a5e2a'; ctx.beginPath(); ctx.ellipse(0, 0, 10.5, 12.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.ellipse(0, 0, 10.5, 12.5, 0, 0, Math.PI * 2); ctx.clip();
+  const off = ((roll || 0) * 4) % 6;
+  ctx.fillStyle = '#7a4418'; for (let sx = -12 + off; sx < 12; sx += 6) ctx.fillRect(sx, -13, 1.5, 26); // staves
+  ctx.fillStyle = '#c07a3a'; ctx.fillRect(-7, -12, 3, 24);
+  ctx.restore();
+  ctx.fillStyle = '#5a5a66'; ctx.fillRect(-11, -7, 22, 3); ctx.fillRect(-11, 4, 22, 3); // hoops
+  ctx.fillStyle = '#a0a0b0'; ctx.fillRect(-11, -7, 22, 1); ctx.fillRect(-11, 4, 22, 1);
+  ctx.restore();
+}
+// code-drawn item pictures (until item icon art arrives)
+function drawItemIcon(id, cx, cy, s) {
+  const k = s / 30;
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(k, k);
+  if (id === 'superMushroom') { // a big glossy berry with a leaf
+    ctx.fillStyle = '#5a1030'; ctx.beginPath(); ctx.arc(0, 3, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c8285a'; ctx.beginPath(); ctx.arc(0, 3, 9.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff7aa0'; ctx.fillRect(-5, -3, 3, 3); ctx.fillStyle = '#ffffff'; ctx.fillRect(-4, -2, 1, 1);
+    ctx.fillStyle = '#2a7a2a'; ctx.beginPath(); ctx.ellipse(4, -9, 6, 3, -0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#5a3a1a'; ctx.fillRect(-1, -11, 2, 5);
+  } else if (id === 'fireFlower') { // a flower whose petals are flames
+    for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; ctx.fillStyle = i % 2 ? '#ff7a1a' : '#ffc03a'; ctx.beginPath(); ctx.ellipse(Math.cos(a) * 7, -3 + Math.sin(a) * 7, 5, 3, a, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = '#ffe890'; ctx.beginPath(); ctx.arc(0, -3, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2a7a2a'; ctx.fillRect(-1, 3, 2, 10); ctx.fillRect(1, 7, 5, 2);
+  } else if (id === 'dkBarrel') {
+    drawWoodBarrel(0, 0, 1, 0);
+  } else if (id === 'inkBlaster') { // an ink bottle with a splat
+    ctx.fillStyle = '#1a1a4a'; ctx.beginPath(); ctx.ellipse(6, 8, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-8, -6, 12, 15); ctx.fillStyle = '#3a4aaf'; ctx.fillRect(-7, -1, 10, 9);
+    ctx.fillStyle = '#9aa0c0'; ctx.fillRect(-6, -11, 8, 5); ctx.fillStyle = '#ffffff'; ctx.fillRect(-6, 0, 2, 3);
+    ctx.fillStyle = '#3a4aaf'; ctx.beginPath(); ctx.arc(10, 2, 2, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawBombButton() {
+  const id = selectedItem();
+  if (!id) return;
+  const r = bombButtonRect(), cx = r.x + r.w / 2, cy = r.y + r.h / 2 + 1;
+  const ready = id === 'bomb' ? (player.bombCooldown || 0) <= 0 : (player.itemCooldown || 0) <= 0;
   ctx.globalAlpha = ready ? 1 : 0.45;
-  ctx.fillStyle = '#1c1c28'; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#3a3a50'; ctx.beginPath(); ctx.arc(cx - 3, cy - 3, 8, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#9aa0c0'; ctx.fillRect(cx - 7, cy - 8, 3, 3);
-  ctx.fillStyle = '#8a6a3a'; ctx.fillRect(cx + 6, cy - 16, 3, 6);
-  const t = performance.now() / 1000;
-  ctx.fillStyle = Math.floor(t * 10) % 2 ? '#ffd84a' : '#ff7030'; ctx.fillRect(cx + 5, cy - 20, 5, 5);
+  if (id === 'bomb' && imgReady('hud_buttons')) drawHudButton('bomb', r);
+  else if (imgReady('hud_buttons')) { // the gold frame, with the item drawn inside
+    drawHudButton('save', r);
+    ctx.fillStyle = '#1b2350'; ctx.fillRect(r.x + 7, r.y + 7, r.w - 14, r.h - 14);
+    drawItemIcon(id, cx, cy, 30);
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h);
+    if (id === 'bomb') { ctx.fillStyle = '#1c1c28'; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.fill(); } else drawItemIcon(id, cx, cy, 30);
+  }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('BOMB', cx, r.y + r.h - 3);
+  // name above, count badge
+  ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+  const name = ITEM_NAMES[id], tw = ctx.measureText(name).width + 8, lx = Math.min(cx, CONFIG.GAME_W - 4 - tw / 2); // keep on screen
+  ctx.fillStyle = 'rgba(10,14,30,0.8)'; ctx.fillRect(lx - tw / 2, r.y - 13, tw, 12);
+  ctx.fillStyle = '#ffe9a8'; ctx.fillText(name, lx, r.y - 4);
+  if (id !== 'bomb') {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(r.x + r.w - 17, r.y + r.h - 13, 16, 12);
+    ctx.fillStyle = '#ffffff'; ctx.fillText('x' + itemCount(id), r.x + r.w - 9, r.y + r.h - 4);
+  }
+  // swap button
+  if (ownedItems().length > 1) {
+    const q = itemSwapRect(), qx = q.x + q.w / 2, qy = q.y + q.h / 2;
+    ctx.fillStyle = 'rgba(10,14,30,0.8)'; ctx.fillRect(q.x, q.y, q.w, q.h);
+    ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 2; ctx.strokeRect(q.x + 1, q.y + 1, q.w - 2, q.h - 2);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(qx, qy, 8, Math.PI * 0.15, Math.PI * 1.1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(qx, qy, 8, Math.PI * 1.15, Math.PI * 2.1); ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.moveTo(qx - 11, qy - 1); ctx.lineTo(qx - 5, qy - 1); ctx.lineTo(qx - 8, qy + 4); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(qx + 11, qy + 1); ctx.lineTo(qx + 5, qy + 1); ctx.lineTo(qx + 8, qy - 4); ctx.fill();
+  }
+  // active effect timers
+  let ty = r.y - 28;
+  for (const [k, label, col] of [['giantT', 'Giant', '#ff8fa8'], ['emberT', 'Flame', '#ff9a3a'], ['inkT', 'Ink', '#8fb0ff']]) {
+    if (!(player[k] > 0)) continue;
+    const t = label + ' ' + Math.ceil(player[k]) + 's', w = ctx.measureText(t).width + 8;
+    ctx.fillStyle = 'rgba(10,14,30,0.8)'; ctx.fillRect(r.x + r.w - w, ty - 9, w, 12);
+    ctx.fillStyle = col; ctx.textAlign = 'right'; ctx.fillText(t, r.x + r.w - 4, ty);
+    ctx.textAlign = 'center'; ty -= 14;
+  }
 }
 
 // Bottom-left icon row: sits just right of the 3 weapon slots (also
@@ -6857,7 +7018,8 @@ function updatePlaying(dt) {
   if (Input.keys['m'] || Input.keys['M']) { Input.keys['m'] = Input.keys['M'] = false; openMapScreen(); return; }
   if (Input.tapped && tapMapButton(Input.tapX, Input.tapY)) { Input.tapped = false; openMapScreen(); return; }
   if (Input.keys['Escape']) { Input.keys['Escape'] = false; pauseMenu.active = true; return; }
-  if (Input.tapped && tapBombButton(Input.tapX, Input.tapY)) { Input.tapped = false; throwBomb(); }
+  if (Input.tapped && tapItemSwap(Input.tapX, Input.tapY)) { Input.tapped = false; cycleItem(); }
+  if (Input.tapped && tapBombButton(Input.tapX, Input.tapY)) { Input.tapped = false; useSelectedItem(); }
   if (Input.tapped && tapSaveButton(Input.tapX, Input.tapY)) {
     Input.tapped = false;
     if (saveGame()) spawnFloatingText(hero.x, hero.y - 20, 'Saved!', '#8effc1');
@@ -7027,7 +7189,8 @@ function updatePlaying(dt) {
     fireActiveWeapon();
   }
   if (Input.keys['n'] || Input.keys['N']) { Input.keys['n'] = Input.keys['N'] = false; fireArrow(); }
-  if (Input.keys['b'] || Input.keys['B']) { Input.keys['b'] = Input.keys['B'] = false; throwBomb(); }
+  if (Input.keys['b'] || Input.keys['B']) { Input.keys['b'] = Input.keys['B'] = false; useSelectedItem(); }
+  if (Input.keys['v'] || Input.keys['V']) { Input.keys['v'] = Input.keys['V'] = false; cycleItem(); }
   // weapon slot select: 1/2/3 (only reacts if that slot is unlocked)
   for (let s = 0; s < 3; s++) {
     const key = String(s + 1);
@@ -7162,6 +7325,7 @@ function updatePlaying(dt) {
   updateArrows(dt, map);
   updateEnemyShots(dt, map);
   updateBombs(dt);
+  updateItems(dt, map);
   updateCoinsAndPickups(dt);
   updateFloatingAndConfetti(dt);
 
@@ -7371,8 +7535,9 @@ function drawHeroSprite(x, y, facing, frame) {
     ctx.fillRect(fx - 5, fy - 1, 10, 2); ctx.fillRect(fx - 4, fy - 2, 8, 1); ctx.fillRect(fx - 4, fy + 1, 8, 1);
     const ops = player.skin && player.skin !== 'classic' ? 'skin:' + tunic.body : '';
     // feet sit on cell row 50 of 52 -> the cell bottom is 1 game px below the foot line
-    drawSpriteFoot(ctx, 'hero_walk', [col * cw, row * ch, cw, ch], fx, fy + 1, ch / 2,
-      { w: cw / 2, flip: facing === 'left', ops });
+    const gs = player.giantT > 0 ? 1 + 0.5 * Math.min(1, (10 - player.giantT) / 0.3, player.giantT / 0.3) : 1; // Giant's Berry: grows 1.5x
+    drawSpriteFoot(ctx, 'hero_walk', [col * cw, row * ch, cw, ch], fx, fy + 1, ch / 2 * gs,
+      { w: cw / 2 * gs, flip: facing === 'left', ops });
     return;
   }
   // 16x16-ish code-drawn hero: tunic + head, simple 2-frame walk cycle
@@ -7728,6 +7893,7 @@ function drawPlaying() {
     ctx.restore();
     if (a.type === 'ice') { ctx.fillStyle = 'rgba(180,230,255,0.7)'; ctx.fillRect(Math.round(a.x) - 1, Math.round(a.y) - 1, 2, 2); }
   }
+  drawHeroShots();
   for (const b of bombs) {
     const blink = b.t < 0.7 && Math.floor(b.t * 12) % 2 === 0;
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(Math.round(b.x) - 4, Math.round(b.y) + 4, 8, 2);
@@ -8899,6 +9065,12 @@ function drawWeaponSlots() {
     ctx.strokeRect(x, y, slotSize, slotSize);
     if (w) {
       drawSlotIcon(w, x + slotSize / 2, y + slotSize / 2 - 2);
+      if (w === 'bow' && (player.owned.fireArrow || player.owned.iceArrow)) { // loaded arrow type (tap the bow again to swap)
+        const at = player.arrowType, col = at === 'fire' ? '#ff7a2a' : at === 'ice' ? '#7ad0ff' : '#dddddd';
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(x + slotSize - 22, y + 2, 20, 11);
+        ctx.fillStyle = col; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(at === 'fire' ? 'FIRE' : at === 'ice' ? 'ICE' : 'NORM', x + slotSize - 12, y + 10);
+      }
       ctx.fillStyle = '#8effc1'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
       ctx.fillText(apCosts[w] + ' AP', x + slotSize / 2, y + slotSize - 4);
     } else {
@@ -8965,6 +9137,7 @@ function buildSaveData() {
     activeSlot: player.activeSlot,
     arrowType: player.arrowType,
     bombBag: player.bombBag,
+    selItem: player.selItem,
     heartContainersBought: player.heartContainersBought,
     medallions: player.medallions,
     skin: player.skin,
@@ -9028,6 +9201,7 @@ function applySaveData(data) {
     player.activeSlot = clampNum(data.activeSlot, 0, 2, 0);
     player.arrowType = ['normal', 'fire', 'ice'].includes(data.arrowType) ? data.arrowType : 'normal';
     player.bombBag = !!data.bombBag;
+    if (typeof data.selItem === 'string' && ITEM_ORDER.includes(data.selItem)) player.selItem = data.selItem;
     player.heartContainersBought = clampNum(data.heartContainersBought, 0, 2, 0);
     if (data.medallions && typeof data.medallions === 'object') Object.assign(player.medallions, data.medallions);
     if (data.skin && TUNIC_SKINS[data.skin]) player.skin = data.skin;

@@ -1286,6 +1286,48 @@ function check(name, ok, detail) {
     await lp.close();
   }
 
+  // --- items: the item button uses the selected item, the swap button
+  // cycles; Giant's Berry, Ember Bloom, Rolling Barrel and Ink Blaster work ---
+  {
+    const ip = await browser.newPage();
+    ip.on('pageerror', e => errorsAll.push('items: ' + e.message));
+    await ip.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await ip.evaluate(() => {
+      const out = {};
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame(); player.invincibleT = 999; dialogue.active = false;
+        out.none = selectedItem() === null;
+        player.bombBag = true; player.owned.superMushroom = 2; player.owned.fireFlower = 1; player.owned.dkBarrel = 1; player.owned.inkBlaster = 1;
+        out.list = ownedItems().join(',');
+        const q = itemSwapRect(); out.swapTap = tapItemSwap(q.x + 5, q.y + 5);
+        player.selItem = 'bomb'; cycleItem(); out.afterCycle = player.selItem;
+        player.hearts = 1; useSelectedItem(); out.berry = { giant: player.giantT > 0, full: player.hearts === player.maxHearts, left: player.owned.superMushroom };
+        const e = makeDungeonEnemy('wolf', hero.x + 16, hero.y); e.hp = e.maxHp = 500; currentEnemies().push(e);
+        hero.facing = 'right'; player.ap = 20;
+        player.attackCooldown = 0; const h0 = e.hp; trySwingSword(); const giantHit = h0 - e.hp;
+        player.giantT = 0; player.attackCooldown = 0; const h1 = e.hp; trySwingSword(); const normalHit = h1 - e.hp;
+        out.giantDouble = giantHit === normalHit * 2;
+        player.itemCooldown = 0; player.selItem = 'fireFlower'; useSelectedItem(); e.x = hero.x + 16; e.y = hero.y; player.attackCooldown = 0; trySwingSword(); out.ember = player.emberT > 0 && e.burnT > 0;
+        player.itemCooldown = 0; player.selItem = 'inkBlaster'; useSelectedItem(); const n0 = heroShots.length; player.attackCooldown = 0; trySwingSword(); out.ink = heroShots.length > n0 && heroShots[heroShots.length - 1].kind === 'ink';
+        heroShots.length = 0;
+        player.itemCooldown = 0; player.selItem = 'dkBarrel'; e.x = hero.x + 40; const h2 = e.hp; useSelectedItem();
+        for (let i = 0; i < 60; i++) updateItems(1 / 60, currentMap());
+        out.barrel = h2 - e.hp > 0 && player.owned.dkBarrel === 0;
+        out.barrelGoneFromList = !ownedItems().includes('dkBarrel');
+        // bow: tapping the active bow slot swaps the arrow type
+        player.owned.bow = true; player.owned.fireArrow = true; player.slots[2] = 'bow'; player.activeSlot = 2; player.arrowType = 'normal';
+        tapWeaponSlot(10 + 2 * 54 + 10, CONFIG.GAME_H - 58 + 10); out.arrow = player.arrowType;
+        e.alive = false;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check("Items: item button + swap; Giant's Berry (heal, x2 sword), Ember Bloom (burn), Ink Blaster (ink blobs), Rolling Barrel (hits); bow tap swaps arrows",
+      !r.exception && r.none && r.list === 'bomb,superMushroom,fireFlower,dkBarrel,inkBlaster' && r.swapTap && r.afterCycle === 'superMushroom' &&
+      r.berry.giant && r.berry.full && r.berry.left === 1 && r.giantDouble && r.ember && r.ink && r.barrel && r.barrelGoneFromList && r.arrow === 'fire', JSON.stringify(r));
+    await ip.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {
