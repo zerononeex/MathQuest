@@ -1027,6 +1027,42 @@ function check(name, ok, detail) {
     await mp.close();
   }
 
+  // --- villages: every town has a shop you can buy in, and a Town Guide who
+  // lists only the temples not cleared yet ---
+  {
+    const vp = await browser.newPage();
+    vp.on('pageerror', e => errorsAll.push('towns: ' + e.message));
+    await vp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await vp.evaluate(() => {
+      const out = { shops: [] };
+      try {
+        startNewGame(); player.invincibleT = 999;
+        for (const t of OW_TOWNS) {
+          const keeper = t.interior && t.interior.npcs && t.interior.npcs.find(n => n.isShopkeeper);
+          world.mode = 'interior'; world.interior = t.interior; shop.active = false;
+          if (keeper) openDialogue(keeper);
+          out.shops.push({ id: t.id, hasShop: !!t.shop, opens: shop.active });
+          shop.active = false;
+        }
+        world.mode = 'overworld'; world.interior = null;
+        const guides = villagerNPCs.filter(n => n.hintGuide);
+        out.guides = guides.length;
+        dungeons[0].chestOpened = true; dungeons[2].chestOpened = true;
+        const lines = guideLines(guides[0]).join(' ');
+        out.mentionsCleared = /Forest Temple|Water Temple/.test(lines);
+        out.mentionsOpen = /Fire Temple/.test(lines) && /Shadow Temple/.test(lines);
+        for (const d of dungeons) d.chestOpened = true;
+        out.castleHint = /Castle Hill/.test(guideLines(guides[0]).join(' '));
+        for (const d of dungeons) d.chestOpened = false;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Villages: 4 more towns, each with a working shop; 6 Town Guides hint only the temples not cleared (then the castle)',
+      !r.exception && r.shops.length === 4 && r.shops.every(x => x.hasShop && x.opens) && r.guides === 6 && !r.mentionsCleared && r.mentionsOpen && r.castleHint, JSON.stringify(r));
+    await vp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

@@ -873,7 +873,8 @@ function musicIsPaused() {
 function heroInVillage() {
   const tx = Math.floor(hero.x / CONFIG.TILE), ty = Math.floor(hero.y / CONFIG.TILE);
   if (regionAt(tx, ty) === 'town') return true;
-  return Math.hypot(tx - desertTownSpot.x, ty - desertTownSpot.y) < 9; // desert outpost town
+  if (Math.hypot(tx - desertTownSpot.x, ty - desertTownSpot.y) < 9) return true; // desert outpost town
+  return typeof OW_TOWNS !== 'undefined' && OW_TOWNS.some(t => Math.hypot(tx - t.x, ty - t.y) < 8);
 }
 // maps the current game state to a track key (cheap; called every frame)
 function musicForState() {
@@ -2440,6 +2441,64 @@ for (const [ox, oy] of DESERT_HUTS) {
 for (const b of buildings) registerBuildingProp(b.name === 'house' ? 'house' : b.name === 'desertShop' ? 'desertShop' : 'shop', b.doorTileX - 1, b.doorTileY - 2, 4, 3);
 for (const [ox, oy] of DESERT_HUTS) registerBuildingProp('hut', desertTownSpot.x + ox, desertTownSpot.y + oy - 1, 2, 2);
 // (desert-town NPCs are created further down, once makeNPC/villagerNPCs exist - see near allNPCs())
+
+// Four more villages, one per remaining region, each with a shop (spend
+// your gold anywhere) and a Town Guide who points to the temples you have
+// not cleared yet. The shop and a hut go on clear ground next to the road
+// through the village (never on the road).
+const OW_TOWNS = [
+  { id: 'greenhollow', name: 'Greenhollow', x: 37, y: 80, region: 'forest' },
+  { id: 'reedwater', name: 'Reedwater', x: 70, y: 129, region: 'lakes' },
+  { id: 'highcrag', name: 'Highcrag Lodge', x: 192, y: 57, region: 'mountain' },
+  { id: 'duskmere', name: 'Duskmere', x: 92, y: 41, region: 'darkness' },
+];
+(function placeTowns() {
+  const g = overworld.grid;
+  // a w x h footprint (+ one free row in front of it) with nothing in the way
+  const freeRect = (x0, y0, w, h) => {
+    for (let y = y0 - 1; y <= y0 + h; y++) for (let x = x0 - 1; x <= x0 + w; x++) {
+      const t = g[y] && g[y][x];
+      if (t === undefined || overworld.role[y][x] || t === T.DIRT || t === T.WATER || t === T.BRIDGE || t === T.WALL || t === T.DOOR ||
+          t === T.PROP || t === T.SIGNPOST || t === T.STAIRS || t === T.BOULDER || t === T.CRACKED || t === T.CAVE) return false;
+    }
+    return true;
+  };
+  const near = (cx, cy, w, h, avoid) => { // nearest free footprint (top-left) to the village centre
+    let best = null, bd = Infinity;
+    for (let dy = -7; dy <= 7; dy++) for (let dx = -8; dx <= 8; dx++) {
+      const x0 = cx + dx, y0 = cy + dy;
+      if (avoid && x0 < avoid.x1 + 2 && x0 + w > avoid.x0 - 2 && y0 < avoid.y1 + 3 && y0 + h > avoid.y0 - 2) continue;
+      if (!freeRect(x0, y0, w, h)) continue;
+      // a hut goes beside the shop (same row), never in front of its door
+      const d = Math.hypot(dx + w / 2, dy + h / 2) + (avoid ? Math.abs(y0 + h - avoid.y1) * 3 : 0);
+      if (d < bd) { bd = d; best = { x0, y0, x1: x0 + w, y1: y0 + h }; }
+    }
+    return best;
+  };
+  for (const t of OW_TOWNS) {
+    // clear the village's trees and ponds (not cliffs or roads)
+    for (let oy = -6; oy <= 6; oy++) for (let ox = -8; ox <= 8; ox++) {
+      const x = t.x + ox, y = t.y + oy;
+      if (!g[y] || overworld.role[y][x]) continue;
+      if (g[y][x] === T.TREE) g[y][x] = REGION_BASE[regionAt(x, y)];
+      overworld.keep[y][x] = 1;
+    }
+    const shopSpot = near(t.x, t.y, 4, 3);
+    if (!shopSpot) { console.warn('town: no room for a shop at', t.id); continue; }
+    t.interior = buildInterior(t.name + ' Shop', 'shop');
+    t.interior.canvas = prerenderMap(t.interior);
+    const b = { name: t.id + 'Shop', doorTileX: shopSpot.x0 + 1, doorTileY: shopSpot.y0 + 2, interior: t.interior };
+    carveBuilding(b);
+    buildings.push(b);
+    registerBuildingProp('shop', b.doorTileX - 1, b.doorTileY - 2, 4, 3);
+    t.shop = b;
+    const hut = near(shopSpot.x0 + 2, shopSpot.y0 + 1, 2, 2, shopSpot);
+    if (hut) {
+      g[hut.y0][hut.x0] = T.WALL; g[hut.y0][hut.x0 + 1] = T.WALL; g[hut.y0 + 1][hut.x0] = T.DOOR;
+      registerBuildingProp('hut', hut.x0, hut.y0, 2, 2);
+    }
+  }
+})();
 
 // =========================================================================
 // Points of interest: every screen of the map has something to find
@@ -4027,7 +4086,59 @@ villagerNPCs.push(
     ["There's a secret somewhere out there...", "Look for a gap in a dense thicket.", "Good luck, hero!"], { sprite: 'child' }),
 );
 
+// village shopkeepers + folk, and a Town Guide in every town
+for (const t of OW_TOWNS) {
+  if (!t.interior) continue;
+  const keeper = makeNPC(t.interior.exit.x * CONFIG.TILE, 4.5 * CONFIG.TILE, '#c8a030', ['Welcome to ' + t.name + '!'], { sprite: 'shopkeeper', stationary: true });
+  keeper.isShopkeeper = true; keeper.home = t.id;
+  t.interior.npcs = [keeper];
+  villagerNPCs.push(
+    makeNPC((t.shop.doorTileX + 3.5) * CONFIG.TILE, (t.shop.doorTileY + 2.5) * CONFIG.TILE, '#6a8ac0',
+      ['Welcome to ' + t.name + '!', 'Our shop has everything the big town has.', 'Spend your gold wisely, hero!'], { sprite: 'child' }),
+  );
+}
+const TEMPLE_HINTS = {
+  forest: 'The Forest Temple hides deep in the western woods, just past the river.',
+  fire: 'The Fire Temple sits on the mountain peak. Climb the cliff stairs to reach it!',
+  water: 'The Water Temple is on the island in the Great Lake. Pull the lever on the north shore!',
+  shadow: 'The Shadow Temple waits deep in the gloomy dark woods.',
+};
+function compassWord(dx, dy) {
+  const a = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  return ['east', 'south-east', 'south', 'south-west', 'west', 'north-west', 'north', 'north-east'][Math.round(a / 45) % 8];
+}
+// lines for a Town Guide: every temple not yet cleared, nearest first,
+// with the direction from this town; then the castle once all four are done
+function guideLines(npc) {
+  const TS = CONFIG.TILE, gx = npc.x / TS, gy = npc.y / TS;
+  const open = dungeons.filter(d => !d.chestOpened).map(d => {
+    const [x, y] = OW_LAYOUT.dungeons[d.def.id];
+    return { d, dist: Math.hypot(x - gx, y - gy), dir: compassWord(x - gx, y - gy) };
+  }).sort((a, b) => a.dist - b.dist);
+  if (!open.length) {
+    return castle.defeated ? ['You did it, hero! The land is safe again.', 'Thank you!']
+      : ['You have all four medallions!', "Malrek's Castle stands on Castle Hill, far to the " + compassWord(OW_LAYOUT.castleGate[0] - gx, OW_LAYOUT.castleGate[1] - gy) + '.', 'Be brave, hero!'];
+  }
+  const lines = ['Looking for the temples? ' + open.length + (open.length === 1 ? ' is' : ' are') + ' still waiting.'];
+  for (const o of open) lines.push('To the ' + o.dir + ': ' + TEMPLE_HINTS[o.d.def.id]);
+  lines.push('Tap the MAP button to see where you are!');
+  return lines;
+}
+{
+  const guides = [
+    { x: overworld.w / 2 + 4, y: overworld.h / 2 + 2, name: 'Willowbrook' },
+    { x: desertTownSpot.x - 1, y: desertTownSpot.y + 3, name: 'the Desert Outpost' },
+    ...OW_TOWNS.filter(t => t.interior).map(t => ({ x: t.shop.doorTileX - 2.5, y: t.shop.doorTileY + 2.5, name: t.name })),
+  ];
+  for (const gd of guides) {
+    const n = makeNPC(gd.x * CONFIG.TILE, gd.y * CONFIG.TILE, '#3a7a5a', ['...'], { sprite: 'elder', name: 'Town Guide' });
+    n.hintGuide = gd.name; n.stationary = true;
+    villagerNPCs.push(n);
+  }
+}
+
 function allNPCs() {
+  if (world.mode === 'interior' && world.interior && world.interior.npcs) return world.interior.npcs;
   const list = villagerNPCs.concat(cameoNPCs);
   if (world.mode === 'interior' && world.interior === houseInterior) return houseNPCs;
   if (world.mode === 'interior' && world.interior === shopInterior) return shopNPCs;
@@ -4041,6 +4152,7 @@ function allNPCs() {
 const dialogue = { active: false, npc: null, lineIndex: 0 };
 function openDialogue(npc) {
   if (npc.isShopkeeper) { openShop(); return; }
+  if (npc.hintGuide) npc.lines = guideLines(npc); // always up to date
   dialogue.active = true; dialogue.npc = npc; dialogue.lineIndex = 0;
 }
 function advanceDialogue() {
@@ -7668,6 +7780,7 @@ loadAtlas(() => {
     houseInterior.canvas = prerenderMap(houseInterior);
     shopInterior.canvas = prerenderMap(shopInterior);
     desertShopInterior.canvas = prerenderMap(desertShopInterior);
+    for (const t of OW_TOWNS) if (t.interior) t.interior.canvas = prerenderMap(t.interior);
     for (const dg of dungeons) {
       for (const r of dg.rooms) r.canvas = prerenderMap(r);
     }
