@@ -25,6 +25,7 @@ SHEETS = [  # name, background, expected poses per band, target idle height (px)
     ('malrek2', 'green', [4, 4], 150),       # second Malrek sheet (orbs, ground slam, nova aura)
     ('castle_props', 'green', [6, 6], 64),   # crystals on pedestals, red/blue barrier pegs, brazier
     ('cindermaw', 'green', [3, 3], 90),      # walk, lunge, spit, rear + fire ring, stunned, hurt
+    ('sol', 'green', [4], 64),               # Sol the Dune Keeper: front idle, front blink, walk 1, walk 2
 ]
 def key(A, bg):
     r, g, b = A[..., 0], A[..., 1], A[..., 2]
@@ -133,7 +134,8 @@ def pack(rows, fname):
         y += max(i.height for i in imgs) + 2
     out.save(os.path.join(ART, fname), optimize=True)
     return tab
-t1 = pack([r for r in atl_rows if r[0] not in ('map_symbols', 'castle_props')], 'boss_poses.png')
+t1 = pack([r for r in atl_rows if r[0] not in ('map_symbols', 'castle_props', 'sol')], 'boss_poses.png')
 t3 = pack([r for r in atl_rows if r[0] == 'castle_props'], 'castle_props.png')
+t4 = pack([r for r in atl_rows if r[0] == 'sol'], 'npc_sol.png')
 t2 = pack([r for r in atl_rows if r[0] == 'map_symbols'], 'map_symbols.png')
-print(json.dumps(t1)); print(json.dumps(t2)); print(json.dumps(t3))
+print(json.dumps(t1)); print(json.dumps(t2)); print(json.dumps(t3)); print(json.dumps(t4))
