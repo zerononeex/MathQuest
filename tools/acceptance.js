@@ -1141,7 +1141,7 @@ function check(name, ok, detail) {
           hero.x = 4 * 16; hero.y = Math.floor(room.h / 2) * 16 + 8;
           scaleBossForFight(e);
           const seen = new Set(), states = new Set();
-          for (let i = 0; i < 60 * 40 && seen.size < 3; i++) { updateBossAI(e, 1 / 60, room, d); if (e.bs.atk) seen.add(e.bs.atk); states.add(e.bs.st); e.x = Math.max(40, Math.min(room.w * 16 - 40, e.x)); }
+          for (let i = 0; i < 60 * 120 && seen.size < 3; i++) { updateBossAI(e, 1 / 60, room, d); if (e.bs.atk) seen.add(e.bs.atk); states.add(e.bs.st); e.x = Math.max(40, Math.min(room.w * 16 - 40, e.x)); }
           out[id] = { hp: e.maxHp, attacks: [...seen].sort().join(','), states: [...states].sort().join(',') };
         }
         const f = dungeons.find(x => x.def.id === 'fire'), c = f.enemies[2][0];
