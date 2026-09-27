@@ -81,7 +81,7 @@ plate = im.copy(); known = ~dilate(cut, 1)
 alt = next((q for q in (os.path.join(HERE, '..', 'title_plate_raw.' + e) for e in ('jpg', 'jpeg', 'png', 'webp')) if os.path.exists(q)), None)
 if alt:
     ap = np.asarray(Image.open(alt).convert('RGB').resize((W, H), Image.LANCZOS)).astype(float)
-    hole = dilate(cut, 3); plate[hole] = ap[hole]; known = known | hole
+    hole = dilate(cut, 1); plate[hole] = ap[hole]; known = known | hole
 for _ in range(400):
     if known.all(): break
     acc = np.zeros_like(plate); cnt = np.zeros((H, W))
@@ -96,8 +96,34 @@ def cutout(mask, bb):
     rgba[..., :3] = im[y0:y1, x0:x1].astype('uint8'); rgba[..., 3] = mask[y0:y1, x0:x1] * 255
     return Image.fromarray(rgba)
 capeI, hairI = cutout(cape, CAPE), cutout(hair, HAIR)
-sheet = Image.new('RGBA', (capeI.width + hairI.width + 2, max(capeI.height, hairI.height)), (0, 0, 0, 0))
+# flapping birds (art-src/title_birds_raw.jpg: 4 frames in a row on magenta),
+# keyed, shrunk to 1/4 and anchored at the beak so the flap doesn't wobble
+birds = []
+braw = os.path.join(HERE, '..', 'title_birds_raw.jpg')
+if os.path.exists(braw):
+    bi = np.asarray(Image.open(braw).convert('RGB')).astype(int)
+    br, bg_, bb = bi[..., 0], bi[..., 1], bi[..., 2]
+    bmag = (br - bg_ > 60) & (bb - bg_ > 60)
+    bfg = ~bmag; bfg[:30] = False; bfg[-30:] = False
+    cols = np.where(bfg.any(0))[0]; runs = []; st = pv = cols[0]
+    for c in cols[1:]:
+        if c - pv > 6: runs.append((st, pv)); st = c
+        pv = c
+    runs.append((st, pv))
+    for x0, x1 in runs[:4]:
+        ys = np.where(bfg[:, x0:x1 + 1].any(1))[0]; y0, y1 = ys[0], ys[-1]
+        beak = np.where(bfg[:, x1 - 2:x1 + 1].any(1))[0].mean()
+        rgba = np.zeros((y1 - y0 + 1, x1 - x0 + 1, 4), 'uint8')
+        rgba[..., :3] = bi[y0:y1 + 1, x0:x1 + 1]; rgba[..., 3] = bfg[y0:y1 + 1, x0:x1 + 1] * 255
+        fr = Image.fromarray(rgba); q = 4
+        fr = fr.resize((max(1, fr.width // q), max(1, fr.height // q)), Image.LANCZOS)
+        birds.append((fr, (x1 - x0) / q, (beak - y0) / q))
+bw = sum(f.width + 2 for f, _, _ in birds)
+sheet = Image.new('RGBA', (capeI.width + hairI.width + 4 + bw, max([capeI.height, hairI.height] + [f.height for f, _, _ in birds])), (0, 0, 0, 0))
 sheet.paste(capeI, (0, 0)); sheet.paste(hairI, (capeI.width + 2, 0))
+birdFx, bx = [], capeI.width + hairI.width + 4
+for f, ax, ay in birds:
+    sheet.paste(f, (bx, 0)); birdFx.append({'sx': bx, 'sy': 0, 'w': f.width, 'h': f.height, 'ax': round(ax, 1), 'ay': round(ay, 1)}); bx += f.width + 2
 
 def data_url(img, fmt, **kw):
     buf = io.BytesIO(); img.save(buf, fmt, **kw)
@@ -108,7 +134,7 @@ sheet.save(os.path.join(HERE, '..', 'title_fx.png'))
 fx = {'w': W, 'h': H,
       'cape': {'sx': 0, 'sy': 0, 'w': capeI.width, 'h': capeI.height, 'x': CAPE[0], 'y': CAPE[1]},
       'hair': {'sx': capeI.width + 2, 'sy': 0, 'w': hairI.width, 'h': hairI.height, 'x': HAIR[0], 'y': HAIR[1]},
-      'grass': GRASS, 'still': [HERO, ROCK], 'windows': WINDOWS, 'lake': LAKE, 'birds': BIRDS}
+      'grass': GRASS, 'still': [HERO, ROCK], 'windows': WINDOWS, 'lake': LAKE, 'birds': BIRDS, 'birdFrames': birdFx}
 
 p = os.environ.get('MQ_FILE') or os.path.join(ROOT, 'math-quest.html')
 html = open(p, encoding='utf-8').read()
