@@ -18,7 +18,17 @@ for kind, W in WIDTH.items():
     r, g, b = A[..., 0], A[..., 1], A[..., 2]
     BG = (r > 150) & (b > 150) & (g < 130) & (np.abs(r - b) < 90)
     FR = ~BG & (r > g + 70) & (b > g + 70)          # magenta fringe
-    alpha = ~(BG | FR)
+    # key only the backdrop connected to the border, so magenta-ish glows
+    # inside the building (a violet gem's halo) survive
+    KEY = BG | FR
+    reach = np.zeros_like(KEY); reach[0, :] = KEY[0, :]; reach[-1, :] = KEY[-1, :]; reach[:, 0] = KEY[:, 0]; reach[:, -1] = KEY[:, -1]
+    while True:
+        grow = reach.copy()
+        grow[1:] |= reach[:-1]; grow[:-1] |= reach[1:]; grow[:, 1:] |= reach[:, :-1]; grow[:, :-1] |= reach[:, 1:]
+        grow &= KEY
+        if (grow == reach).all(): break
+        reach = grow
+    alpha = ~reach
     rows, cols = np.where(alpha.sum(1) > 4)[0], np.where(alpha.sum(0) > 4)[0]
     y0, y1, x0, x1 = rows[0], rows[-1], cols[0], cols[-1]
     rgba = np.dstack([A[y0:y1 + 1, x0:x1 + 1], alpha[y0:y1 + 1, x0:x1 + 1] * 255.0])
