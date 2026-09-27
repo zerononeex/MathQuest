@@ -1538,6 +1538,73 @@ function check(name, ok, detail) {
     await qp.close();
   }
 
+  // --- QA/QC audit regressions: tunic swaps can't heal; consumables cap at
+  // 9; the bow's key again swaps the arrow type; arrows strike peg crystals;
+  // a cleared temple reloads with its waves, puzzle, locked door and chest
+  // done; the Boss Rush Malrek fires with no castle Malrek; closing a card
+  // keeps a held arrow key ---
+  {
+    const rp = await browser.newPage();
+    rp.on('pageerror', e => errorsAll.push('audit: ' + e.message));
+    await rp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await rp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      const step = n => { for (let i = 0; i < (n || 1); i++) { update(CONFIG.STEP_MS); flush(); } };
+      const TS = CONFIG.TILE;
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame(); dialogue.active = false; player.invincibleT = 1e9;
+        // tunic swaps
+        player.unlockedSkins.red = true; wearTunic('red'); player.hearts = player.maxHearts - 4;
+        const h0 = player.hearts;
+        for (let i = 0; i < 4; i++) { wearTunic('classic'); wearTunic('red'); }
+        out.noSwapHeal = player.hearts <= h0;
+        player.hearts = player.maxHearts; wearTunic('classic'); wearTunic('red'); out.fullStaysFull = player.hearts === player.maxHearts; // (full red -> off -> on: still full)
+        // consumable cap
+        const berry = SHOP_ITEMS.find(i => i.id === 'superMushroom'); hud.gold = 9999; player.owned.superMushroom = 0;
+        for (let i = 0; i < 12; i++) buyItem(berry);
+        out.cap = player.owned.superMushroom === CONSUMABLE_MAX && hud.gold === 9999 - CONSUMABLE_MAX * berry.price;
+        // keyboard arrow type
+        player.owned.bow = true; player.owned.fireArrow = true; player.slots[1] = 'bow'; player.activeSlot = 1; player.arrowType = 'normal';
+        Input.keys['2'] = true; step(); out.kbArrow = player.arrowType === 'fire';
+        // an arrow strikes a temple peg crystal
+        const d = dungeons[0], ri = d.extra.findIndex(x => x && x.kind === 'crystal');
+        world.mode = 'dungeon'; world.dungeon = d; d.roomIndex = ri;
+        const pr = d.extra[ri], c = pr.puz.crystals[0], col0 = pr.puz.raised;
+        hero.x = (c.x + 0.5) * TS; hero.y = (c.y + 0.5) * TS + 40; hero.facing = 'up'; player.attackCooldown = 0; player.ap = 20;
+        fireArrow(); step(30);
+        out.arrowCrystal = pr.puz.raised !== col0;
+        world.mode = 'overworld'; world.dungeon = null;
+        // Boss Rush Malrek with no castle Malrek
+        castle.ganon = null; const g = makeGanon(10 * TS, 6 * TS);
+        out.rushSpeed = ganonProjectileSpeed(g) > 0;
+        // a held arrow survives closing a card
+        showItemGet('Test', ['a', 'b', '', ''], '#fff', null); livesScreen.openedAt = -1e9;
+        Input.keys['ArrowRight'] = true; Input.keys['Enter'] = true; step();
+        out.heldKey = !livesScreen.active && Input.keys['ArrowRight'] === true; Input.keys['ArrowRight'] = false;
+        // a cleared temple after a reload
+        d.bossDefeated = true; d.chestOpened = true; d.hasSmallKey = true; d.hasBossKey = true; d.heartPieceGiven = true;
+        saveGame();
+      } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
+      return out;
+    });
+    await rp.reload({ waitUntil: 'load' }); await new Promise(res => setTimeout(res, 400));
+    const r2 = await rp.evaluate(() => {
+      try {
+        continueSavedGame();
+        const d = dungeons[0], m = rr => Math.floor(rr.h / 2), east = rr => rr.grid[m(rr)][rr.w - 1];
+        const r0 = d.rooms[0], pz = d.rooms[d.PUZ], tr = d.rooms[d.TREAS];
+        return { lockOpen: east(r0) === T.FLOOR, waves: d.extra.every(x => !x || x.kind !== 'waves' || (x.puz.solved && east(x.map) === T.FLOOR)),
+          puzzle: d.puzzle.solved && east(pz) === T.FLOOR, chest: tr.grid[m(tr)][Math.floor(tr.w / 2)] !== T.CHEST };
+      } catch (err) { return { exception: err.message }; }
+    });
+    const ok = !r.exception && ['noSwapHeal', 'fullStaysFull', 'cap', 'kbArrow', 'arrowCrystal', 'rushSpeed', 'heldKey'].every(k => r[k] === true) && !r2.exception && r2.lockOpen && r2.waves && r2.puzzle && r2.chest;
+    check('Audit fixes: tunic swaps never heal, consumables cap at 9, bow key swaps arrows, arrows hit peg crystals, Boss Rush Malrek fires without a castle Malrek, held keys survive a card, a cleared temple reloads open',
+      ok, JSON.stringify(r) + ' reload ' + JSON.stringify(r2));
+    await rp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

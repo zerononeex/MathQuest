@@ -4,3 +4,5 @@ tools/screenshots/*.png
 tools/qa-screens/
 tools/qa-report.json
 tools/math-quest-qa.html
+tools/qa-victory-save.json
+tools/audit-screens/

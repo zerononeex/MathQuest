@@ -22,6 +22,55 @@ The runner writes these files:
 It exits with code 1 if any CRITICAL was logged. If the bundled Chromium can't be downloaded, it
 falls back to `/opt/pw-browsers/chromium-*/chrome-linux/chrome` or `$PUPPETEER_EXECUTABLE_PATH`.
 
+### Post-game run
+
+After the victory screen the runner presses Enter (the game reloads), injects the agent again
+and lets it **Continue** the save. The post-game run is played the same way, with input events
+only and no cheats:
+
+- It takes the Golden Knight off in the Wardrobe (P), because that tunic blocks all damage. It
+  also checks that swapping hearts tunics never heals.
+- It re-walks every temple: in, east to the treasure room, then back out on foot without the
+  portal. Doors, puzzles, waves, the boss and the chest must all stay done.
+- It opens every overworld chest. Before that it lifts the boulder with the Titan Bracelet and
+  bombs the cracked rock.
+- It buys the sidequest gear, then plays the whole Aurora Sword sidequest:
+  - bombs the rock in front of the first vault
+  - shoots a plain arrow, then fire arrows, at the torches
+  - steps on the shore switch
+  - throws the Gale Boomerang at the crystal
+  - plays the four vaults: waves, guardian, relic, portal
+  - talks to the smith and bombs open the grotto
+  - lets the Great Fairy reforge the parts
+- It collects the secret heart piece, then steps on the spot again.
+- Mirage Keep: Endless Waves (3 waves, then the Leave pad) and the full Boss Rush.
+- It buys everything left in the shop, trying duplicate purchases, then uses every item.
+- The runner reloads one last time and reads the save back to check that everything stuck.
+
+Flags:
+
+- `--no-postgame` skips the post-game run.
+- `--postgame-minutes N` sets its time limit (default 40).
+- `--postgame-from tools/qa-victory-save.json` runs only the post-game, from the save the last
+  victory left.
+
+The report also lists a **bestiary**: every enemy and boss type defeated, and which were never
+defeated.
+
+## Audit checks (`node tools/audit.js`)
+
+These are the checks a playthrough doesn't give you. The script reads the source or measures
+the game in throwaway pages, then writes `tools/audit-report.md` and door close-ups to
+`tools/audit-screens/`:
+
+- **Math gates:** every `openMathLock` call site and what it guards (bridge levers, big chests
+  and boss seals only).
+- **Difficulty scaling:** Little Hero vs Adventurer vs Legend, measured with the game's own boss
+  AI, shield and damage functions.
+- **Doors:** close-ups of every door kind in every temple, plus a seam check.
+- **AP economy:** math questions per minute and attacks per question, from the last
+  `qa-report.json`.
+
 ## Run it in a real browser
 
 - **Console:** open the game, paste the whole of `qa-agent.js` into DevTools, then run

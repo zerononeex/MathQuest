@@ -71,6 +71,8 @@
       if (world.mode === 'dungeon' && world.dungeon) return 'dungeon:' + world.dungeon.def.id + ':' + world.dungeon.roomIndex;
       if (world.mode === 'castle') return 'castle:' + castle.roomIndex;
       if (world.mode === 'interior') return 'interior:' + (world.interior && world.interior.label);
+      if (world.mode === 'vault' && typeof vaultRun !== 'undefined' && vaultRun) return 'vault:' + vaultRun.id + ':' + vaultRun.roomIndex;
+      if (world.mode === 'mirage' && typeof mirage !== 'undefined') return 'mirage:' + mirage.roomIndex;
       return world.mode;
     } catch (e) { return '?'; }
   }
@@ -230,10 +232,20 @@
         for (const b of buildings) if (b.activation) z.push({ r: b.activation, name: 'building:' + b.name });
         for (const d of dungeons) if (d.entranceZone) z.push({ r: d.entranceZone, name: 'dungeon:' + d.def.id });
         if (typeof castleGate !== 'undefined' && castleGate.zone) z.push({ r: castleGate.zone, name: 'castle' });
+        if (typeof mirageGate !== 'undefined' && mirageGate.open && mirageGate.zone) z.push({ r: mirageGate.zone, name: 'mirage' });
+        // post-game stairs that change map when stepped on: the relic vaults and the grotto
+        if (typeof SQ_SITES !== 'undefined') for (const k of Object.keys(SQ_SITES)) {
+          const st = SQ_SITES[k]; if (!st || typeof st.x !== 'number' || map.grid[st.y][st.x] !== T.STAIRS) continue;
+          z.push({ r: { minX: st.x * T0, maxX: (st.x + 1) * T0 - 0.01, minY: st.y * T0 - 4, maxY: (st.y + 1) * T0 - 0.01 }, name: 'sq:' + k });
+        }
       } else if (world.mode === 'interior' && world.interior === map) {
         const ex = map.exit;
         z.push({ r: { minX: ex.x * T0 - T0, maxX: ex.x * T0 + T0, minY: ex.y * T0 - T0, maxY: ex.y * T0 + T0 }, name: 'exit' });
       } else {
+        if (world.mode === 'mirage' && typeof mirage !== 'undefined') for (const pd of (mirage.rooms[mirage.roomIndex].pads || [])) {
+          const cx = (pd.x + 0.5) * T0, cy = (pd.y + 0.5) * T0;
+          z.push({ r: { minX: cx - 11, maxX: cx + 11, minY: cy - 11, maxY: cy + 11 }, name: 'pad:' + pd.id });
+        }
         z.push({ r: { minX: -1e9, maxX: T0 * 1.2, minY: -1e9, maxY: 1e9 }, name: 'west' });
         z.push({ r: { minX: (map.w - 1.2) * T0, maxX: 1e9, minY: -1e9, maxY: 1e9 }, name: 'east' });
       }
@@ -404,12 +416,13 @@
     return best;
   }
 
-  function* steerToPoint(x, y, tol, ms) {
+  function* steerToPoint(x, y, tol, ms, intoZone) {
     const end = QA.gameMs + ms;
     while (QA.gameMs < end) {
       const dx = x - hero.x, dy = y - hero.y;
       if (Math.abs(dx) <= tol && Math.abs(dy) <= tol) { Inp.setMove([]); return true; }
-      Inp.setMove(zoneGuard(keysToward(dx, dy, tol * 0.5)));
+      const k = keysToward(dx, dy, tol * 0.5);
+      Inp.setMove(intoZone ? k : zoneGuard(k));
       yield;
     }
     Inp.setMove([]);
@@ -608,7 +621,7 @@
       return true;
     }
     if (typeof mapScreen !== 'undefined' && mapScreen.active) { if (QA.gameMs - UI.lastPress > 400) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
-    if (typeof wardrobe !== 'undefined' && wardrobe.active) { if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
+    if (typeof wardrobe !== 'undefined' && wardrobe.active) { if (QA.wardrobeSession) return false; if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
     if (typeof pauseMenu !== 'undefined' && pauseMenu.active) { if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; Inp.press('Escape'); } return true; }
     if (dialogue.active) {
       if (QA.dialogTest) return false;
@@ -698,6 +711,13 @@
       if (opts.chase && d > opts.chase + 90) break;
       if (player.downed) { Inp.setMove([]); yield; continue; }
       if (player.ap < 1) { Inp.setMove([]); yield* topUpAP(); continue; }
+      if ((e.isMiniboss || e.isBoss) && player.hearts <= Math.max(2, player.maxHearts * 0.35) && (player.owned.superMushroom || 0) > 0 && !(player.giantT > 0) && QA.gameMs - (QA.lastBerry || -1e9) > 3000) {
+        QA.lastBerry = QA.gameMs; Inp.setMove([]);
+        yield* selectItem('superMushroom');
+        const h0 = player.hearts; Inp.press('b');
+        if (yield* waitUntil(() => player.hearts > h0, 400)) milestone("Ate a Giant's Berry mid-fight vs " + (e.bossKind || e.type) + ': hearts ' + h0 + ' -> ' + player.hearts + ' (' + player.owned.superMushroom + ' left)');
+        continue;
+      }
       if (!e.isMiniboss && !e.isBoss && player.hearts <= 1 && player.maxHearts >= 3 && QA.gameMs - lastRetreat > 8000 && d < 40) {
         lastRetreat = QA.gameMs; retreatUntil = QA.gameMs + 700;
       }
@@ -1306,9 +1326,9 @@
       if (world.mode === 'interior') {
         const ex = world.interior.exit;
         yield* navTo(Math.floor(ex.x), Math.floor(ex.y), { allowZone: true, expectTransition: true, label: 'leave building' });
-      } else if (world.mode === 'dungeon') {
+      } else if (world.mode === 'dungeon' || world.mode === 'vault' || (world.mode === 'mirage' && !mirage.mode)) {
         const map = currentMap();
-        yield* navTo(0, Math.floor(map.h / 2), { allowZone: true, expectTransition: true, label: 'walk west to leave dungeon' });
+        yield* navTo(0, Math.floor(map.h / 2), { allowZone: true, expectTransition: true, label: 'walk west to leave the ' + world.mode });
       } else break;
       yield* waitUntil(() => !fading(), 1500);
       yield;
@@ -1336,7 +1356,7 @@
     if (item.id === 'heartContainer') return player.heartContainersBought === s.hcb + 1 && player.maxHearts === s.mh + 1;
     return player.owned[item.id] === true && s.owned !== true;
   }
-  function* phaseShop(bname) {
+  function* phaseShop(bname, all) {
     QA.state = 'SHOPPING';
     yield* ensureOverworld();
     const b = buildings.find(x => x.name === (bname || 'shop'));
@@ -1369,11 +1389,14 @@
     Cap.arm('shop'); checkShopLayout();
     yield* wait(120);
     const bought = new Set();
-    for (const id of WISHLIST) {
+    // post-game: every item on the shelf (the Heart Vessel twice)
+    const LIST = Array.isArray(all) ? all : all ? SHOP_ITEMS.map(i => i.id).concat(['heartContainer']) : WISHLIST;
+    for (const id of LIST) {
       const rows = getShopRows(), row = rows.find(x => x.item.id === id);
       if (!row) continue;
       const item = row.item;
-      if (item.consumable && bought.has(id)) continue;
+      if (item.consumable && bought.has(id) && !Array.isArray(all)) continue;
+      if (all === true && item.consumable && (player.owned[id] || 0) > 0) continue; // (one of each is enough here)
       if (!canBuy(item) || hud.gold < item.price) continue;
       if (!rowFullyVisible(row)) {
         // scroll like a player would: mouse wheel over the list, then arrow keys
@@ -1406,6 +1429,22 @@
       } else {
         report('CRITICAL', 'shop', 'Purchase of "' + item.name + '" (' + item.price + 'g) did not apply exactly: gold ' + g0 + ' -> ' + hud.gold + ', ownership ' + JSON.stringify(s) + ' -> ' + JSON.stringify(ownSnap(item)));
       }
+    }
+    if (all === true) { // duplicate-purchase exploits: owned gear, a full Heart Vessel quota and an owned tunic must all be refused
+      for (const id of ['bow', 'heartContainer', 'skinRed', 'sharpSword']) {
+        const row = getShopRows().find(x => x.item.id === id);
+        if (!row || canBuy(row.item)) continue;
+        if (!rowFullyVisible(row)) { const i0 = row.index; for (let k = 0; k < 16 && !rowFullyVisible(getShopRows()[i0]); k++) { Inp.press(getShopRows()[i0].rect.y < shopViewport().y ? 'ArrowUp' : 'ArrowDown'); yield* wait(90); } }
+        const r3 = getShopRows().find(x => x.item.id === id); if (!rowFullyVisible(r3)) continue;
+        const s = ownSnap(r3.item), g0 = hud.gold, mh = player.maxHearts;
+        Inp.tap(r3.rect.x + r3.rect.w / 2, r3.rect.y + r3.rect.h / 2, 'try to buy owned ' + r3.item.name + ' again');
+        yield* wait(150);
+        if (hud.gold !== g0 || player.maxHearts !== mh || JSON.stringify(ownSnap(r3.item)) !== JSON.stringify(s)) report('CRITICAL', 'shop', 'Duplicate purchase exploit: buying the owned "' + r3.item.name + '" again changed gold ' + g0 + ' -> ' + hud.gold + ' or the inventory');
+        else milestone('Shop refused a second ' + r3.item.name + ' ("' + shop.msg + '"), gold unchanged');
+      }
+      const missing = SHOP_ITEMS.filter(i => i.consumable ? !(player.owned[i.id] > 0) : canBuy(i)).map(i => i.name);
+      if (missing.length) report('WARNING', 'shop', 'Post-game shop: could not buy ' + missing.join(', ') + ' (gold ' + hud.gold + ')', null, 'shopall');
+      else milestone('Every shop item is owned (consumables x1+, Heart Vessel x2, all three tunics)');
     }
     // negative test: an unaffordable visible item must not be granted
     const rows = getShopRows(), poor = rows.find(x => canBuy(x.item) && hud.gold < x.item.price && !x.item.consumable && rowFullyVisible(x));
@@ -1622,16 +1661,17 @@
     }
     return true;
   }
-  function* leaveDungeon(d, st) {
+  function* leaveDungeon(d, st, walk) {
     // a cleared treasure room has an exit portal: take it, like a player would
-    const pp = typeof treasurePortalPos === 'function' ? treasurePortalPos(d) : null;
+    // (walk: ignore it and walk back through every room instead)
+    const pp = !walk && typeof treasurePortalPos === 'function' ? treasurePortalPos(d) : null;
     if (pp) {
       const TSp = CONFIG.TILE;
       yield* navTo(Math.floor(pp.x / TSp), Math.floor(pp.y / TSp), { allowZone: true, expectTransition: true, label: 'exit ' + d.def.name + ' through the treasure-room portal', timeoutMs: 20000 });
       yield* waitUntil(() => !fading(), 1500);
     }
     let guard = 0;
-    while (world.mode === 'dungeon' && guard++ < 8) {
+    while (world.mode === 'dungeon' && guard++ < 14) {
       const ri = d.roomIndex, room = currentMap(), midY = Math.floor(room.h / 2);
       if (d.extra && d.extra[ri] && d.extra[ri].kind === 'crystal') yield* crossPegRoomWest(d, ri);
       const r = yield* navTo(0, midY, { allowZone: true, expectTransition: true, label: 'exit ' + d.def.name + ': walk west out of room ' + ri, timeoutMs: 45000 });
@@ -1945,7 +1985,545 @@
     return b.locked;
   }
 
+  // =====================================================================
+  // POST-GAME (run 2: the runner reloads after the victory screen and the
+  // agent carries on from the real save with Continue). Same rules: input
+  // events only; state is read for planning and verification.
+  // =====================================================================
+  const PG = { log: {} };
+  function pgNote(k, v) { PG.log[k] = v; }
+  function* pgSaveState() {
+    QA.state = 'POSTGAME';
+    const bad = [];
+    if (!castle.defeated) bad.push('castle.defeated is false');
+    if (!mirageGate.open) bad.push('Mirage Keep did not appear in the desert');
+    if (medals() !== 4) bad.push('medallions ' + medals() + '/4');
+    for (const d of dungeons) {
+      if (!d.chestOpened) bad.push(d.def.name + ' chest closed again');
+      if (!d.bossDefeated) bad.push(d.def.name + ' boss alive again');
+    }
+    if (currentTunic() !== TUNIC_SKINS.golden) bad.push('the Golden Knight tunic (victory reward) is not worn');
+    if (bad.length) report('CRITICAL', 'save', 'Post-game Continue lost progress: ' + bad.join('; '));
+    else milestone('Post-game save loaded: Malrek beaten, Mirage Keep open, 4 medallions, every dungeon cleared, Golden Knight worn');
+    pgNote('save', bad.length ? bad : 'ok');
+    yield;
+  }
+  // Wardrobe (P): take the Golden Knight off (it blocks all damage) so every
+  // post-game fight is a real one. Also checks the tunic heal exploit.
+  function* pgWardrobe(want) {
+    QA.state = 'WARDROBE';
+    const tap = function* (key) {
+      const sw = getWardrobeSwatches().find(w => w.key === key);
+      if (!sw) return false;
+      Inp.tap(sw.x + sw.w / 2, sw.y + sw.h / 2, 'wardrobe ' + key);
+      yield* wait(80);
+      return true;
+    };
+    Inp.setMove([]);
+    QA.wardrobeSession = true; // (before P: the modal handler would close it again otherwise)
+    Inp.press('p');
+    if (!(yield* waitUntil(() => wardrobe.active, 600))) { QA.wardrobeSession = false; report('CRITICAL', 'wardrobe', 'P did not open the Wardrobe'); return; }
+    if (player.unlockedSkins.red) { // swapping hearts tunics must never heal
+      yield* tap('classic');
+      const h0 = player.hearts, m0 = player.maxHearts;
+      for (let i = 0; i < 3; i++) { yield* tap('red'); yield* tap('classic'); }
+      if (player.hearts > h0 || player.maxHearts !== m0) report('CRITICAL', 'exploit', 'Tunic swap heal exploit: Red/Classic x3 in the Wardrobe changed hearts ' + h0 + '/' + m0 + ' -> ' + player.hearts + '/' + player.maxHearts);
+      else milestone('Wardrobe: Red <-> Classic swaps kept hearts at ' + player.hearts + '/' + player.maxHearts + ' (no free healing)');
+    }
+    const key = player.unlockedSkins[want] ? want : 'classic';
+    yield* tap(key);
+    Inp.press('Escape');
+    yield* waitUntil(() => !wardrobe.active, 600);
+    QA.wardrobeSession = false;
+    if (player.skin !== key) report('CRITICAL', 'wardrobe', 'Tapping the ' + key + ' swatch did not change the tunic (still ' + player.skin + ')');
+    else milestone('Wearing the ' + TUNIC_SKINS[key].name + ' tunic (' + (TUNIC_SKINS[key].perk || 'no perk') + '), hearts ' + player.hearts + '/' + player.maxHearts + ', attack ' + player.attack);
+  }
+  // a cleared dungeon, after a reload: walk in, east through every room to
+  // the treasure room (checking what must stay done), then walk all the way
+  // back out without the portal
+  function* pgRewalkDungeon(d) {
+    QA.state = 'REWALK';
+    const name = d.def.name, st = { exited: false }, issues = [];
+    if (!(yield* enterDungeonGen(d))) { report('CRITICAL', 'transition', 'Post-game: could not re-enter ' + name); return; }
+    milestone('Post-game: re-entered ' + name + ' (room ' + d.roomIndex + ')');
+    for (let ri = 0; ri < d.TREAS; ri++) {
+      if (d.roomIndex !== ri || world.mode !== 'dungeon') { issues.push('lost track at room ' + ri); break; }
+      yield* roomClear(60000);
+      const x = d.extra && d.extra[ri];
+      if (x && x.kind === 'waves' && !x.puz.solved) issues.push('wave room ' + ri + ' is unsolved again');
+      if (x && x.kind === 'crystal' && !(yield* crossPegRoom(d, ri))) { issues.push('crystal pegs in room ' + ri); break; }
+      if (ri === d.PUZ && d.puzzle && !d.puzzle.solved) issues.push('the ' + d.puzzle.type + ' puzzle reset');
+      if (ri === d.BOSS) {
+        const boss = d.enemies[d.BOSS].find(e => e.isMiniboss);
+        if (boss && boss.alive) { issues.push('the boss is back (hp ' + boss.hp + ')'); yield* fight(boss, { timeoutMs: 240000 }); }
+      }
+      if (!(yield* passEastDoor(d, ri, 'door ' + ri + '->' + (ri + 1)))) { issues.push('door ' + ri + '->' + (ri + 1)); break; }
+    }
+    if (d.roomIndex === d.TREAS) {
+      const room = d.rooms[d.TREAS], cy = Math.floor(room.h / 2), cx = Math.floor(room.w / 2);
+      if (!d.chestOpened || room.grid[cy][cx] === T.CHEST) issues.push('the treasure chest is closed again');
+      if (!treasurePortalPos(d)) issues.push('no exit portal in the cleared treasure room');
+      milestone(name + ': reached the treasure room again (chest ' + (d.chestOpened ? 'open' : 'CLOSED') + ', portal ' + (treasurePortalPos(d) ? 'there' : 'MISSING') + ')');
+    }
+    yield* leaveDungeon(d, st, true); // walk, every room, no portal
+    if (world.mode !== 'overworld') issues.push('could not walk back out to the overworld');
+    else {
+      const z = d.entranceZone, ex = (z.minX + z.maxX) / 2, ey = (z.minY + z.maxY) / 2;
+      if (Math.hypot(hero.x - ex, hero.y - ey) > 5 * TS()) issues.push('walked out far from the entrance (' + heroTile().tx + ',' + heroTile().ty + ')');
+    }
+    if (issues.length) report('CRITICAL', 'traversal', 'Post-game ' + name + ' re-walk: ' + issues.join('; '), null, 'rewalk|' + d.def.id);
+    else milestone(name + ': walked entrance -> treasure room -> back out on foot; every door opens both ways, boss gone, chest open');
+    pgNote('rewalk:' + d.def.id, issues.length ? issues : 'ok');
+  }
+  // ---- items ----
+  function* selectItem(id) {
+    for (let i = 0; i < 8 && selectedItem() !== id; i++) { Inp.press('v'); yield* wait(60); }
+    return selectedItem() === id;
+  }
+  function* faceDir(dir) {
+    if (hero.facing === dir) return true;
+    Inp.setMove([DIRKEY[dir]]); yield; Inp.setMove([]); yield;
+    return hero.facing === dir;
+  }
+  function* pgItems() {
+    QA.state = 'ITEMS';
+    yield* ensureOverworld();
+    const moveOk = function* () { // the hero must still walk after using an item
+      const x0 = hero.x, y0 = hero.y;
+      for (const k of ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp']) {
+        for (let i = 0; i < 12; i++) { Inp.setMove(zoneGuard([k])); yield; }
+        Inp.setMove([]);
+        if (Math.hypot(hero.x - x0, hero.y - y0) > 3) return true;
+      }
+      return false;
+    };
+    const checks = {
+      superMushroom: () => player.giantT > 0 && player.hearts === player.maxHearts,
+      fireFlower: () => player.emberT > 0,
+      dkBarrel: () => heroShots.some(h => h.kind === 'barrel'),
+      inkBlaster: () => player.inkT > 0,
+    };
+    const res = {};
+    for (const id of Object.keys(checks)) {
+      if (!(player.owned[id] > 0)) { res[id] = 'not owned'; continue; }
+      if (!(yield* selectItem(id))) { report('CRITICAL', 'items', 'V never selected ' + ITEM_NAMES[id]); res[id] = 'select'; continue; }
+      const n0 = player.owned[id];
+      yield* wait(600); // (item cooldown)
+      Inp.press('b');
+      const ok = yield* waitUntil(checks[id], 400);
+      const used = player.owned[id] === n0 - 1;
+      const walks = yield* moveOk();
+      res[id] = ok && used && walks ? 'ok' : { effect: ok, countDown: used, walks };
+      if (!(ok && used)) report('CRITICAL', 'items', ITEM_NAMES[id] + ' did nothing when used with B (effect ' + ok + ', count ' + n0 + ' -> ' + player.owned[id] + ')');
+      if (!walks) report('CRITICAL', 'items', 'Hero cannot move after using ' + ITEM_NAMES[id]);
+    }
+    if (player.inkT > 0) { // the Ink Blaster turns the sword swing into ink blobs
+      if (player.activeSlot !== swordSlot()) { Inp.press(String(swordSlot() + 1)); yield* wait(60); }
+      // face open ground (a blob thrown into a tree is gone the same frame), wait out the cooldown, then swing
+      const map = currentMap(), open = ['right', 'left', 'down', 'up'].find(d => [1, 2, 3].every(k => hitboxFree(map, hero.x + DIRVEC[d][0] * 16 * k, hero.y + DIRVEC[d][1] * 16 * k)));
+      if (open) yield* faceDir(open);
+      yield* waitUntil(() => player.attackCooldown <= 0, 1000);
+      Inp.press(' ');
+      res.inkShot = (yield* waitUntil(() => heroShots.some(h => h.kind === 'ink'), 300)) ? 'ok' : 'no blob';
+      if (res.inkShot !== 'ok') report('WARNING', 'items', 'A sword swing with the Ink Blaster active threw no ink blob');
+    }
+    // a bomb hurts an enemy it lands next to
+    const foe = currentEnemies().filter(e => e.alive && !e.hidden && !e.isMiniboss).sort((a, b) => Math.hypot(a.x - hero.x, a.y - hero.y) - Math.hypot(b.x - hero.x, b.y - hero.y))[0];
+    if (foe && (yield* selectItem('bomb'))) {
+      let hit = false;
+      for (let t = 0; t < 4 && !hit && foe.alive; t++) {
+        if (!(yield* goNear(foe, 20, 8000))) break;
+        const dx = foe.x - hero.x, dy = foe.y - hero.y;
+        yield* faceDir(wantFacing(dx, dy));
+        const hp0 = foe.hp; Inp.press('b');
+        yield* wait(2200);
+        hit = foe.hp < hp0 || !foe.alive;
+      }
+      res.bombFoe = hit ? 'ok' : 'missed';
+      if (hit) milestone('A bomb blast hurt a ' + foe.type);
+    }
+    milestone('Items: ' + JSON.stringify(res));
+    pgNote('items', res);
+  }
+  // ---- aiming: stand in line with a target and fire across water ----
+  function pathClear(map, x0, y0, x1, y1) { // (the target's own tile is solid: stop 11px short of it)
+    const d = Math.hypot(x1 - x0, y1 - y0), n = Math.max(1, Math.ceil(d / 4));
+    for (let i = 1; i < n; i++) { const t = i / n; if (d * (1 - t) < 11) break; if (projSolidAt(map, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) return false; }
+    return true;
+  }
+  function* shootAt(tx, ty, aimY, weapon, maxTiles, done, label) {
+    const map = currentMap(), T0 = TS();
+    const cands = [];
+    for (const [dir, vx, vy] of [['up', 0, 1], ['down', 0, -1], ['left', 1, 0], ['right', -1, 0]]) {
+      for (let k = 2; k <= maxTiles; k++) {
+        const sx = tx + vx * k, sy = ty + vy * k;
+        if (solidTile(map, sx, sy) || zoneAtPoint(map, (sx + 0.5) * T0, (sy + 0.5) * T0)) continue;
+        if (!hitboxFree(map, (sx + 0.5) * T0, (sy + 0.5) * T0)) continue;
+        if (!pathClear(map, (sx + 0.5) * T0, (sy + 0.5) * T0, (tx + 0.5) * T0, (ty + 0.5) * T0 + aimY)) continue;
+        const p = astar(map, heroTile().tx, heroTile().ty, sx, sy, {});
+        if (p) cands.push({ sx, sy, dir, len: p.length });
+      }
+    }
+    cands.sort((a, b) => a.len - b.len);
+    if (!cands.length) { report('CRITICAL', 'progression', 'No standing spot in line with the ' + label + ' at (' + tx + ',' + ty + ') for the ' + weapon); return false; }
+    for (const c of cands.slice(0, 4)) {
+      if ((yield* navTo(c.sx, c.sy, { label: 'line up a shot at the ' + label, timeoutMs: 240000 })) !== 'arrived') continue;
+      yield* faceDir(c.dir);
+      yield* steerToPoint((c.sx + 0.5) * T0, (c.sy + 0.5) * T0, 1.5, 1500);
+      yield* faceDir(c.dir);
+      const slot = player.slots.indexOf(weapon === 'bow' ? 'bow' : player.owned.galeBoomerang && player.slots.includes('galeBoomerang') ? 'galeBoomerang' : 'boomerang');
+      if (slot < 0) { report('CRITICAL', 'items', 'No ' + weapon + ' in a weapon slot'); return false; }
+      if (player.activeSlot !== slot) { Inp.press(String(slot + 1)); yield* wait(60); }
+      if (weapon === 'bow') { // the bow's key again cycles the arrow type (keyboard players have no swipe)
+        const want = QA.arrowWant || 'normal';
+        for (let i = 0; i < 4 && player.arrowType !== want; i++) { Inp.press(String(slot + 1)); yield* wait(60); }
+        if (player.arrowType !== want) { report('CRITICAL', 'input', 'Pressing the bow slot key again never switched the arrow type to ' + want + ' (keyboard only)'); return false; }
+      }
+      if (player.ap < 3) yield* topUpAP();
+      for (let shot = 0; shot < 3 && !done(); shot++) {
+        yield* waitUntil(() => player.attackCooldown <= 0, 800);
+        const ap0 = player.ap;
+        Inp.press(' ');
+        yield* wait(weapon === 'bow' ? 900 : 1600);
+        if (weapon === 'bow' && shot === 0 && player.ap !== ap0 - 1 && !(typeof goldenPowers === 'function' && goldenPowers())) report('WARNING', 'ap', 'An arrow cost ' + (ap0 - player.ap) + ' AP (expected 1)');
+      }
+      if (done()) return true;
+    }
+    return done();
+  }
+  // ---- the relic vaults ----
+  function* pgVault(id) {
+    const D = VAULT_DEFS[id], S = SQ_SITES[id];
+    for (let attempt = 0; attempt < 3 && !sq.parts[D.part]; attempt++) {
+      yield* ensureOverworld();
+      QA.state = 'VAULT';
+      const r = yield* navTo(S.x, S.y, { allowZone: true, expectTransition: true, label: 'walk into the ' + D.name, timeoutMs: 400000 });
+      yield* waitUntil(() => !fading(), 1500);
+      if (world.mode !== 'vault') { report('CRITICAL', 'transition', 'Could not enter the ' + D.name + ' (' + r + ', stairs tile ' + tileName(overworld.grid[S.y][S.x]) + ')'); return false; }
+      milestone('Entered the ' + D.name);
+      const v = vaultRun, midY = (m) => Math.floor(m.h / 2);
+      // room 0: the waves
+      const tw = QA.gameMs;
+      while (!v.st.waves && world.mode === 'vault' && QA.gameMs - tw < 240000) { yield* roomClear(60000); yield* wait(200); }
+      if (world.mode !== 'vault') continue;
+      if (!v.st.waves) { report('CRITICAL', 'progression', D.name + ': the waves never ended (wave ' + v.wave + '/' + D.waves + ')'); return false; }
+      milestone(D.name + ': beat ' + D.waves + ' waves');
+      let m = currentMap();
+      yield* navTo(m.w - 2, midY(m), { label: 'to the guardian door', timeoutMs: 30000 });
+      yield* navTo(m.w - 1, midY(m), { allowZone: true, expectTransition: true, label: 'into the guardian hall', timeoutMs: 20000 });
+      yield* waitUntil(() => !fading(), 1500);
+      if (!(world.mode === 'vault' && vaultRun.roomIndex === 1)) { report('CRITICAL', 'transition', D.name + ': the opened door did not lead to the guardian hall'); return false; }
+      // room 1: the guardian
+      const b = vaultRun.boss, tb = QA.gameMs;
+      if (b) milestone(D.name + ': guardian ' + NEW_BOSS_DEFS[D.boss].name + ' (hp ' + b.hp + ')');
+      while (b && b.alive && world.mode === 'vault' && QA.gameMs - tb < 400000) {
+        if (vaultRun.roomIndex !== 1) { // a lost try puts the hero back by the vault door: walk back in
+          yield* waitUntil(() => !anyModal() && !fading(), 5000);
+          const m0 = currentMap();
+          yield* navTo(m0.w - 1, midY(m0), { allowZone: true, expectTransition: true, label: 'back into the guardian hall', timeoutMs: 30000 });
+          yield* waitUntil(() => !fading(), 1500);
+          continue;
+        }
+        QA.goal = 'defeat ' + D.boss + ' hp ' + b.hp; yield* fight(b, { timeoutMs: 120000 }); yield;
+      }
+      if (world.mode !== 'vault') { milestone(D.name + ': sent out by the guardian, going back in'); continue; }
+      if (b && b.alive) { agentIssue('could not beat the ' + D.name + ' guardian'); return false; }
+      if (!(yield* waitUntil(() => vaultRun.st.boss, 2000))) { report('CRITICAL', 'progression', D.name + ': the guardian died but the relic door did not open'); return false; }
+      milestone(D.name + ': guardian defeated in ' + ((QA.gameMs - tb) / 1000).toFixed(1) + 's (game)');
+      m = currentMap();
+      yield* navTo(m.w - 2, midY(m), { label: 'to the relic door', timeoutMs: 30000 });
+      yield* navTo(m.w - 1, midY(m), { allowZone: true, expectTransition: true, label: 'into the relic chamber', timeoutMs: 20000 });
+      yield* waitUntil(() => !fading(), 1500);
+      if (!(world.mode === 'vault' && vaultRun.roomIndex === 2)) { report('CRITICAL', 'transition', D.name + ': the relic door did not lead to the relic chamber'); return false; }
+      // room 2: the pedestal, then the portal home
+      m = currentMap();
+      const pd = vaultPedestalPos(m);
+      yield* steerToPoint(pd.x, pd.y + 8, 3, 8000);
+      if (!(yield* waitUntil(() => sq.parts[D.part], 1500))) { report('CRITICAL', 'pickup', D.name + ': standing on the pedestal did not give the ' + D.part); return false; }
+      yield* waitUntil(() => !anyModal(), 5000);
+      milestone(D.name + ': took the ' + AURORA_PARTS[D.part].name + ' (' + sqPartCount() + '/4)');
+      const pp = vaultPortalPos(m);
+      yield* wait(900);
+      yield* steerToPoint(pp.x, pp.y, 3, 6000);
+      yield* waitUntil(() => world.mode === 'overworld' && !fading(), 3000);
+      if (world.mode !== 'overworld') report('CRITICAL', 'transition', D.name + ': the exit portal did not carry the hero out');
+      else milestone(D.name + ': portal back to the overworld at (' + heroTile().tx + ',' + heroTile().ty + ')');
+      return true;
+    }
+    return !!sq.parts[D.part];
+  }
+  function* talkToNpc(npc, label) {
+    for (let attempt = 0; attempt < 4 && !dialogue.active; attempt++) {
+      const end = QA.gameMs + 20000;
+      Mover.reset();
+      while (QA.gameMs < end && Math.hypot(npc.x - hero.x, npc.y - hero.y) > 24) {
+        const map = currentMap(); let g = { tx: Math.floor(npc.x / TS()), ty: Math.floor((npc.y + 12) / TS()) };
+        if (solidTile(map, g.tx, g.ty)) g = nearestFree(map, g.tx, g.ty, 2) || g;
+        const r = Mover.step(g.tx, g.ty, { replanMs: 500, loose: true });
+        if (r !== 'moving') Inp.setMove(zoneGuard(keysToward(npc.x - hero.x, npc.y - hero.y, 2)));
+        yield;
+      }
+      Inp.setMove([]);
+      yield* faceDir(wantFacing(npc.x - hero.x, npc.y - hero.y));
+      QA.dialogTest = true; // (this phase pages through the dialogue itself)
+      Inp.press('e');
+      yield* waitUntil(() => dialogue.active, 400);
+      if (!dialogue.active) QA.dialogTest = false;
+    }
+    if (!dialogue.active) { QA.dialogTest = false; report('CRITICAL', 'dialog', 'Could not talk to ' + label); return false; }
+    const who = dialogue.npc === npc;
+    for (let i = 0; i < 30 && dialogue.active; i++) { yield* wait(220); if (dialogue.active) Inp.press('e'); yield* wait(40); }
+    QA.dialogTest = false;
+    if (!who) report('WARNING', 'dialog', 'Pressing E by ' + label + ' opened someone else\'s dialogue');
+    yield* waitUntil(() => !anyModal(), 6000);
+    return true;
+  }
+  function* visitSmith() {
+    yield* ensureOverworld();
+    const b = buildings.find(x => x.name === 'smithy');
+    const r = yield* navTo(b.doorTileX, b.doorTileY, { allowZone: true, expectTransition: true, label: 'walk to the smithy', timeoutMs: 300000 });
+    yield* waitUntil(() => !fading(), 1500);
+    if (world.interior !== smithyInterior) { report('CRITICAL', 'transition', 'Could not enter the smithy (' + r + ')'); return false; }
+    const ok = yield* talkToNpc(smithNPC, 'Brannoc the smith');
+    yield* ensureOverworld();
+    return ok;
+  }
+  function* bombAt(tx, ty, label, done) {
+    // stand south of the target and throw a bomb north at it
+    for (let attempt = 0; attempt < 3 && !done(); attempt++) {
+      const map = currentMap();
+      let spot = null;
+      for (let k = 1; k <= 3 && !spot; k++) if (!solidTile(map, tx, ty + k) && hitboxFree(map, (tx + 0.5) * TS(), (ty + k + 0.5) * TS())) spot = { tx, ty: ty + k };
+      if (!spot) spot = nearestFree(map, tx, ty + 1, 3);
+      if ((yield* navTo(spot.tx, spot.ty, { label: 'walk up to the ' + label, timeoutMs: 400000 })) !== 'arrived') continue;
+      yield* steerToPoint((spot.tx + 0.5) * TS(), (spot.ty + 0.5) * TS(), 1.5, 1500);
+      yield* faceDir(wantFacing((tx + 0.5) * TS() - hero.x, (ty + 0.5) * TS() - hero.y));
+      if (!(yield* selectItem('bomb'))) { report('CRITICAL', 'items', 'The bomb cannot be selected with V'); return false; }
+      Inp.press('b');
+      yield* waitUntil(done, 3000);
+    }
+    return done();
+  }
+  function* pgSidequest() {
+    QA.state = 'SIDEQUEST';
+    const S = SQ_SITES;
+    if (!(yield* visitSmith())) return;
+    if (!sq.started) report('CRITICAL', 'sidequest', 'Talking to the smith did not start the Aurora Sword quest');
+    else milestone('Brannoc told the Aurora legend; the four vaults are on the map');
+    // v1: its way in is plugged by a cracked rock
+    const g1 = owGates.find(g => g.id === 'sq_v1');
+    if (g1 && !owState.bombed[g1.id]) {
+      if (yield* bombAt(g1.x, g1.y + 1, 'cracked rock before the Stonebound Vault', () => owState.bombed[g1.id])) milestone('A bomb broke the cracked rock before the Stonebound Vault');
+      else report('CRITICAL', 'items', 'Bombs did not break the cracked rock before the Stonebound Vault');
+    }
+    yield* pgVault('v1');
+    // v2: fire arrows light the islet's two torches, the shore switch lowers the bridge
+    for (let i = 0; i < 2; i++) {
+      if (sq.torches[i]) continue;
+      const [tx, ty] = S.v2.torches[i];
+      if (i === 0) { // a plain arrow must not light it
+        QA.arrowWant = 'normal';
+        yield* shootAt(tx, ty, -6, 'bow', 12, () => false, 'cold torch');
+        if (sq.torches[0]) report('CRITICAL', 'sidequest', 'A plain arrow lit the Emberwake torch'); else milestone('A plain arrow thunked into the cold torch (not lit, as designed)');
+      }
+      QA.arrowWant = 'fire';
+      if (!(yield* shootAt(tx, ty, -6, 'bow', 12, () => sq.torches[i], 'Emberwake torch ' + (i + 1)))) report('CRITICAL', 'sidequest', 'Fire arrows could not light Emberwake torch ' + (i + 1));
+      else milestone('Fire arrow lit Emberwake torch ' + (i + 1));
+    }
+    QA.arrowWant = 'normal';
+    if (sq.torches[0] && sq.torches[1] && !owState.bridges.sq_v2) {
+      const [sx, sy] = S.v2.sw;
+      yield* navTo(sx, sy, { label: 'step on the shore switch', timeoutMs: 200000 });
+      yield* steerToPoint((sx + 0.5) * TS(), (sy + 0.5) * TS(), 2, 3000);
+      if (!(yield* waitUntil(() => owState.bridges.sq_v2, 2000))) report('CRITICAL', 'sidequest', 'The shore switch did not lower the Emberwake bridge');
+      else milestone('The shore switch lowered the bridge to the Emberwake islet');
+    }
+    yield* pgVault('v2');
+    // v3: the Gale Boomerang reaches the islet crystal; the pillars sink
+    if (!sq.crystal) {
+      const [cx, cy] = S.v3.crystal;
+      if (yield* shootAt(cx, cy, -6, 'boomerang', player.owned.galeBoomerang ? 10 : 7, () => sq.crystal, 'Galecrest crystal')) milestone('The boomerang struck the Galecrest crystal');
+      else report('CRITICAL', 'sidequest', 'Could not strike the Galecrest crystal with the boomerang');
+    }
+    if (sq.crystal && S.v3.pillars.some(([x, y]) => overworld.grid[y][x] === T.PROP)) report('CRITICAL', 'sidequest', 'The Galecrest pillars did not sink after the crystal rang');
+    yield* pgVault('v3');
+    // v4: the sealed door opens for the three parts
+    if (!sq.v4Open) {
+      yield* ensureOverworld();
+      yield* navTo(S.v4.x, S.v4.y + 1, { label: 'walk to the sealed Starfall door', timeoutMs: 400000 });
+      yield* faceDir('up');
+      Inp.press('e');
+      yield* waitUntil(() => sq.v4Open || dialogue.active, 800);
+      if (!sq.v4Open) report('CRITICAL', 'sidequest', 'The Starfall door stayed sealed with ' + sqPartCount() + ' parts');
+      else milestone('The Starfall seal broke for the Hilt, Crossguard and Blade');
+    }
+    yield* pgVault('v4');
+    if (sqPartCount() !== 4) { report('CRITICAL', 'sidequest', 'Only ' + sqPartCount() + '/4 Aurora parts after the four vaults'); return; }
+    // the smith sends us to the Great Fairy
+    yield* visitSmith();
+    if (!sq.smithTold) report('CRITICAL', 'sidequest', 'The smith did not send the hero to the Great Fairy with all four parts');
+    const gr = S.grotto;
+    if (!sq.grottoOpen) {
+      if (yield* bombAt(gr.x, gr.y, "Great Fairy's cracked rock face", () => sq.grottoOpen)) milestone("A bomb opened the Great Fairy's grotto");
+      else { report('CRITICAL', 'sidequest', "Bombs did not open the Great Fairy's grotto"); return; }
+    }
+    const r = yield* navTo(gr.x, gr.y, { allowZone: true, expectTransition: true, label: 'into the grotto', timeoutMs: 200000 });
+    yield* waitUntil(() => !fading(), 1500);
+    if (world.interior !== grottoInterior) { report('CRITICAL', 'transition', "Could not walk into the Great Fairy's grotto (" + r + ')'); return; }
+    const before = { atk: player.attack, mh: player.maxHearts, kind: equippedSwordKind(), reach: swordReachPx() };
+    yield* talkToNpc(greatFairyNPC, 'the Great Fairy');
+    yield* waitUntil(() => !anyModal(), 6000);
+    const after = { atk: player.attack, mh: player.maxHearts, kind: equippedSwordKind(), reach: swordReachPx() };
+    const ok = sq.fairyDone && player.owned.auroraSword && after.atk === before.atk + 10 && after.mh === Math.min(30, before.mh + 5) && after.kind === 'auroraSword' && after.reach >= before.reach;
+    if (!ok) report('CRITICAL', 'sidequest', 'Aurora Sword reforge wrong: ' + JSON.stringify({ before, after, fairyDone: sq.fairyDone }));
+    else milestone('AURORA SWORD reforged: attack ' + before.atk + ' -> ' + after.atk + ', hearts ' + before.mh + ' -> ' + after.mh + ', sword ' + before.kind + ' -> auroraSword, reach ' + before.reach + ' -> ' + after.reach + 'px, badge +' + (WEAPON_DAMAGE.auroraSword + 4));
+    pgNote('aurora', { before, after, ok });
+    yield* ensureOverworld();
+  }
+  // ---- Mirage Keep ----
+  function* pgMirage() {
+    QA.state = 'MIRAGE';
+    yield* ensureOverworld();
+    const z = mirageGate.zone;
+    if (!z) { report('CRITICAL', 'postgame', 'Mirage Keep has no entrance after the victory'); return; }
+    const r = yield* navTo(Math.floor((z.minX + z.maxX) / 2 / TS()), Math.floor((z.minY + z.maxY) / 2 / TS()), { allowZone: true, expectTransition: true, label: 'walk into Mirage Keep', timeoutMs: 400000 });
+    yield* waitUntil(() => !fading(), 1500);
+    if (world.mode !== 'mirage') { report('CRITICAL', 'transition', 'Could not enter Mirage Keep (' + r + ')'); return; }
+    milestone('Entered Mirage Keep');
+    Cap.arm('mirage');
+    const pad = function* (id) {
+      const p = mirage.rooms[mirage.roomIndex].pads.find(x => x.id === id);
+      const px = (p.x + 0.5) * TS(), py = (p.y + 0.5) * TS();
+      yield* navTo(Math.floor(px / TS()), Math.floor(py / TS()) + 1, { label: 'walk to the ' + id + ' pad', timeoutMs: 60000 });
+      yield* steerToPoint(px, py, 3, 4000, true); // (onto the pad on purpose)
+      yield* waitUntil(() => !fading() && (id === 'leave' || mapKey() !== 'mirage:0'), 2500);
+    };
+    // Endless Waves: beat 3, then leave by the pad
+    yield* pad('waves');
+    if (mirage.mode !== 'waves') report('CRITICAL', 'postgame', 'The Endless Waves pad did not start the challenge');
+    else {
+      const t0 = QA.gameMs;
+      while (mirage.mode === 'waves' && mirage.wave < 4 && QA.gameMs - t0 < 300000) { yield* roomClear(60000); yield* wait(200); }
+      if (mirage.mode === 'waves') { yield* pad('leave'); yield* waitUntil(() => !anyModal() && !fading(), 6000); }
+      const rec = mirageRecords().waves;
+      milestone('Endless Waves over: reached wave ' + mirage.wave + ', record ' + rec + ' waves');
+      if (rec < 1) report('WARNING', 'postgame', 'Endless Waves: no wave record saved (reached wave ' + mirage.wave + ')');
+      pgNote('waves', rec);
+    }
+    // Boss Rush: five bosses, no revives
+    for (let attempt = 0; attempt < 3 && !mirageRecords().rushMs; attempt++) {
+      yield* waitUntil(() => !anyModal() && !fading() && mirage.roomIndex === 0, 8000);
+      yield* pad('rush');
+      if (mirage.mode !== 'rush') { report('CRITICAL', 'postgame', 'The Boss Rush pad did not start the challenge'); break; }
+      milestone('Boss Rush attempt ' + (attempt + 1));
+      const t0 = QA.gameMs;
+      let seen = -1;
+      while (mirage.mode === 'rush' && QA.gameMs - t0 < 900000) {
+        const b = mirage.boss;
+        if (mirage.rushIndex !== seen && b) { seen = mirage.rushIndex; milestone('Boss Rush ' + (seen + 1) + '/5: ' + (b.bossKind || 'malrek') + ' hp ' + b.hp); }
+        if (b && b.alive && !fading()) yield* fight(b, { timeoutMs: 300000 }); else yield;
+      }
+      yield* waitUntil(() => !anyModal() && !fading(), 8000);
+      milestone('Boss Rush ended: ' + (mirageRecords().rushMs ? 'COMPLETE in ' + fmtTime(mirageRecords().rushMs) : 'failed at boss ' + (mirage.rushIndex + 1)));
+    }
+    if (!mirageRecords().rushMs) report('CRITICAL', 'postgame', 'The Boss Rush was not completed in 3 attempts');
+    pgNote('rush', mirageRecords().rushMs);
+    // back out through the hall's west door
+    yield* waitUntil(() => !anyModal() && !fading(), 8000);
+    const m = currentMap();
+    yield* navTo(0, Math.floor(m.h / 2), { allowZone: true, expectTransition: true, label: 'leave Mirage Keep', timeoutMs: 60000 });
+    yield* waitUntil(() => !fading(), 1500);
+    if (world.mode !== 'overworld') report('CRITICAL', 'transition', 'Could not walk out of Mirage Keep');
+  }
+  function* pgSecretHeart() {
+    QA.state = 'HEART';
+    yield* ensureOverworld();
+    if (player.secretHeartTaken) { milestone('Secret heart piece was already taken'); return; }
+    const mh = player.maxHearts;
+    const r = yield* navTo(secretSpot.x, secretSpot.y, { label: 'walk into the hidden forest clearing', timeoutMs: 400000 });
+    const got = yield* waitUntil(() => player.secretHeartTaken, 1500);
+    if (!got) { report('CRITICAL', 'pickup', 'Could not collect the secret heart piece (' + r + ')'); return; }
+    else if (player.maxHearts !== mh + 1) report('CRITICAL', 'pickup', 'The secret heart piece changed max hearts ' + mh + ' -> ' + player.maxHearts);
+    else milestone('Secret heart piece: max hearts ' + mh + ' -> ' + player.maxHearts);
+    // walk off and back on: it must not give a second heart
+    yield* navTo(secretSpot.x, secretSpot.y - 3, { label: 'step out of the clearing', timeoutMs: 30000 });
+    yield* navTo(secretSpot.x, secretSpot.y, { label: 'step back onto the heart spot', timeoutMs: 30000 });
+    yield* wait(500);
+    if (player.maxHearts !== mh + 1) report('CRITICAL', 'exploit', 'The secret heart piece could be collected twice');
+    pgNote('heart', { before: mh, after: player.maxHearts });
+  }
+  function* pgFarm(essentials) { // enough gold for the sidequest gear, or for everything still on the shelf
+    const GEAR = ['boomerang', 'bow', 'fireArrow', 'galeBoomerang'];
+    const need = SHOP_ITEMS.reduce((s, i) => s + (essentials ? (GEAR.includes(i.id) && !player.owned[i.id] ? i.price : 0)
+      : i.consumable ? (player.owned[i.id] > 0 ? 0 : i.price) : canBuy(i) ? i.price * (i.id === 'heartContainer' ? 2 - player.heartContainersBought : 1) : 0), 0);
+    milestone('Post-game ' + (essentials ? 'sidequest gear' : 'shopping list') + ' costs ' + need + 'g (have ' + hud.gold + ')');
+    if (hud.gold < need) yield* phaseFarm(need + 20, 25 * 60000);
+  }
+  // every overworld cache: the gates first (Titan Bracelet boulder, bomb on
+  // the cracked rock), then each chest (big ones ask a math question)
+  function* pgChests() {
+    QA.state = 'CHESTS';
+    yield* ensureOverworld();
+    const g0 = hud.gold, mh0 = player.maxHearts;
+    for (const g of owGates) {
+      if (g.id.startsWith('sq_') || (g.kind === 'boulder' ? owState.lifted : owState.bombed)[g.id]) continue;
+      if (g.kind === 'boulder') {
+        const spot = nearestFree(overworld, g.x, g.y + 2, 3);
+        if ((yield* navTo(spot.tx, spot.ty, { label: 'walk to the heavy boulder', timeoutMs: 300000 })) === 'arrived') {
+          yield* faceDir(wantFacing((g.x + 1) * TS() - hero.x, (g.y + 1) * TS() - hero.y));
+          Inp.press('e');
+          if (yield* waitUntil(() => owState.lifted[g.id], 1500)) milestone('Titan Bracelet lifted the boulder ' + g.id);
+          else report(player.owned.powerBracelet ? 'CRITICAL' : 'WARNING', 'items', 'E at boulder ' + g.id + ' did not lift it (bracelet ' + !!player.owned.powerBracelet + ')');
+        }
+      } else if (yield* bombAt(g.x, g.y + 1, 'cracked rock ' + g.id, () => owState.bombed[g.id])) milestone('A bomb broke the cracked rock ' + g.id);
+      else report('CRITICAL', 'items', 'Bombs did not break the cracked rock ' + g.id);
+    }
+    const missed = [];
+    for (const c of owChests) {
+      if (owState.chests[c.id]) continue;
+      let spot = !solidTile(overworld, c.x, c.y + 1) ? { tx: c.x, ty: c.y + 1 } : nearestFree(overworld, c.x, c.y + 1, 2);
+      const r = spot ? yield* navTo(spot.tx, spot.ty, { label: 'walk to chest ' + c.id, timeoutMs: 300000 }) : 'nospot';
+      if (r !== 'arrived') { missed.push(c.id + ' (' + r + ')'); continue; }
+      yield* faceDir(wantFacing((c.x + 0.5) * TS() - hero.x, (c.y + 0.5) * TS() - hero.y));
+      const gold = hud.gold;
+      Inp.press('e');
+      if (!(yield* waitUntil(() => owState.chests[c.id], 8000))) { missed.push(c.id + ' (E did not open it)'); continue; }
+      yield* waitUntil(() => !anyModal(), 3000);
+      if (c.reward !== 'heart' && hud.gold <= gold) report('CRITICAL', 'economy', 'Chest ' + c.id + ' opened but gave no gold');
+    }
+    // an opened chest must not pay again
+    const c0 = owChests.find(c => owState.chests[c.id] && c.reward !== 'heart');
+    if (c0 && (yield* navTo(c0.x, c0.y + 1, { label: 'back to an opened chest', timeoutMs: 300000 })) === 'arrived') {
+      const gold = hud.gold; yield* faceDir('up'); Inp.press('e'); yield* wait(600);
+      if (hud.gold === gold + c0.gold || owInteractables().some(i => i.key === 'owchest:' + c0.id)) report('CRITICAL', 'exploit', 'Opened chest ' + c0.id + ' paid out again (' + gold + ' -> ' + hud.gold + ')');
+      else milestone('Opened chest ' + c0.id + ' cannot be opened again');
+    }
+    if (missed.length) report('WARNING', 'coverage', 'Overworld chests not opened: ' + missed.join(', '));
+    milestone('Overworld caches: ' + owChests.filter(c => owState.chests[c.id]).length + '/' + owChests.length + ' chests open, gold ' + g0 + ' -> ' + hud.gold + ', max hearts ' + mh0 + ' -> ' + player.maxHearts);
+    pgNote('chests', owChests.filter(c => owState.chests[c.id]).length + '/' + owChests.length);
+  }
+  function buildPostgamePhases() {
+    const ph = [];
+    ph.push({ name: 'post-game save state', fn: pgSaveState });
+    ph.push({ name: 'take off the Golden Knight', fn: () => pgWardrobe('blue') });
+    for (const d of dungeons) ph.push({ name: 're-walk ' + d.def.id, fn: () => pgRewalkDungeon(d) });
+    ph.push({ name: 'open every overworld chest', fn: pgChests });
+    ph.push({ name: 'farm for the sidequest gear', fn: () => pgFarm(true) });
+    ph.push({ name: 'buy the sidequest gear', fn: function* () { if (wantedAffordable()) yield* phaseShop('shop'); } });
+    ph.push({ name: 'Aurora Sword sidequest', fn: pgSidequest });
+    ph.push({ name: 'secret heart piece', fn: pgSecretHeart });
+    ph.push({ name: "stock up on Giant's Berries", fn: function* () { yield* pgFarm(true); yield* phaseShop('shop', Array(6).fill('superMushroom')); } });
+    ph.push({ name: 'Mirage Keep', fn: pgMirage });
+    ph.push({ name: 'farm for the shop', fn: () => pgFarm(false) });
+    ph.push({ name: 'buy every item', fn: () => phaseShop('shop', true) });
+    ph.push({ name: 'wear the Blue Tunic', fn: () => pgWardrobe('blue') });
+    ph.push({ name: 'items', fn: pgItems });
+    ph.push({ name: 'final save', fn: function* () { yield* ensureOverworld(); yield* wait(500); QA.pgDone = true; milestone('POST-GAME COMPLETE: ' + JSON.stringify(PG.log)); } });
+    return ph;
+  }
+
   function buildPhases() {
+    if (QA.opts.postgame) return buildPostgamePhases();
     const ph = [];
     ph.push({ name: 'calibrate', fn: phaseCalibrate });
     ph.push({ name: 'npc dialogue', fn: phaseNpcTest });
@@ -1968,6 +2546,13 @@
     QA.state = 'TITLE';
     if (QA.gameMs - (QA.titleLastTap || -1e9) < 350) return;
     QA.titleLastTap = QA.gameMs; QA.titleTaps = (QA.titleTaps || 0) + 1;
+    if (QA.opts.postgame) { // the post-game run carries on from the save the victory left
+      const b = getTitleActionButtons().find(x => x.key === 'continue');
+      if (!b) { if (!QA.titleFail) { QA.titleFail = true; report('CRITICAL', 'save', 'Post-game: no Continue button on the title screen after the victory (the save was lost)'); finish('no save to continue'); } return; }
+      if (QA.titleTaps <= 5) Inp.tap(b.x + b.w / 2, b.y + b.h / 2, 'Continue');
+      else if (!QA.titleFail) { QA.titleFail = true; report('CRITICAL', 'title', 'Continue did not start the saved game'); finish('stuck on title'); }
+      return;
+    }
     if (QA.titleTaps === 1) {
       Cap.arm('title');
       try {
@@ -2005,17 +2590,42 @@
     }
     let r;
     try { r = PH.gen.next(); }
-    catch (e) { agentIssue('phase "' + PH.name + '" threw: ' + e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 3).join(' | ')); r = { done: true }; }
+    catch (e) {
+      report('WARNING', 'agent', 'QA phase "' + PH.name + '" threw: ' + e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 3).join(' | '), null, 'phasethrow|' + PH.name);
+      QA.shopSession = QA.wardrobeSession = QA.dialogTest = false; // (so the modal handler can close what it left open)
+      r = { done: true };
+    }
     if (r.done) {
       Inp.setMove([]);
       milestone('Phase end: ' + PH.name + ' (' + ((QA.gameMs - PH.t0) / 1000).toFixed(1) + 's game)');
       PH.gen = null; PH.i++;
     }
   }
+  // bestiary: every enemy seen alive and then dead, by type (any weapon, any cause)
+  // (a vault / Boss Rush removes a beaten boss from its room at once, so an
+  // enemy that vanished from the list dead also counts)
+  const DEAD = new WeakSet();
+  let TALLY_PREV = [];
+  function tallyKills() {
+    if (gameState !== STATE.PLAYING && gameState !== STATE.VICTORY) return;
+    let list; try { list = currentEnemies().slice(); } catch (e) { return; }
+    for (const b of [typeof vaultRun !== 'undefined' && vaultRun && vaultRun.boss, typeof mirage !== 'undefined' && mirage.boss]) if (b && !list.includes(b)) list.push(b);
+    const kb = QA.stats.killsByType || (QA.stats.killsByType = {});
+    for (const e of list.concat(TALLY_PREV.filter(e => !list.includes(e)))) {
+      if (e.alive && e.hp > 0) continue;
+      if (DEAD.has(e) || !TALLY_PREV.includes(e) && e.alive) continue;
+      if (!TALLY_PREV.includes(e)) continue; // only enemies we saw alive
+      DEAD.add(e);
+      const k = e.isBoss || e.type === 'ganon' ? 'malrek' : e.bossKind || e.type;
+      kb[k] = (kb[k] || 0) + 1;
+    }
+    TALLY_PREV = list.filter(e => e.alive && e.hp > 0);
+  }
   function postStep(dtMs) {
     QA.gameMs += dtMs; QA.steps++; QA.stats.updates++; QA.lastUpdateWall = now();
     if (!QA.running || !gameReady()) return;
     watchdogs(dtMs);
+    tallyKills();
     Inp.service();
     evalExpectations();
     tick();
