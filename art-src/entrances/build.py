@@ -50,6 +50,8 @@ for kind, W in WIDTH.items():
     if green: pink = (im[..., 1] > im[..., 0] + 40) & (im[..., 1] > im[..., 2] + 40)
     else: pink = (im[..., 0] > im[..., 1] + 35) & (im[..., 2] > im[..., 1] + 35)
     im[..., 3][edge & pink] = 0
+    if not green: # leftover pure-magenta specks anywhere (a violet glow is far darker)
+        im[..., 3][(im[..., 0] > 215) & (im[..., 2] > 165) & (im[..., 1] < 125)] = 0
     tiles.append((kind, Image.fromarray(np.clip(im, 0, 255).astype(np.uint8), 'RGBA')))
 x = 0
 out = Image.new('RGBA', (sum(t.width + 2 for _, t in tiles), max(t.height for _, t in tiles)), (0, 0, 0, 0))
