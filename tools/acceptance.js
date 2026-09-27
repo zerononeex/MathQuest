@@ -86,6 +86,7 @@ function check(name, ok, detail) {
       out.tapMoveSamples = [];
       const wildsBase = { x: (overworld.w / 2 - 55) * 16, y: (overworld.h / 2 + 5) * 16 };
       hero.x = wildsBase.x; hero.y = wildsBase.y;
+      player.invincibleT = 99; // (a wild enemy downing the hero mid-sample opened the revive question and froze it)
       const samplePoints = [
         { x: wildsBase.x + 80, y: wildsBase.y },
         { x: wildsBase.x, y: wildsBase.y + 80 },
