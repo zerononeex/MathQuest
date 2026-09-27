@@ -1063,6 +1063,36 @@ function check(name, ok, detail) {
     await vp.close();
   }
 
+  // --- Golden Knight (victory reward): no damage, no AP; kept for new games ---
+  {
+    const gp = await browser.newPage();
+    gp.on('pageerror', e => errorsAll.push('golden: ' + e.message));
+    await gp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await gp.evaluate(() => {
+      const out = {};
+      try {
+        localStorage.removeItem(RECORDS_KEY); localStorage.removeItem(SAVE_KEY);
+        startNewGame(); player.invincibleT = 0;
+        out.lockedAtStart = !player.unlockedSkins.golden;
+        player.skin = 'golden'; out.noPowersWhenLocked = !goldenPowers();
+        // win: the castle unlock records it on the device
+        const g = makeGanon(0, 0); castle.ganon = g; castle.startTime = performance.now(); ganonDefeated(g);
+        gameState = STATE.PLAYING;
+        out.unlocked = player.unlockedSkins.golden && player.skin === 'golden' && loadRecords().golden;
+        const h = player.hearts; player.invincibleT = 0; damageHero(2, hero.x + 10, hero.y); out.noDamage = player.hearts === h;
+        player.ap = 0; out.freeSwing = spendAP(5) && player.ap === 0;
+        const target = currentEnemies().find(e => e.alive) || null; out.swingAtZeroAP = (player.attackCooldown = 0, trySwingSword(), player.swordSwingT > 0);
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    await gp.reload({ waitUntil: 'load' }); await new Promise(r => setTimeout(r, 400));
+    const r2 = await gp.evaluate(() => { localStorage.removeItem(SAVE_KEY); startNewGame(); const u = player.unlockedSkins.golden; localStorage.removeItem(RECORDS_KEY); return u; });
+    check('Golden Knight: won at the castle, can\'t be hurt, needs no AP, and stays unlocked for new games',
+      !r.exception && r.lockedAtStart && r.noPowersWhenLocked && r.unlocked && r.noDamage && r.freeSwing && r.swingAtZeroAP && r2 === true, JSON.stringify({ r, r2 }));
+    await gp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

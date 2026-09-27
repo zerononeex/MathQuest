@@ -3960,6 +3960,8 @@ function ganonDefeated(g) {
   if (!musicOnBossDefeated()) SFX.victoryMelody();
   player.unlockedSkins.golden = true;
   player.skin = 'golden';
+  try { const r = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); r.golden = true; localStorage.setItem(RECORDS_KEY, JSON.stringify(r)); } catch (e) {}
+  saveGame();
   victoryStats.timeMs = performance.now() - castle.startTime;
   victoryStats.gold = hud.gold;
   victoryStats.questionsAnswered = player.questionsAnswered;
@@ -4228,7 +4230,7 @@ const TUNIC_SKINS = {
   blue: { name: 'Blue', body: '#3f5fa8', trim: '#20305a' },
   shadow: { name: 'Shadow', body: '#3a2a4a', trim: '#1a1025' },
   plumber: { name: 'Crimson Knight', body: '#b8323a', trim: '#e0b040' }, // (key kept for saves)
-  golden: { name: 'Golden Hero', body: '#d8b840', trim: '#8a6a10' },
+  golden: { name: 'Golden Knight', body: '#d8b840', trim: '#8a6a10' }, // victory reward: no damage, no AP (goldenPowers)
 };
 function currentTunic() { return TUNIC_SKINS[player.skin] || TUNIC_SKINS.classic; }
 
@@ -4288,17 +4290,21 @@ function streakMultiplier(k) {
 // best streak ever, kept on this device across new games (title screen)
 const RECORDS_KEY = 'mathquest_records_v1';
 function loadRecords() {
-  try { const r = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); return { bestStreak: r.bestStreak | 0 }; } catch (e) { return { bestStreak: 0 }; }
+  try { const r = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); return { bestStreak: r.bestStreak | 0, golden: !!r.golden }; } catch (e) { return { bestStreak: 0, golden: false }; }
 }
 function noteStreakRecord() {
   const r = loadRecords();
   if (player.streak > r.bestStreak) {
-    try { localStorage.setItem(RECORDS_KEY, JSON.stringify({ bestStreak: player.streak })); } catch (e) {}
+    try { const all = JSON.parse(localStorage.getItem(RECORDS_KEY) || '{}'); all.bestStreak = player.streak; localStorage.setItem(RECORDS_KEY, JSON.stringify(all)); } catch (e) {}
     return true;
   }
   return false;
 }
+// The Golden Knight outfit (won by beating Malrek, kept on this device for
+// every new game) can't be hurt and needs no AP.
+function goldenPowers() { return player.skin === 'golden' && !!player.unlockedSkins.golden; }
 function spendAP(n) {
+  if (goldenPowers()) return true;
   if (player.ap < n) return false;
   player.ap -= n;
   return true;
@@ -4423,7 +4429,7 @@ function hurtEnemy(e, dmg, color) {
 function trySwingSword() {
   if (player.attackCooldown > 0 || dialogue.active || player.downed) return;
   const range = swordReachPx();
-  if (player.ap < CONFIG.SWORD_AP_COST) {
+  if (!goldenPowers() && player.ap < CONFIG.SWORD_AP_COST) {
     showHint('Not enough AP! Press Q to earn more!', 2);
     player.zeroApAttackTimer = 0.0001; // start the auto-popup countdown
     return;
@@ -4693,6 +4699,11 @@ function doRevive() {
 
 function damageHero(amount, fromX, fromY) {
   if (player.invincibleT > 0 || player.downed) return;
+  if (goldenPowers()) { // the Golden Knight shrugs it off
+    player.invincibleT = 0.5;
+    spawnFloatingText(hero.x, hero.y - 22, 'BLOCKED!', '#ffe066');
+    return;
+  }
   player.hearts -= amount;
   player.invincibleT = 1.0;
   SFX.hurt();
@@ -6468,6 +6479,14 @@ function drawPlaying() {
       const z = heroHopZ(); // mid-hop off a ledge: ground shadow stays, the hero rises
       if (z) { ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(Math.round(hero.x) - 5, Math.round(hero.y) + 6, 10, 2); }
       drawHeroSprite(hero.x, hero.y - z, hero.facing, heroWalkFrame());
+      if (goldenPowers()) { // Golden Knight: a few drifting gold sparkles
+        const t = now * 1.7;
+        for (let i = 0; i < 3; i++) {
+          const k = (t + i / 3) % 1;
+          ctx.fillStyle = `rgba(255,224,102,${1 - k})`;
+          ctx.fillRect(Math.round(hero.x + Math.sin(t * 2 + i * 2.1) * 9), Math.round(hero.y - z - 6 - k * 18), 2, 2);
+        }
+      }
     }
     if (swinging && hero.facing !== 'up') drawSwordArc(hero.x, hero.y, hero.facing, player.swordSwingT);
   } });
@@ -7405,7 +7424,8 @@ function drawWardrobe() {
       ctx.fillRect(sw.x + sw.w / 2 - 10, sw.y + 14, 20, 24);
     }
     ctx.fillStyle = '#fff'; ctx.font = '10px monospace';
-    ctx.fillText(unlocked ? tunic.name : 'Locked', sw.x + sw.w / 2, sw.y + sw.h - 8);
+    ctx.fillText(unlocked ? tunic.name : sw.key === 'golden' ? 'Beat Malrek!' : 'Locked', sw.x + sw.w / 2, sw.y + sw.h - 8);
+    if (sw.key === 'golden' && unlocked) { ctx.fillStyle = '#ffe066'; ctx.font = '8px monospace'; ctx.fillText('no damage, no AP', sw.x + sw.w / 2, sw.y + sw.h + 3); }
   }
   ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 16px monospace';
   ctx.fillText('X', CONFIG.GAME_W - 25, 30);
@@ -7716,10 +7736,12 @@ function continueSavedGame() {
   const data = loadSaveData();
   if (!data) { startNewGame(); return; }
   applySaveData(data);
+  if (loadRecords().golden) player.unlockedSkins.golden = true;
   gameState = STATE.PLAYING;
 }
 function startNewGame() {
   gameState = STATE.PLAYING;
+  if (loadRecords().golden) player.unlockedSkins.golden = true; // earned once, kept for every new game
 }
 
 // =========================================================================
