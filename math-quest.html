@@ -3348,6 +3348,7 @@ function dungeonGoRoom(d, newIndex, fromEdge) {
     if (newIndex === 2 && !d.bossDefeated) {
       for (const e of d.enemies[2]) if (e.isMiniboss) scaleBossForFight(e);
       setBossShutter(d, true); // no getting knocked back out through the doorway mid-fight
+      startBossTries();
       const bk = d.def.bossKind;
       if (bk && NEW_BOSS_DEFS[bk]) showHint(NEW_BOSS_DEFS[bk].name + '\n' + NEW_BOSS_DEFS[bk].flavor, 3);
     }
@@ -3804,9 +3805,10 @@ function scaleBossForFight(e) {
   e.bossScaled = true;
   const per = computeDamage(equippedSwordKind(), e.defense || 0);
   const hits = Math.round(BOSS_HITS[e.bossKind] * (littleHero() ? 0.6 : 1));
-  e.hp = e.maxHp = Math.max(e.maxHp, hits * per) * 2; // doubled: fast tapping on a tablet made fights too short
+  if (e.baseMaxHp === undefined) e.baseMaxHp = e.maxHp; // a refight re-scales from the original, never compounding
+  e.hp = e.maxHp = Math.max(e.baseMaxHp, hits * per) * 2; // doubled: fast tapping on a tablet made fights too short
 }
-function bossDmg() { return littleHero() ? 1 : 2; }
+function bossDmg(e) { return littleHero() || (e && e.bossKind === 'grovak') ? 1 : 2; } // Grovak, the first boss, hits softer
 function bossPickAttack(e) {
   const list = BOSS_ATTACKS[e.bossKind];
   let k;
@@ -3850,7 +3852,7 @@ function updateBossAI(e, dt, room, d) {
     s.t -= dt;
     if (s.t <= 0) {
       s.done = true; SFX.zap(); screenShake(2, 0.1); spawnVisualFx('burst', s.x, s.y, 0.3);
-      if (Math.hypot(hero.x - s.x, hero.y - s.y) < 15) damageHero(bossDmg(), s.x, s.y);
+      if (Math.hypot(hero.x - s.x, hero.y - s.y) < 15) damageHero(bossDmg(e), s.x, s.y);
     }
   }
   // spore clouds linger and sting while you stand in them
@@ -3860,7 +3862,7 @@ function updateBossAI(e, dt, room, d) {
     if (Math.hypot(hero.x - c.x, hero.y - c.y) < c.r) { c.tick = (c.tick || 0) - dt; if (c.tick <= 0) { c.tick = 0.7; damageHero(1, c.x, c.y); } }
   }
   // touching the boss hurts, except while it is dizzy
-  if (e.alive && !(bs.st === 'rest' && bs.dizzy) && !e.airborne && dist < (e.w + hero.w) / 2 - 2) damageHero(bossDmg(), e.x, e.y);
+  if (e.alive && !(bs.st === 'rest' && bs.dizzy) && !e.airborne && dist < (e.w + hero.w) / 2 - 2) damageHero(bossDmg(e), e.x, e.y);
 }
 function bossStartAct(e, bs, d, dist, dx, dy) {
   const LH = littleHero();
@@ -3869,7 +3871,7 @@ function bossStartAct(e, bs, d, dist, dx, dy) {
     case 'slam':
       bs.t = 0.25; SFX.bossSlam(); screenShake(6, 0.25);
       spawnVisualFx('burst', bs.tx, bs.ty, 0.4);
-      if (Math.hypot(hero.x - bs.tx, hero.y - bs.ty) < 30) damageHero(bossDmg(), bs.tx, bs.ty);
+      if (Math.hypot(hero.x - bs.tx, hero.y - bs.ty) < 30) damageHero(bossDmg(e), bs.tx, bs.ty);
       break;
     case 'stomp': bs.t = 0.75; bs.ring = 12; SFX.bossRumble(); screenShake(4, 0.3); break;
     case 'spin': bs.t = 1.8; bs.dizzy = true; SFX.bossSpin(); break;
@@ -3914,7 +3916,7 @@ function bossAct(e, bs, dt, room, dist, dx, dy) {
   if (bs.atk === 'stomp') {
     const prev = bs.ring; bs.ring += dt * (LH ? 110 : 140);
     const hd = Math.hypot(hero.x - e.x, hero.y - e.y);
-    if (!bs.hit && hd >= prev - 6 && hd <= bs.ring + 4 && bs.ring < 100) { bs.hit = true; damageHero(bossDmg(), e.x, e.y); }
+    if (!bs.hit && hd >= prev - 6 && hd <= bs.ring + 4 && bs.ring < 100) { bs.hit = true; damageHero(bossDmg(e), e.x, e.y); }
   } else if (bs.atk === 'spin') {
     const sp = LH ? 55 : 78; vx = dx / dist * sp; vy = dy / dist * sp;
   } else if (bs.atk === 'shell') {
@@ -3929,7 +3931,7 @@ function bossAct(e, bs, dt, room, dist, dx, dy) {
       e.airborne = false; e.z = 0;
       const p = findClearSpot(room, e.x, e.y, e.w, e.h, null, 4); e.x = p.x; e.y = p.y;
       SFX.bossSlam(); screenShake(5, 0.25); spawnVisualFx('burst', e.x, e.y, 0.4);
-      if (Math.hypot(hero.x - e.x, hero.y - e.y) < 32) damageHero(bossDmg(), e.x, e.y);
+      if (Math.hypot(hero.x - e.x, hero.y - e.y) < 32) damageHero(bossDmg(e), e.x, e.y);
     }
   }
   return { vx, vy };
@@ -4327,6 +4329,7 @@ function castleEnterRoom(ri) {
       }
       malrekScale(castle.ganon);
       castleArenaDoor(true);
+      startBossTries();
       screenShake(6, 0.3);
       SFX.ganonLaugh();
       showHint('Malrek, the Shadow King\nLv ' + (player.level + castle.ganon.bonus) + ' - he has grown strong to match you!', 3);
@@ -4452,14 +4455,24 @@ function castlePuzzle(r, map, dt) {
         const away = (b.x - hero.x) * dirVec[0] + (b.y - hero.y) * dirVec[1];
         const nbx = b.x + dirVec[0] * CONFIG.HERO_SPEED * dt, nby = b.y + dirVec[1] * CONFIG.HERO_SPEED * dt;
         const blocked = boxHitsSolid(map, nbx, nby, 14, 14) || p.blocks.some(o => o !== b && Math.abs(o.x - nbx) < 15 && Math.abs(o.y - nby) < 15);
-        if (away > 4 && !blocked) { b.x = nbx; b.y = nby; }
-      }
+        // lean on it for a moment first, so brushing past mid-fight never shoves it
+        b.pushT = away > 4 ? (b.pushT || 0) + dt : 0;
+        if (away > 4 && !blocked && b.pushT > 0.25) { b.x = nbx; b.y = nby; }
+      } else b.pushT = 0;
       for (const pl of p.plates) {
         const px = (pl.x + 0.5) * TS, py = (pl.y + 0.5) * TS;
         if (!pl.held && Math.hypot(b.x - px, b.y - py) < 8) {
           b.x = px; b.y = py; b.locked = true; pl.held = true;
           SFX.thud(); spawnConfetti(px, py, 8);
         }
+      }
+    }
+    // the blocks are solid: the hero stops against one instead of walking through
+    for (const b of p.blocks) {
+      const ox = hero.x - b.x, oy = hero.y - b.y, px = 14 - Math.abs(ox), py = 14 - Math.abs(oy);
+      if (px > 0 && py > 0) {
+        if (px < py) moveWithCollision(hero, Math.sign(ox || 1) * px, 0, map);
+        else moveWithCollision(hero, 0, Math.sign(oy || 1) * py, map);
       }
     }
     if (p.plates.every(pl => pl.held)) { p.solved = true; castleOpenEast(r, 'Both plates are down - the gate grinds open!'); saveGame(); }
@@ -4706,7 +4719,7 @@ function malrekScale(g) {
   if (g.bonus === N && g.scaledFor === player.attack) return;
   const frac = g.maxHp > 0 && g.bonus !== undefined ? Math.max(0, g.hp / g.maxHp) : 1;
   const per = computeDamage(equippedSwordKind(), g.defense || 0);
-  const hits = (littleHero() ? 16 + N : 26 + 2 * N) * 2; // doubled, like the temple bosses
+  const hits = Math.round((littleHero() ? 16 + N : 26 + 2 * N) * 1.5); // 1.5x (the temple bosses got 2x; with 3 tries per fight 2x here was out of reach)
   const weaker = g.bonus !== undefined && N < g.bonus;
   g.bonus = N; g.scaledFor = player.attack;
   g.maxHp = hits * per;
@@ -4834,8 +4847,9 @@ function updateGanon(dt, map) {
     }
     if (h.done) { h.life -= dt; if (h.life <= 0) g.hazards.splice(i, 1); }
   }
-  // touching him hurts (not while he is blinking)
-  if (!g.airborne && dist < (g.w + hero.w) / 2 - 6) damageHero(g.dmg, g.x, g.y);
+  // touching him hurts - a bump while he walks costs 1 heart; while he pants
+  // after an attack (the moment to strike) or blinks, touching is safe
+  if (!g.airborne && mk.st !== 'rest' && dist < (g.w + hero.w) / 2 - 6) damageHero(mk.st === 'idle' ? 1 : g.dmg, g.x, g.y);
   if (g.hp <= 0) ganonDefeated(g);
 }
 function malrekWind(g, map) {
@@ -4942,6 +4956,7 @@ const hero = {
   walkTargetX: null, walkTargetY: null,
   dustTimer: 0,
 };
+const HERO_START = { x: hero.x, y: hero.y }; // where a new game begins (and where you wake up when out of revives)
 const dustPuffs = []; // {x,y,life}
 const rippleMarkers = []; // {x,y,life}
 
@@ -5156,7 +5171,7 @@ const player = {
   ap: CONFIG.STARTING_AP, maxAp: CONFIG.MAX_AP,
   invincibleT: 0,
   attackCooldown: 0,
-  questionsAnswered: 0, revivesUsed: 0,
+  questionsAnswered: 0, revivesUsed: 0, lives: 5,
   streak: 0, // correct math answers in a row (any popup); a wrong one resets it
   swordSwingT: 0, // >0 while swing animation plays
   downed: false, // true when hearts hit 0 (revive flow)
@@ -5655,7 +5670,114 @@ function doRevive() {
   player.invincibleT = 3;
   player.revivesUsed++;
   SFX.revive();
-  spawnFloatingText(hero.x, hero.y - 24, 'REVIVED!', '#ffe066');
+  // Lives: a boss fight gives 3 tries - the 3rd revive sends the hero out
+  // to the dungeon's entrance. Elsewhere there are 5 revives; after that
+  // the next revive happens at the start of the journey (or, inside a
+  // dungeon, at its entrance). Progress and items are always kept.
+  if (inBossFight()) {
+    lives.boss = Math.max(0, lives.boss - 1);
+    if (lives.boss <= 0) { lives.boss = BOSS_TRIES; sendOutOfFight(); return; }
+    player.hearts = player.maxHearts; // each boss try is a full-health attempt
+    spawnFloatingText(hero.x, hero.y - 24, 'REVIVED! ' + lives.boss + (lives.boss === 1 ? ' try left!' : ' tries left'), '#ffe066');
+    return;
+  }
+  if (player.lives > 0) {
+    player.lives--;
+    spawnFloatingText(hero.x, hero.y - 24, 'REVIVED! ' + player.lives + ' left', '#ffe066');
+    return;
+  }
+  player.lives = ADVENTURE_LIVES;
+  if (world.mode === 'overworld' || world.mode === 'interior') sendBackToStart();
+  else sendOutOfFight(true);
+}
+const ADVENTURE_LIVES = 5, BOSS_TRIES = 3;
+const lives = { boss: BOSS_TRIES };
+const livesScreen = { active: false, title: '', lines: [], openedAt: 0 };
+function inBossFight() {
+  if (world.mode === 'dungeon' && world.dungeon) {
+    const d = world.dungeon;
+    return d.roomIndex === 2 && !d.bossDefeated && d.enemies[2].some(e => e.isMiniboss && e.alive);
+  }
+  return world.mode === 'castle' && castle.roomIndex === CASTLE_ARENA && !!castle.ganon && castle.ganon.alive;
+}
+// a boss fight starts: 3 fresh tries
+function startBossTries() { lives.boss = BOSS_TRIES; }
+function showLivesScreen(title, lines) {
+  livesScreen.active = true; livesScreen.title = title; livesScreen.lines = lines; livesScreen.openedAt = performance.now();
+  SFX.ganonLaugh && SFX.ganonLaugh();
+}
+// out of tries in a boss fight (or out of revives in a dungeon): back to the
+// entrance on the overworld; the boss heals up for the next attempt
+function sendOutOfFight(wholeDungeon) {
+  const inCastle = world.mode === 'castle', d = world.dungeon;
+  if (d) for (const e of d.enemies[2]) if (e.isMiniboss && e.alive) { e.bossScaled = false; e.bs = null; e.spores = null; e.hp = e.maxHp; }
+  if (inCastle && castle.ganon && castle.ganon.alive) {
+    const g = castle.ganon; g.hp = g.maxHp; g.mk = { st: 'idle', t: 1.8, atk: null, last: null, count: 0 }; g.hazards = []; g.projectiles = [];
+    castleArenaDoor(false);
+  }
+  const where = inCastle ? "Malrek's Castle" : d ? d.def.name : 'the dungeon';
+  fadeTo(() => {
+    world.mode = 'overworld'; world.dungeon = null;
+    if (world.returnSpot) { hero.x = world.returnSpot.x; hero.y = world.returnSpot.y; }
+    player.hearts = player.maxHearts;
+    saveGame();
+  });
+  showLivesScreen(wholeDungeon ? 'Out of revives!' : 'Out of tries!', [
+    wholeDungeon ? 'You used all your revives in ' + where + '.' : 'The boss beat you 3 times.',
+    'You are back outside the entrance of ' + where + '.',
+    'You keep all your items and progress.',
+    'Rest up, earn some AP and try again!',
+  ]);
+}
+// out of revives out in the world: back where the adventure began
+function sendBackToStart() {
+  fadeTo(() => {
+    world.mode = 'overworld'; world.dungeon = null; world.interior = null;
+    const sp = overworldReturnSpot(HERO_START.x, HERO_START.y);
+    hero.x = sp.x; hero.y = sp.y;
+    player.hearts = player.maxHearts;
+    saveGame();
+  });
+  showLivesScreen('Out of revives!', [
+    'You used all ' + ADVENTURE_LIVES + ' revives.',
+    'You wake up back where your journey began.',
+    'You keep all your items, gold and medallions.',
+    'You have ' + ADVENTURE_LIVES + ' revives again. Be careful out there!',
+  ]);
+}
+function updateLivesScreen() {
+  const anyKey = ['Enter', ' ', 'e', 'E', 'Escape'].some(k => Input.keys[k]);
+  if ((Input.tapped || anyKey) && performance.now() - livesScreen.openedAt > 600) {
+    livesScreen.active = false; Input.tapped = false;
+    for (const k of Object.keys(Input.keys)) Input.keys[k] = false;
+  }
+}
+function drawLivesScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(0, 0, CONFIG.GAME_W, CONFIG.GAME_H);
+  const w = 440, h = 190, x = (CONFIG.GAME_W - w) / 2, y = (CONFIG.GAME_H - h) / 2;
+  ctx.fillStyle = '#1a1030'; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 3; ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+  drawMapSym('hero', CONFIG.GAME_W / 2, y + 30, 30, 'locked');
+  ctx.fillStyle = '#ff8a8a'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(livesScreen.title, CONFIG.GAME_W / 2, y + 68);
+  ctx.fillStyle = '#ffffff'; ctx.font = '12px monospace';
+  livesScreen.lines.forEach((l, i) => ctx.fillText(l, CONFIG.GAME_W / 2, y + 94 + i * 18));
+  if (performance.now() - livesScreen.openedAt > 600 && Math.floor(performance.now() / 500) % 2 === 0) {
+    ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 12px monospace';
+    ctx.fillText('Tap to continue', CONFIG.GAME_W / 2, y + h - 10);
+  }
+}
+// HUD: revives left (a boss fight shows its tries instead), below the panel
+function drawLivesHud() {
+  const boss = inBossFight(), n = boss ? lives.boss : player.lives;
+  const x = 14, y = 178, label = boss ? 'Tries x' + n : 'x' + n;
+  ctx.font = 'bold 12px monospace';
+  const w = 30 + ctx.measureText(label).width;
+  ctx.fillStyle = 'rgba(10,14,30,0.75)'; ctx.fillRect(x - 4, y - 11, w, 22);
+  ctx.strokeStyle = boss ? '#ff8a8a' : '#ffd84a'; ctx.lineWidth = 1; ctx.strokeRect(x - 3.5, y - 10.5, w - 1, 21);
+  if (!drawMapSym('hero', x + 9, y, 18)) { ctx.fillStyle = '#d84a2a'; ctx.fillRect(x + 2, y - 7, 14, 14); }
+  ctx.fillStyle = n <= 1 ? '#ff6a6a' : '#ffffff'; ctx.textAlign = 'left';
+  ctx.fillText(label, x + 21, y + 4);
 }
 
 function damageHero(amount, fromX, fromY) {
@@ -6696,6 +6818,8 @@ function worldPointFromScreen(sx, sy) {
 function updatePlaying(dt) {
   if (hud.hintTimer > 0) { hud.hintTimer -= dt; if (hud.hintTimer < 0) hud.hintTimer = 0; }
 
+  // out-of-revives notice (blocking until tapped)
+  if (livesScreen.active) { updateLivesScreen(); return; }
   // level-up choice popup (blocking, per bug registry exception)
   if (player.levelUpChoicePending) {
     updateLevelUpInput();
@@ -7641,6 +7765,7 @@ function drawPlaying() {
 
   // HUD (screen space)
   drawHUD();
+  if (gameState === STATE.PLAYING) drawLivesHud();
 
   // weapon slots (the XP bar is part of the HUD panel above)
   drawWeaponSlots();
@@ -7681,6 +7806,7 @@ function drawPlaying() {
 
   // world map (blocking)
   if (mapScreen.active) drawMapScreen();
+  if (livesScreen.active) drawLivesScreen();
 
   // hint text
   if (hud.hintTimer > 0 && hud.hintText && !shop.active && !player.levelUpChoicePending) {
@@ -8833,6 +8959,7 @@ function buildSaveData() {
     questionsAnswered: player.questionsAnswered,
     streak: player.streak,
     revivesUsed: player.revivesUsed,
+    lives: player.lives,
     secretHeartTaken: player.secretHeartTaken,
     world: owState, // opened overworld chests, lifted boulders, bombed rocks, lowered bridges
     dungeons: dungeons.map(d => ({
@@ -8895,6 +9022,7 @@ function applySaveData(data) {
     player.questionsAnswered = clampNum(data.questionsAnswered, 0, 999999, 0);
     player.streak = clampNum(data.streak, 0, 999999, 0);
     player.revivesUsed = clampNum(data.revivesUsed, 0, 999999, 0);
+    player.lives = clampNum(data.lives, 0, ADVENTURE_LIVES, ADVENTURE_LIVES);
     if (Array.isArray(data.dungeons)) {
       for (const dd of data.dungeons) {
         const d = dungeons.find(x => x.def.id === dd.id);

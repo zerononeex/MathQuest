@@ -1244,6 +1244,48 @@ function check(name, ok, detail) {
     await cp.close();
   }
 
+  // --- lives: 5 revives in the world, then back to the start (with a notice);
+  // 3 tries per boss fight, the 3rd sends the hero out to the entrance ---
+  {
+    const lp = await browser.newPage();
+    lp.on('pageerror', e => errorsAll.push('lives: ' + e.message));
+    await lp.goto(file, { waitUntil: 'load' });
+    await new Promise(r => setTimeout(r, 400));
+    const r = await lp.evaluate(() => {
+      const out = {};
+      const flush = () => { if (fadeCallback) { fadeCallback(); fadeCallback = null; } fadeAlpha = 0; fadeDir = 0; };
+      try {
+        localStorage.removeItem(SAVE_KEY); startNewGame();
+        out.start = player.lives;
+        hero.x = HERO_START.x + 40 * 16; hero.y = HERO_START.y + 10 * 16;
+        for (let i = 0; i < 5; i++) { player.downed = true; doRevive(); }
+        out.afterFive = { lives: player.lives, screen: livesScreen.active, moved: Math.hypot(hero.x - HERO_START.x, hero.y - HERO_START.y) > 100 };
+        player.downed = true; doRevive(); flush();
+        out.sixth = { screen: livesScreen.active, lives: player.lives, nearStart: Math.hypot(hero.x - HERO_START.x, hero.y - HERO_START.y) < 40, title: livesScreen.title };
+        livesScreen.active = false;
+        // boss tries
+        const d = dungeons[0]; world.mode = 'dungeon'; world.dungeon = d; world.returnSpot = { x: 30 * 16, y: 60 * 16 };
+        dungeonGoRoom(d, 2, 'west'); flush();
+        const boss = d.enemies[2][0];
+        out.inFight = inBossFight(); out.tries = lives.boss;
+        boss.hp = 5;
+        player.downed = true; doRevive(); player.downed = true; doRevive();
+        out.afterTwo = { mode: world.mode, tries: lives.boss };
+        player.downed = true; doRevive(); flush();
+        out.third = { mode: world.mode, screen: livesScreen.active, bossFull: boss.hp === boss.maxHp || !boss.bossScaled, atEntrance: Math.hypot(hero.x - 30 * 16, hero.y - 60 * 16) < 2 };
+        const hp1 = (scaleBossForFight(boss), boss.maxHp); boss.bossScaled = false; scaleBossForFight(boss); out.refightSameHp = boss.maxHp === hp1;
+        livesScreen.active = false;
+        saveGame(); out.saved = loadSaveData().lives;
+      } catch (err) { out.exception = err.message; }
+      return out;
+    });
+    check('Lives: 5 revives in the world then back to the start with a notice; 3 tries per boss, the 3rd sends you out; lives saved',
+      !r.exception && r.start === 5 && r.afterFive.lives === 0 && !r.afterFive.screen && r.afterFive.moved && r.sixth.screen && r.sixth.lives === 5 && r.sixth.nearStart &&
+      r.inFight && r.tries === 3 && r.afterTwo.mode === 'dungeon' && r.afterTwo.tries === 1 && r.third.mode === 'overworld' && r.third.screen && r.third.bossFull && r.third.atEntrance && r.refightSameHp && r.saved === 5,
+      JSON.stringify(r));
+    await lp.close();
+  }
+
   // --- AP economy: missed swings are free, a hit costs 1 AP, one correct
   // answer (Adventurer) refills 8 AP of a 20 AP bar ---
   {

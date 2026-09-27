@@ -76,7 +76,7 @@
   }
   function anyModal() {
     return !!(player.levelUpChoicePending || shop.active || (typeof wardrobe !== 'undefined' && wardrobe.active) ||
-      (typeof pauseMenu !== 'undefined' && pauseMenu.active) || dialogue.active || mathPopup.active);
+      (typeof pauseMenu !== 'undefined' && pauseMenu.active) || dialogue.active || mathPopup.active || (typeof livesScreen !== 'undefined' && livesScreen.active));
   }
   function fading() { try { return fadeDir !== 0; } catch (e) { return false; } }
   function heroTile() { return { tx: Math.floor(hero.x / TS()), ty: Math.floor(hero.y / TS()) }; }
@@ -111,6 +111,7 @@
   // ---------------------------------------------------------------------
   // QALogger
   // ---------------------------------------------------------------------
+  function QAreport(...a) { return report(...a); }
   function report(sev, cat, msg, extra, key) {
     key = key || (sev + '|' + cat + '|' + String(msg).replace(/-?\d+(\.\d+)?/g, '#'));
     let b = QA.bugs.get(key);
@@ -594,6 +595,12 @@
       return true;
     }
     if (mathPopup.active) { solveMath(); return true; }
+    if (typeof livesScreen !== 'undefined' && livesScreen.active) {
+      if (!UI.livesNoted) { UI.livesNoted = true; milestone('Out of lives notice: ' + livesScreen.title + ' - ' + livesScreen.lines[1]); Cap.arm && Cap.arm('lives'); }
+      if (QA.gameMs - UI.lastPress > 700) { UI.lastPress = QA.gameMs; Inp.press('Enter'); }
+      return true;
+    }
+    UI.livesNoted = false;
     if (shop.active) {
       if (QA.shopSession) return false;
       if (QA.gameMs - UI.lastPress > 300) { UI.lastPress = QA.gameMs; agentIssue('shop open outside a shopping session; closing'); Inp.tap(GW() - 25, 25, 'shop close X'); }
@@ -683,7 +690,7 @@
     const px = { x: hero.x, y: hero.y };
     Mover.reset();
     while (e.alive && mapKey() === mk) {
-      if (e.hp !== lastHp) { lastHp = e.hp; lastHit = QA.gameMs; }
+      if (e.hp !== lastHp) { lastHp = e.hp; lastHit = QA.gameMs; if (e.isBoss) QA.lastMalrekHp = e.hp; }
       if (!opts.boss && !e.isMiniboss && !e.isBoss && QA.gameMs - lastHit > 14000) { agentIssue('no damage dealt to ' + e.type + ' for 14s; giving up'); skipUntil.set(e, QA.gameMs + 30000); break; }
       if (QA.gameMs > deadline) { agentIssue('fight timeout vs ' + (e.bossKind || e.type)); skipUntil.set(e, QA.gameMs + 30000); break; }
       const dx = e.x - hero.x, dy = e.y - hero.y, d = Math.hypot(dx, dy);
@@ -694,9 +701,27 @@
         lastRetreat = QA.gameMs; retreatUntil = QA.gameMs + 700;
       }
       if (QA.gameMs < retreatUntil) { QA.state = 'RETREAT'; Inp.setMove(zoneGuard(keysToward(-dx, -dy, 1))); yield; continue; }
+      // bosses telegraph: back off while one winds up / attacks, strike while it rests
+      const dg = bossDanger(e);
+      if (dg) {
+        QA.state = 'DODGE';
+        const sgn = (QA.dodgeSide = QA.dodgeSide || 1);
+        let tx = -dx - dy * 0.9 * sgn, ty = -dy + dx * 0.9 * sgn; // spiral away, not straight into a wall
+        if (dg.rune) { tx = dg.rune.x - hero.x; ty = dg.rune.y - hero.y; if (Math.hypot(tx, ty) < 5) { Inp.setMove([]); yield; continue; } }
+        else if (d > 110) { Inp.setMove([]); yield; continue; }
+        else {
+          // cornered against a wall: slide sideways instead
+          const map = currentMap(), step = 20, ax = hero.x + Math.sign(tx) * step, ay = hero.y + Math.sign(ty) * step;
+          if (!hitboxFree(map, ax, hero.y)) tx = 0;
+          if (!hitboxFree(map, hero.x, ay)) ty = 0;
+          if (!tx && !ty) { QA.dodgeSide = -sgn; tx = dy * sgn; ty = -dx * sgn; }
+        }
+        Inp.setMove(zoneGuard(keysToward(tx, ty, 1))); yield; continue;
+      }
       QA.state = 'COMBAT';
       if (tryRanged(e, dx, dy, d)) { yield; continue; }
-      if (d > swordReach() - 7 && !(noProg > 10 && d <= swordReach() - 1)) {
+      const reachPad = (e.isBoss || e.isMiniboss) ? 3 : 7; // bosses: swing from the edge of the reach
+      if (d > swordReach() - reachPad && !(noProg > 10 && d <= swordReach() - 1)) {
         // direct steering can wedge in concave corners: fall back to A* for a while
         if (Math.hypot(hero.x - px.x, hero.y - px.y) < 0.2) { if (++noProg > 25) { pathUntil = QA.gameMs + 1500; noProg = 0; Mover.reset(); } } else noProg = 0;
         px.x = hero.x; px.y = hero.y;
@@ -704,6 +729,11 @@
           agentIssue(e.type + ' is not reachable on foot; skipping it'); skipUntil.set(e, QA.gameMs + 60000); break;
         }
         yield; continue;
+      }
+      // bosses hurt on touch: keep just outside their body while swinging
+      if ((e.isBoss || e.isMiniboss) && !(e.bs && e.bs.dizzy && e.bs.st === 'rest') && e.cmState !== 'stun') {
+        const cr = (e.w + hero.w) / 2 - (e.isBoss ? 6 : 2);
+        if (d < cr + 3 && swordReach() > cr + 6) { Inp.setMove(zoneGuard(keysToward(-dx, -dy, 1))); yield; continue; }
       }
       if (!facingOk(dx, dy)) { Inp.setMove([DIRKEY[wantFacing(dx, dy)]]); yield; continue; }
       Inp.setMove([]);
@@ -716,6 +746,29 @@
     QA.state = prevState;
     if (!e.alive) { QA.stats.kills++; yield* collectLoot(1500); }
     return !e.alive;
+  }
+  // is this boss winding up or mid-attack? {rune} when standing on a safe
+  // rune is the way out (Malrek's nova)
+  function bossDanger(e) {
+    if (!e || !e.alive) return null;
+    if (e.isBoss && e.mk) {
+      const st = e.mk.st;
+      if (e.mk.runes && (st === 'wind' || st === 'act')) {
+        let best = null, bd = 1e9;
+        for (const r of e.mk.runes) { const dd = Math.hypot(r.x - hero.x, r.y - hero.y); if (dd < bd) { bd = dd; best = r; } }
+        return { rune: best };
+      }
+      if (st === 'wind' || st === 'act' || st === 'blink') return {};
+      if (e.hazards && e.hazards.some(h => !h.done && Math.hypot(h.x - hero.x, h.y - hero.y) < h.r + 10)) return {};
+      return null;
+    }
+    if (!e.isMiniboss) return null;
+    if (e.bossKind === 'cindermaw') return e.cmState === 'rear' || e.cmState === 'lunge' ? {} : null;
+    const bs = e.bs;
+    if (!bs) return null;
+    if (bs.st === 'wind' || (bs.st === 'act' && bs.atk !== 'split')) return {};
+    if (e.spores && e.spores.some(c => Math.hypot(hero.x - c.x, hero.y - c.y) < c.r + 6)) return {};
+    return null;
   }
   function* collectLoot(ms) {
     const end = QA.gameMs + ms;
@@ -744,6 +797,11 @@
   const AN = { dist: 0, frames: new Set(), flips: 0, win: 0, keys: '' };
   function watchdogs(dtMs) {
     if (gameState !== STATE.PLAYING || PRE.gs !== STATE.PLAYING) return;
+    if (player.hearts < PRE.hearts && world.mode === 'castle' && castle.ganon && castle.ganon.alive && castle.roomIndex === CASTLE_ARENA) {
+      const g = castle.ganon, near = Math.hypot(hero.x - g.x, hero.y - g.y) < 30;
+      const k = (g.mk.st === 'act' || g.mk.st === 'wind' ? g.mk.st + ':' + g.mk.atk : near ? 'contact(' + g.mk.st + ')' : g.projectiles.length ? 'orb' : g.hazards.length ? 'hazard' : 'other(' + g.mk.st + ':' + g.mk.last + ')');
+      QA.malrekHits = QA.malrekHits || {}; QA.malrekHits[k] = (QA.malrekHits[k] || 0) + 1;
+    }
     const dt = dtMs / 1000, mk = mapKey(), p = PRE;
     const fade = fading() || p.fade !== 0;
     const moved = Math.hypot(hero.x - p.x, hero.y - p.y);
@@ -1572,7 +1630,13 @@
     if (world.mode === 'overworld') { st.exited = true; milestone('Exited ' + d.def.name + ' to the overworld at (' + heroTile().tx + ',' + heroTile().ty + ')'); }
   }
   function* phaseDungeon(d) {
-    const st = yield* crawlDungeon(d);
+    let st = yield* crawlDungeon(d);
+    // sent out of the boss fight (out of tries)? go back in and finish it
+    for (let tries = 0; tries < 6 && st && !d.chestOpened && /boss/.test(st.blockedBy || '') && world.mode === 'overworld'; tries++) {
+      milestone(d.def.name + ': back in for another try at the boss');
+      st.blockedBy = null;
+      st = yield* crawlDungeon(d);
+    }
     if (st && st.exited && !QA.reentryTested) {
       QA.reentryTested = true;
       QA.goal = 're-entry test';
@@ -1666,18 +1730,33 @@
     }
     if (world.mode !== 'castle') { report('CRITICAL', 'transition', 'Castle gate did not open with 4/4 medallions (' + r + ')'); return; }
     milestone('Entered the castle');
-    for (let ri = 0; ri < CASTLE_ARENA; ri++) {
-      if (!(yield* castleRoomGen(ri))) return;
-    }
-    if (!castle.ganon) { report('CRITICAL', 'transition', 'Castle throne room / final boss did not load'); return; }
-    const g = castle.ganon, t0 = QA.gameMs;
-    milestone('Final boss fight vs Malrek (hp ' + g.hp + ', Lv ' + (player.level + g.bonus) + ', hits for ' + g.dmg + ')');
-    const seenAtk = new Set();
-    while (g.alive && QA.gameMs - t0 < 900000 && world.mode === 'castle') {
-      QA.goal = 'final boss hp ' + g.hp + ' phase ' + g.phase;
-      yield* fight(g, { timeoutMs: 900000 });
-      if (g.mk && g.mk.atk) seenAtk.add(g.mk.atk);
-      yield;
+    let g = null, t0 = QA.gameMs;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) { // sent out after 3 tries: walk back in
+        milestone('Back to the castle for another try at Malrek');
+        yield* waitUntil(() => !anyModal() && !fading(), 5000);
+        const r2 = yield* navTo(gx, gy, { allowZone: true, expectTransition: true, label: 'walk back to castle gate', timeoutMs: 300000 });
+        yield* waitUntil(() => !fading(), 1500);
+        if (world.mode !== 'castle') { report('CRITICAL', 'transition', 'Could not re-enter the castle after being sent out (' + r2 + ')'); return; }
+      }
+      let sentOut = false;
+      for (let ri = castle.roomIndex; ri < CASTLE_ARENA; ri++) {
+        const ok = yield* castleRoomGen(ri);
+        if (world.mode !== 'castle') { sentOut = true; break; } // out of revives mid-castle: walk back in
+        if (!ok) return;
+      }
+      if (sentOut) continue;
+      if (!castle.ganon) { report('CRITICAL', 'transition', 'Castle throne room / final boss did not load'); return; }
+      g = castle.ganon; t0 = QA.gameMs;
+      milestone('Final boss fight vs Malrek (hp ' + g.hp + ', Lv ' + (player.level + g.bonus) + ', hits for ' + g.dmg + ')');
+      while (g.alive && QA.gameMs - t0 < 900000 && world.mode === 'castle') {
+        QA.goal = 'final boss hp ' + g.hp + ' phase ' + g.phase;
+        yield* fight(g, { timeoutMs: 900000 });
+        yield;
+      }
+      if (!g.alive) break;
+      milestone('Malrek attempt ended: hp ' + Math.round(QA.lastMalrekHp || g.hp) + '/' + g.maxHp + ' (phase ' + g.phase + ') hits taken ' + JSON.stringify(QA.malrekHits || {}));
+      if (world.mode === 'castle') break;
     }
     if (g.alive) { agentIssue('final boss not defeated in time'); return; }
     milestone('Final boss defeated in ' + ((QA.gameMs - t0) / 1000).toFixed(1) + 's (game)');
@@ -1689,15 +1768,28 @@
   // one castle room: its puzzle, its Small Key, then through the east door
   function* castleRoomGen(ri) {
     const r = castle.rooms[ri], p = r.puz, map = r.map, midY = Math.floor(map.h / 2);
+    const report = (...a) => { if (world.mode === 'castle' && !(typeof livesScreen !== 'undefined' && livesScreen.active)) QAreport(...a); };
     QA.state = 'CASTLE';
     if (castle.roomIndex !== ri) { report('CRITICAL', 'transition', 'Castle: expected room ' + ri + ' but the hero is in room ' + castle.roomIndex); return false; }
     const t0 = QA.gameMs;
     if (p && (p.type === 'guards' || p.type === 'waves')) {
       while (!p.solved && QA.gameMs - t0 < 180000 && castle.roomIndex === ri) { yield* roomClear(); yield* wait(300); }
     } else if (p && p.type !== 'crystal') yield* roomClear();
-    if (p && p.type === 'weights') {
-      for (let k = 0; k < p.blocks.length; k++) if (!(yield* castlePushBlock(p, p.blocks[k], p.plates[k]))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': could not push block ' + (k + 1) + ' onto its plate'); return false; }
-    } else if (p && p.type === 'braziers') {
+    if (p && p.type === 'weights' && !p.solved) {
+      for (let k = 0; k < p.blocks.length; k++) {
+        let ok = yield* castlePushBlock(p, p.blocks[k], p.plates[k]);
+        if (!ok) { // stuck: step out and back in - loose blocks reset to their start
+          milestone('Castle ' + r.name + ': block ' + (k + 1) + ' stuck, leaving the room to reset it');
+          yield* navTo(0, midY, { allowZone: true, expectTransition: true, label: 'leave to reset the blocks' });
+          yield* waitUntil(() => !fading() && castle.roomIndex === ri - 1, 3000);
+          const pm = currentMap();
+          yield* navTo(pm.w - 1, Math.floor(pm.h / 2), { allowZone: true, expectTransition: true, label: 'back into the Hall of Weights' });
+          yield* waitUntil(() => !fading() && castle.roomIndex === ri, 3000);
+          ok = yield* castlePushBlock(p, p.blocks[k], p.plates[k]);
+        }
+        if (!ok) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': could not push block ' + (k + 1) + ' onto its plate'); return false; }
+      }
+    } else if (p && p.type === 'braziers' && !p.solved) {
       for (const i of p.order) {
         const t = p.torches[i]; let lit = false;
         for (let a = 0; a < 3 && !lit; a++) {
@@ -1712,8 +1804,9 @@
       // from the west half strike crystal 1 until the blue fence is down,
       // cross, then strike crystal 2 until the red cage is down and grab the key
       const k = r.keyDrop;
-      for (let step = 0; step < 8 && !k.taken && castle.roomIndex === ri; step++) {
+      for (let step = 0; step < 10 && castle.roomIndex === ri; step++) {
         const htx = Math.floor(hero.x / TS());
+        if (htx >= 15) break; // past the red fence: at the door
         const ci = htx < 7 ? 0 : 1, want = ci === 0 ? 'red' : 'blue';
         if (p.raised !== want) {
           const c = p.crystals[ci];
@@ -1724,7 +1817,8 @@
           milestone('Castle: struck crystal ' + (ci + 1) + ' - ' + want + ' pegs up');
         }
         if (ci === 0) yield* navTo(9, 5, { label: 'cross the lowered blue pegs', fight: false });
-        else { yield* navTo(11, 2, { label: 'into the open red cage', fight: false }); yield* steerToPoint(k.x, k.y, 3, 2000); }
+        else if (!k.taken) { yield* navTo(11, 2, { label: 'into the open red cage', fight: false }); yield* steerToPoint(k.x, k.y, 3, 2000); }
+        else yield* navTo(15, 5, { label: 'past the lowered red fence', fight: false });
       }
     } else if (p && p.type === 'memory') {
       for (let k = 0; k < p.order.length && !p.solved; k++) {
