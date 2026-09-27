@@ -13,9 +13,10 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__)); ART = os.path.join(HERE, '..')
 KINDS = ['rubblejaw', 'flarewing', 'squallback', 'astral']
 LABELLED = [(0.0, 0.455), (0.52, 0.93)] # 2 rows cut above their text label strips
-LAYOUT = { # columns, row bands (fractions of the sheet height)
+LAYOUT = { # columns, row bands (fractions of the sheet height[, columns in that row])
   'rubblejaw': (4, LABELLED),
   'flarewing': (3, [(0.0, 0.5), (0.5, 1.0)]),
+  'squallback': (4, [(0.0, 0.435, 4), (0.435, 1.0, 3)]), # (the lightning bolt reaches up between the rows)
 }
 def key(C):
     r, g, b = C[..., 0], C[..., 1], C[..., 2]
@@ -33,7 +34,8 @@ for kind in KINDS:
     A = np.array(Image.open(p).convert('RGB')).astype(float); H, W = A.shape[:2]
     cuts = []
     ncol, rows = LAYOUT.get(kind, (4, LABELLED))
-    for r0, r1 in rows:
+    for row in rows:
+        r0, r1 = row[0], row[1]; ncol = row[2] if len(row) > 2 else LAYOUT.get(kind, (4,))[0]
         for c in range(ncol):
             x0, x1, y0, y1 = round(c * W / ncol) + 3, round((c + 1) * W / ncol) - 3, round(r0 * H), round(r1 * H)
             C = A[y0:y1, x0:x1]; al = key(C)
