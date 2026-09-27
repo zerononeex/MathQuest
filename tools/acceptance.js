@@ -1408,7 +1408,8 @@ function check(name, ok, detail) {
         livesScreen.active = false;
         // Boss Rush: beat all five
         const pad2 = mirage.rooms[0].pads[1]; hero.x = (pad2.x + 0.5) * 16; hero.y = (pad2.y + 0.5) * 16; mirage.padArmed = {}; updateMirage(0.016, currentMap()); flush();
-        out.rushStart = mirage.mode === 'rush' && mirage.roomIndex === 2;
+        out.rushStart = mirage.mode === 'rush' && mirage.roomIndex === 2 && mirage.revives === 2;
+        player.downed = true; doRevive(); out.rushRevive = mirage.mode === 'rush' && mirage.revives === 1; mirage.revives = 2; // (2 revives, kid-friendly)
         const kinds = [];
         for (let i = 0; i < 5; i++) {
           const b = mirage.boss; kinds.push(b.bossKind || b.type);
@@ -1425,8 +1426,8 @@ function check(name, ok, detail) {
       } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
       return out;
     });
-    check('Mirage Keep: unlocked after Malrek (Sol + desert gate), no golden powers, Endless Waves with 1 revive and a record, Boss Rush of all 5 bosses with a time record',
-      !r.exception && r.lockedBefore && r.gate && r.sol && r.inside && r.noGolden && r.wave1 && r.wave4 && r.afterFirstDeath && r.wavesEnded && r.rushStart &&
+    check('Mirage Keep: unlocked after Malrek (Sol + desert gate), no golden powers, Endless Waves with 1 revive and a record, Boss Rush of all 5 bosses (2 revives) with a time record',
+      !r.exception && r.lockedBefore && r.gate && r.sol && r.inside && r.noGolden && r.wave1 && r.wave4 && r.afterFirstDeath && r.wavesEnded && r.rushStart && r.rushRevive &&
       r.kinds === 'grovak,cindermaw,voltuga,puffling,ganon' && r.rushDone && r.out, JSON.stringify(r));
     await mp.close();
   }
