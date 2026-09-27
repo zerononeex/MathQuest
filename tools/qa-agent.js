@@ -1708,15 +1708,23 @@
         if (!lit) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': brazier ' + i + ' would not light with E'); return false; }
       }
     } else if (p && p.type === 'crystal') {
-      // west crystal (red up, blue down), then the middle one (red down), grab the key
-      for (const [ci, want] of [[0, 'red'], [1, 'blue']]) {
-        const c = p.crystals[ci];
-        if (p.raised === want) continue;
-        yield* navTo(c.x, c.y + 1, { label: 'walk to crystal ' + (ci + 1) });
-        yield* waitUntil(() => p.t <= 0, 800);
-        Inp.press('e');
-        if (!(yield* waitUntil(() => p.raised === want, 800))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': striking crystal ' + (ci + 1) + ' did not swap the pegs (raised ' + p.raised + ')'); return false; }
-        milestone('Castle: struck crystal ' + (ci + 1) + ' - ' + want + ' pegs up');
+      // any swing near a crystal toggles it, so re-read the pegs every step:
+      // from the west half strike crystal 1 until the blue fence is down,
+      // cross, then strike crystal 2 until the red cage is down and grab the key
+      const k = r.keyDrop;
+      for (let step = 0; step < 8 && !k.taken && castle.roomIndex === ri; step++) {
+        const htx = Math.floor(hero.x / TS());
+        const ci = htx < 7 ? 0 : 1, want = ci === 0 ? 'red' : 'blue';
+        if (p.raised !== want) {
+          const c = p.crystals[ci];
+          yield* navTo(c.x, c.y + 1, { label: 'walk to crystal ' + (ci + 1), fight: false });
+          yield* waitUntil(() => p.t <= 0, 800);
+          Inp.press('e');
+          if (!(yield* waitUntil(() => p.raised === want, 800))) { report('CRITICAL', 'puzzle', 'Castle ' + r.name + ': striking crystal ' + (ci + 1) + ' did not swap the pegs (raised ' + p.raised + ')'); return false; }
+          milestone('Castle: struck crystal ' + (ci + 1) + ' - ' + want + ' pegs up');
+        }
+        if (ci === 0) yield* navTo(9, 5, { label: 'cross the lowered blue pegs', fight: false });
+        else { yield* navTo(11, 2, { label: 'into the open red cage', fight: false }); yield* steerToPoint(k.x, k.y, 3, 2000); }
       }
     } else if (p && p.type === 'memory') {
       for (let k = 0; k < p.order.length && !p.solved; k++) {
