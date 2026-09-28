@@ -1066,7 +1066,7 @@ function check(name, ok, detail) {
     await vp.close();
   }
 
-  // --- Golden Knight (victory reward): no damage, no AP; kept for new games ---
+  // --- Golden Knight (victory reward): +5 Attack, +5 hearts (no special powers); kept for new games ---
   {
     const gp = await browser.newPage();
     gp.on('pageerror', e => errorsAll.push('golden: ' + e.message));
@@ -1080,19 +1080,21 @@ function check(name, ok, detail) {
         out.lockedAtStart = !player.unlockedSkins.golden;
         player.skin = 'golden'; out.noPowersWhenLocked = !goldenPowers();
         // win: the castle unlock records it on the device
-        const g = makeGanon(0, 0); castle.ganon = g; castle.startTime = performance.now(); ganonDefeated(g);
+        player.skin = 'classic';
+        const mh0 = player.maxHearts, atk0 = computeDamage('sword', 0);
+        const g = makeGanon(0, 0); castle.ganon = g; castle.startTime = player.playTimeMs; ganonDefeated(g);
         gameState = STATE.PLAYING;
         out.unlocked = player.unlockedSkins.golden && player.skin === 'golden' && loadRecords().golden;
-        const h = player.hearts; player.invincibleT = 0; damageHero(2, hero.x + 10, hero.y); out.noDamage = player.hearts === h;
-        player.ap = 0; out.freeSwing = spendAP(5) && player.ap === 0;
-        const target = currentEnemies().find(e => e.alive) || null; out.swingAtZeroAP = (player.attackCooldown = 0, trySwingSword(), player.swordSwingT > 0);
+        out.plus5 = player.maxHearts === mh0 + 5 && computeDamage('sword', 0) === atk0 + 5;
+        const h = player.hearts; player.invincibleT = 0; damageHero(2, hero.x + 10, hero.y); out.canBeHurt = player.hearts < h;
+        player.ap = 0; out.needsAP = !spendAP(5);
       } catch (err) { out.exception = err.message; }
       return out;
     });
     await gp.reload({ waitUntil: 'load' }); await new Promise(r => setTimeout(r, 400));
     const r2 = await gp.evaluate(() => { localStorage.removeItem(SAVE_KEY); startNewGame(); const u = player.unlockedSkins.golden; localStorage.removeItem(RECORDS_KEY); return u; });
-    check('Golden Knight: won at the castle, can\'t be hurt, needs no AP, and stays unlocked for new games',
-      !r.exception && r.lockedAtStart && r.noPowersWhenLocked && r.unlocked && r.noDamage && r.freeSwing && r.swingAtZeroAP && r2 === true, JSON.stringify({ r, r2 }));
+    check('Golden Knight: won at the castle, +5 Attack and +5 hearts (can be hurt, needs AP), stays unlocked for new games',
+      !r.exception && r.lockedAtStart && r.noPowersWhenLocked && r.unlocked && r.plus5 && r.canBeHurt && r.needsAP && r2 === true, JSON.stringify({ r, r2 }));
     await gp.close();
   }
 
@@ -1408,8 +1410,8 @@ function check(name, ok, detail) {
         livesScreen.active = false;
         // Boss Rush: beat all five
         const pad2 = mirage.rooms[0].pads[1]; hero.x = (pad2.x + 0.5) * 16; hero.y = (pad2.y + 0.5) * 16; mirage.padArmed = {}; updateMirage(0.016, currentMap()); flush();
-        out.rushStart = mirage.mode === 'rush' && mirage.roomIndex === 2 && mirage.revives === 2;
-        player.downed = true; doRevive(); out.rushRevive = mirage.mode === 'rush' && mirage.revives === 1; mirage.revives = 2; // (2 revives, kid-friendly)
+        out.rushStart = mirage.mode === 'rush' && mirage.roomIndex === 2 && mirage.revives === 1;
+        player.downed = true; doRevive(); out.rushRevive = mirage.mode === 'rush' && mirage.revives === 0; mirage.revives = 1; // (1 revive)
         const kinds = [];
         for (let i = 0; i < 5; i++) {
           const b = mirage.boss; kinds.push(b.bossKind || b.type);
@@ -1426,7 +1428,7 @@ function check(name, ok, detail) {
       } catch (err) { out.exception = err.message + ' ' + (err.stack || '').split('\n')[1]; }
       return out;
     });
-    check('Mirage Keep: unlocked after Malrek (Sol + desert gate), no golden powers, Endless Waves with 1 revive and a record, Boss Rush of all 5 bosses (2 revives) with a time record',
+    check('Mirage Keep: unlocked after Malrek (Sol + desert gate), no golden powers, Endless Waves with 1 revive and a record, Boss Rush of all 5 bosses (1 revive) with a time record',
       !r.exception && r.lockedBefore && r.gate && r.sol && r.inside && r.noGolden && r.wave1 && r.wave4 && r.afterFirstDeath && r.wavesEnded && r.rushStart && r.rushRevive &&
       r.kinds === 'grovak,cindermaw,voltuga,puffling,ganon' && r.rushDone && r.out, JSON.stringify(r));
     await mp.close();
